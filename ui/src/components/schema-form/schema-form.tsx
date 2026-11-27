@@ -562,7 +562,9 @@ function NumberControl({ c, id, value, onChange, disabled, error }: ControlProps
       inputMode={c.kind === "integer" ? "numeric" : "decimal"}
       value={draft}
       disabled={disabled}
-      placeholder={c.nullable ? "Not set" : s.default !== undefined ? String(s.default) : undefined}
+      // An omitted field gets the schema's default from core, even when null is allowed;
+      // only an explicit null is "Not set".
+      placeholder={value !== null && s.default != null ? String(s.default) : c.nullable ? "Not set" : undefined}
       aria-invalid={!!error || undefined}
       aria-describedby={error ? `${id}-error` : undefined}
       onChange={(e) => {
