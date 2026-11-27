@@ -144,7 +144,7 @@ async fn replace_mode_diffs_and_change_ratio_hold() {
     assert_eq!(r["added"]["dns"], 200);
     assert_eq!(open_keys(&c, "list").await.len(), 200);
 
-    // 10 out, 10 in: within max(0.2 × 200, 100).
+    // 10 out, 10 in: within max(0.5 × 200, 100).
     *body.lock().unwrap() = format!("{}{}", names("a", 190), names("b", 10));
     check_now(&c, "list").await;
     let r = newest_run(&c, "list").await;

@@ -600,7 +600,7 @@ impl Default for Sanity {
         Self {
             min_entries: None,
             max_entries: None,
-            max_change_ratio: 0.20,
+            max_change_ratio: 0.50,
             min_change_allowance: 100,
             confirm_after: DurationStr::hours(1),
             max_parse_error_ratio: 0.01,

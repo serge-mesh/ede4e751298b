@@ -3279,7 +3279,7 @@ export interface components {
             /**
              * @default {
              *       "confirm_after": "1h",
-             *       "max_change_ratio": 0.2,
+             *       "max_change_ratio": 0.5,
              *       "max_entries": null,
              *       "max_parse_error_ratio": 0.01,
              *       "min_change_allowance": 100,
@@ -5347,7 +5347,7 @@ export interface components {
             confirm_after?: components["schemas"]["Duration"];
             /**
              * Format: double
-             * @default 0.2
+             * @default 0.5
              */
             max_change_ratio?: number;
             /**

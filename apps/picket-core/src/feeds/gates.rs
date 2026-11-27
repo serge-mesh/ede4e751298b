@@ -150,8 +150,8 @@ mod tests {
 
     #[test]
     fn change_ratio() {
-        let s = Sanity::default(); // 0.20, allowance 100
-        assert_eq!(allowance(&s, 10_000), 2_000);
+        let s = Sanity::default(); // 0.50, allowance 100
+        assert_eq!(allowance(&s, 10_000), 5_000);
         assert_eq!(allowance(&s, 10), 100);
         let prev = TypeCounts {
             dns: 10_000,
@@ -159,10 +159,10 @@ mod tests {
             browser: 0,
         };
         let mut c = Changes::default();
-        c.added.dns = 1_500;
-        c.removed.dns = 500;
+        c.added.dns = 3_500;
+        c.removed.dns = 1_500;
         assert_eq!(change_gate(&s, &c, &prev), None);
-        c.removed.dns = 501;
+        c.removed.dns = 1_501;
         assert!(change_gate(&s, &c, &prev).unwrap().contains("dns"));
         // allowance 0 leaves only the ratio
         let s0 = Sanity {
