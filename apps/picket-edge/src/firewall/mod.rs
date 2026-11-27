@@ -892,6 +892,9 @@ impl FwClient {
                 // The grant follows only entries the device may hold (its share, the set's room).
                 let mut granted = false;
                 for k in keys {
+                    // Without a MAC for `src` the requester can't be told from the address's last
+                    // owner; the pair is keyed by the address alone, and a later `Gained` for
+                    // another MAC still removes it (it's not adopted after a known move).
                     if let Some(src) = k.src
                         && let Some(current) = self.neighbours.mac_of(&src)
                     {
@@ -913,7 +916,9 @@ impl FwClient {
                     }
                     let cur = sh.live(&k, now).copied();
                     match cur {
-                        Some(e) if !e.unconfirmed => {
+                        // An earlier op's ack can confirm the key while a move's correction is
+                        // still queued; the answer then waits for the correction, as below.
+                        Some(e) if !e.unconfirmed && !inf.get(&k).is_some_and(|f| f.correct) => {
                             granted = true;
                             if e.dns_exp + hyst >= desired {
                                 continue;
@@ -1370,6 +1375,13 @@ impl FwClient {
             sh.remove(&k);
             out.delete(k);
         } else {
+            // What stays serves only `owner` now (a move, an adoption), so that device pays for
+            // it within its share, or loses it when it has no room left (edge-firewall.md §2).
+            if e.owner != owner && !sh.transfer_owner(&k, owner) {
+                sh.remove(&k);
+                out.delete(k);
+                return;
+            }
             let dns_owner = (dns_exp > 0).then_some(owner);
             let allow_owner = e.allow_owner.filter(|_| allow_exp > 0);
             if (dns_exp, dns_owner, allow_exp, allow_owner)
@@ -2884,6 +2896,88 @@ mod tests {
         assert_eq!(c.shadow().pending_of(7, k.set), 0);
     }
 
+    /// An allow's ensure queued before a flight, acked while the move's correction is pending,
+    /// confirms the re-created entry; the new owner's answer still waits for the correction
+    /// instead of taking the confirmed-entry fast path ahead of the move's delete.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_early_allow_ack_does_not_let_an_answer_skip_a_pending_correction() {
+        let d = tempfile::tempdir().unwrap();
+        let (logs, _rx) = LogProducer::new("b".into(), Arc::default());
+        let c = FwClient::new(
+            FwTuning::default(),
+            Neighbours::new(),
+            Interfaces::new(),
+            Conditions::new(logs.clone()),
+            logs.clone(),
+            Clock::fixed(true),
+            AllowsStore::load(&d.path().join("allows.json"), logs),
+        );
+        c.set_needed(true);
+        c.view.store(Arc::new(View {
+            ack_wait_ms: 3000,
+            ..View::default()
+        }));
+        let mut rx = c.fast_rx.lock().unwrap().take().unwrap();
+        let (a, b) = ([0x02, 0, 0, 0, 0, 1], [0x02, 0, 0, 0, 0, 2]);
+        let k = pkey("192.168.1.50", "100.100.100.100");
+        let ip = k.src.unwrap();
+        c.neighbours.replace(&[(ip, a)]);
+        c.neighbour_event(NeighbourEvent::Gained { mac: a, ip });
+        let now = c.now_s();
+        let (oa, ob) = (owner_of_mac(&a), owner_of_mac(&b));
+        // A's IP allow leaves the key unconfirmed behind an ensure without a record.
+        {
+            let mut sh = c.shadow();
+            sh.upsert(k, 0, Some(now + 3600), oa, now);
+            sh.unconfirm(&k);
+        }
+        c.fast_tx
+            .try_send(FwClient::op(OpKind::Ensure, k, 3600, None))
+            .unwrap();
+        // A's answer joins as a flight.
+        let c2 = Arc::clone(&c);
+        let a_ans = tokio::spawn(async move { ensure_mac(&c2, ip, a, k.dst, 600).await });
+        assert!(until(Duration::from_secs(5), || c.inflight().contains_key(&k)).await);
+        // The address moves to B: the flight needs a correction, A's entry goes.
+        c.neighbours.replace(&[(ip, b)]);
+        c.neighbour_event(NeighbourEvent::Gained { mac: b, ip });
+        assert!(c.inflight().get(&k).unwrap().correct);
+        assert!(c.shadow().get(&k).is_none());
+        // B's IP allow re-creates the entry.
+        {
+            let now = c.now_s();
+            let mut sh = c.shadow();
+            sh.upsert(k, 0, Some(now + 3600), ob, now);
+            sh.unconfirm(&k);
+        }
+        c.fast_tx
+            .try_send(FwClient::op(OpKind::Ensure, k, 3600, None))
+            .unwrap();
+        // A's allow ensure is acked first and confirms B's entry.
+        let e0 = rx.recv().await.unwrap();
+        assert!(e0.record.is_none());
+        c.complete(e0, &OpResult::Ok);
+        assert!(!c.shadow().get(&k).unwrap().unconfirmed);
+        assert!(c.inflight().get(&k).is_some_and(|f| f.correct));
+        let c3 = Arc::clone(&c);
+        let b_ans = tokio::spawn(async move { ensure_mac(&c3, ip, b, k.dst, 60).await });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!b_ans.is_finished(), "B waits for the correction");
+        // The helper applies the rest in order; B is answered once its key is back.
+        let mut kernel = true;
+        for _ in 0..10 {
+            let Ok(Some(op)) = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await else {
+                break;
+            };
+            kernel = op.kind == OpKind::Ensure;
+            c.complete(op, &OpResult::Ok);
+        }
+        assert!(kernel, "the last op applied restores the key");
+        let b_out = b_ans.await.unwrap();
+        assert!(!b_out.servfail && !b_out.late);
+        assert!(a_ans.await.unwrap().servfail);
+    }
+
     #[tokio::test]
     async fn a_replacement_waits_for_its_correction_and_sees_it_refused() {
         let f = fake(Duration::ZERO);
@@ -3842,6 +3936,77 @@ mod tests {
         c.neighbours.replace(&[(x, m), (y, m)]);
         c.neighbour_event(NeighbourEvent::Gained { mac: m, ip: y });
         assert!(c.shadow().share_of(owner, SetId::P4) <= SHARE);
+    }
+
+    #[tokio::test]
+    async fn a_moved_address_charges_what_it_keeps_to_the_new_device() {
+        let f = fake(Duration::ZERO);
+        let c = client(&f.path);
+        ready(&c).await;
+        let (a, b): (Mac, Mac) = ([0xaa, 0, 0, 0, 0, 1], [0xbb, 0, 0, 0, 0, 2]);
+        let (x, y, z): (IpAddr, IpAddr, IpAddr) = (
+            "192.168.1.50".parse().unwrap(),
+            "192.168.1.51".parse().unwrap(),
+            "192.168.1.52".parse().unwrap(),
+        );
+        c.neighbours.replace(&[(x, a), (y, b), (z, a)]);
+        for (mac, ip) in [(a, x), (b, y), (a, z)] {
+            c.neighbour_event(NeighbourEvent::Gained { mac, ip });
+        }
+        let (oa, ob) = (owner_of_mac(&a), owner_of_mac(&b));
+        let d = |i: u32| IpAddr::from(std::net::Ipv4Addr::from(0x0c00_0000 + i));
+        let key = |src, i| FwKey {
+            set: SetId::P4,
+            src: Some(src),
+            dst: d(i),
+        };
+        {
+            // a holds two entries on each of x and z; b holds grants for their destinations.
+            let now = c.now_s();
+            let mut sh = c.shadow();
+            for i in 0..2 {
+                for src in [x, z] {
+                    sh.upsert_dns(key(src, i), now + 300, oa, Some(oa), now);
+                }
+                sh.grant(a, SetId::P4, d(i), now + 300);
+                sh.grant(b, SetId::P4, d(i), now + 600);
+            }
+        }
+        // x moves to b, which has room: b keeps the pairs and pays for them.
+        c.neighbours.replace(&[(x, b), (y, b), (z, a)]);
+        c.neighbour_event(NeighbourEvent::Gained { mac: b, ip: x });
+        {
+            let now = c.now_s();
+            let sh = c.shadow();
+            for i in 0..2 {
+                let e = sh.live(&key(x, i), now).copied().expect("kept for b's grant");
+                assert_eq!((e.owner, e.dns_owner), (ob, Some(ob)));
+            }
+            assert_eq!(sh.share_of(oa, SetId::P4), 2, "a pays only for z's pairs");
+            assert_eq!(sh.share_of(ob, SetId::P4), 2);
+        }
+        {
+            // b fills the rest of its share on y.
+            let now = c.now_s();
+            let mut sh = c.shadow();
+            for i in 100..100 + SHARE - 2 {
+                sh.upsert_dns(key(y, i), now + 600, ob, Some(ob), now);
+            }
+            assert_eq!(sh.share_of(ob, SetId::P4), SHARE);
+        }
+        // z moves to b too, now with no room: the pairs go instead of riding on a's share.
+        c.neighbours.replace(&[(x, b), (y, b), (z, b)]);
+        c.neighbour_event(NeighbourEvent::Gained { mac: b, ip: z });
+        let now = c.now_s();
+        let sh = c.shadow();
+        for i in 0..2 {
+            assert!(
+                sh.live(&key(z, i), now).is_none(),
+                "no room on b for z's pair {i}"
+            );
+        }
+        assert_eq!(sh.share_of(oa, SetId::P4), 0);
+        assert_eq!(sh.share_of(ob, SetId::P4), SHARE);
     }
 
     #[tokio::test]
