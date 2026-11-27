@@ -187,6 +187,36 @@ describe("profiles", () => {
     expect(post.body).not.toHaveProperty("lookup_budget_ms");
     expect(post.body).not.toHaveProperty("alert_providers");
   });
+
+  it("keeps the focus on a moved lookup provider, so repeated moves from the keyboard keep moving it", async () => {
+    const user = userEvent.setup();
+    const attach = (provider: string) => ({ provider, mode: "async", include_bundles: [], exclude_bundles: [] });
+    mockApi([
+      {
+        method: "GET",
+        path: "/lookup-providers",
+        body: {
+          items: ["a", "b", "c"].map((id) => ({ id, name: id.toUpperCase(), module: "dns", category: "security" })),
+          next_cursor: null,
+        },
+      },
+      { method: "GET", path: "/profiles/kids", body: { id: "kids", name: "Kids", allow: [], block: [], lookup_providers: ["a", "b", "c"].map(attach), upstream: "cloudflare" } },
+    ]);
+    renderApp("/profiles/kids");
+    const group = (await screen.findByRole("button", { name: "Add a lookup provider" }, T)).parentElement!;
+    // Each card's heading names its provider after its position.
+    const order = () => [...group.querySelectorAll("span.tabular-nums + span")].map((e) => e.textContent?.[0]);
+    await waitFor(() => expect(order()).toEqual(["A", "B", "C"]), T);
+    within(group).getAllByRole("button", { name: "Move up" })[2].focus();
+    await user.keyboard("{Enter}");
+    expect(order()).toEqual(["A", "C", "B"]);
+    await user.keyboard("{Enter}");
+    expect(order()).toEqual(["C", "A", "B"]);
+    // At the top, the focus passes to the row's Move down button.
+    expect(document.activeElement).toBe(within(group).getAllByRole("button", { name: "Move down" })[0]);
+    await user.keyboard("{Enter}");
+    expect(order()).toEqual(["A", "C", "B"]);
+  });
 });
 
 describe("manual feed editor", () => {

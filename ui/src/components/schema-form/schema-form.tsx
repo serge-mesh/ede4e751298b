@@ -618,28 +618,93 @@ function ArrayControl(p: ControlProps) {
       />
     );
   }
+  return (
+    <ObjectArrayItems
+      c={c}
+      id={id}
+      path={p.path}
+      items={items}
+      onChange={onChange}
+      disabled={disabled}
+      depth={p.depth + 1}
+      root={ctx.root}
+    />
+  );
+}
+
+export interface ObjectArrayItemsProps {
+  /** The array field; `c.schema.items` describes each item. */
+  c: Classified;
+  id: string;
+  path: string;
+  items: unknown[];
+  onChange: (v: unknown[]) => void;
+  disabled: boolean;
+  /** The depth each item's fields render at. */
+  depth: number;
+  root: SchemaRoot;
+  emptyText?: string;
+  addLabel?: string;
+  /** Gives the add button the field's id, so the field's label points at it. */
+  labelsAddButton?: boolean;
+  /** The heading of an item's card; "#n" when not given. */
+  heading?: (item: unknown, i: number) => React.ReactNode;
+  removeLabel?: (i: number) => string;
+}
+
+/**
+ * A reorderable list of object items, each in its own card with move and remove buttons.
+ * Rows are keyed by index, which matches their field paths, so after a move the focus is put
+ * back on the moved row's button by hand: React would otherwise leave it on the row's old place.
+ */
+export function ObjectArrayItems({
+  c,
+  id,
+  path,
+  items,
+  onChange,
+  disabled,
+  depth,
+  root,
+  emptyText = "None.",
+  addLabel = "Add",
+  labelsAddButton = false,
+  heading = (_item, i) => <span className="tabular-nums">#{i + 1}</span>,
+  removeLabel = (i) => `Remove item ${i + 1}`,
+}: ObjectArrayItemsProps) {
+  const focusAfterMove = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    const target = focusAfterMove.current;
+    if (target === null) return;
+    focusAfterMove.current = null;
+    document.getElementById(target)?.focus();
+  });
   const move = (i: number, d: number) => {
     const next = [...items];
     const [x] = next.splice(i, 1);
-    next.splice(i + d, 0, x);
+    const to = i + d;
+    next.splice(to, 0, x);
+    // Keep the same button focused on the moved row, or its other move button once it reaches an end.
+    const up = d < 0 ? to > 0 : to === next.length - 1;
+    focusAfterMove.current = `${id}-${up ? "up" : "down"}-${to}`;
     onChange(next);
   };
   return (
     <div className="space-y-2" role="group" aria-labelledby={`${id}-label`}>
-      {items.length === 0 && <p className="text-xs text-muted-foreground">None.</p>}
+      {items.length === 0 && <p className="text-xs text-muted-foreground">{emptyText}</p>}
       {items.map((item, i) => (
         <div key={i} className="rounded-md border p-3">
-          <div className="mb-2 flex items-center justify-between">
-            <span className="text-xs font-medium text-muted-foreground">#{i + 1}</span>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <span className="flex min-w-0 items-center gap-1.5 text-xs font-medium text-muted-foreground">{heading(item, i)}</span>
             {!disabled && (
               <div className="flex gap-1">
-                <Button variant="ghost" size="icon-sm" aria-label="Move up" disabled={i === 0} onClick={() => move(i, -1)}>
+                <Button id={`${id}-up-${i}`} variant="ghost" size="icon-sm" aria-label="Move up" disabled={i === 0} onClick={() => move(i, -1)}>
                   <ArrowUpIcon />
                 </Button>
-                <Button variant="ghost" size="icon-sm" aria-label="Move down" disabled={i === items.length - 1} onClick={() => move(i, 1)}>
+                <Button id={`${id}-down-${i}`} variant="ghost" size="icon-sm" aria-label="Move down" disabled={i === items.length - 1} onClick={() => move(i, 1)}>
                   <ArrowDownIcon />
                 </Button>
-                <Button variant="ghost" size="icon-sm" aria-label={`Remove item ${i + 1}`} onClick={() => onChange(items.filter((_, j) => j !== i))}>
+                <Button variant="ghost" size="icon-sm" aria-label={removeLabel(i)} onClick={() => onChange(items.filter((_, j) => j !== i))}>
                   <Trash2Icon />
                 </Button>
               </div>
@@ -648,22 +713,25 @@ function ArrayControl(p: ControlProps) {
           <Field
             schema={c.schema.items}
             name=""
-            path={joinPath(p.path, i)}
+            path={joinPath(path, i)}
             value={item}
             required
-            depth={p.depth + 1}
+            depth={depth}
             onChange={(v) => onChange(items.map((x, j) => (j === i ? v : x)))}
           />
         </div>
       ))}
       {!disabled && (
         <Button
+          id={labelsAddButton ? id : undefined}
+          aria-labelledby={`${id}-add`}
           variant="outline"
           size="sm"
-          onClick={() => onChange([...items, defaultValue(c.schema.items, ctx.root) ?? {}])}
+          onClick={() => onChange([...items, defaultValue(c.schema.items, root) ?? {}])}
           disabled={c.schema.maxItems !== undefined && items.length >= c.schema.maxItems}
         >
-          <PlusIcon /> Add
+          <PlusIcon aria-hidden />
+          <span id={`${id}-add`}>{addLabel}</span>
         </Button>
       )}
     </div>

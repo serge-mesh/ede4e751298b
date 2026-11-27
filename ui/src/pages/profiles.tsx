@@ -2,7 +2,7 @@ import * as React from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import type { ColumnDef } from "@tanstack/react-table";
 import { toast } from "sonner";
-import { ArrowDownIcon, ArrowUpIcon, FlaskConicalIcon, MonitorSmartphoneIcon, PlusIcon, Trash2Icon, TriangleAlertIcon } from "lucide-react";
+import { FlaskConicalIcon, MonitorSmartphoneIcon, PlusIcon, TriangleAlertIcon } from "lucide-react";
 import { PageHeader, Section } from "@/components/common/page";
 import { EntityList } from "@/components/common/entity-list";
 import { EntityForm } from "@/components/common/entity-editor";
@@ -17,9 +17,8 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useBrowserLists, useEntities, useEntity, useModifyEntity, useSettings } from "@/api/queries";
 import { errorMessage } from "@/api/errors";
 import type { BundleDef, ListenerDef, LookupProviderDef, ProfileDef } from "@/api/types";
-import { Field, type FieldOverride } from "@/components/schema-form/schema-form";
+import { ObjectArrayItems, type FieldOverride } from "@/components/schema-form/schema-form";
 import { openapiRoot } from "@/lib/openapi";
-import { defaultValue, joinPath } from "@/lib/schema";
 import { formatCompact } from "@/lib/format";
 import { escapeControl } from "@/lib/text";
 
@@ -173,76 +172,36 @@ export function useProfileFormProps() {
         </div>
       ),
       lookup_providers: ({ c, id, path, value, onChange, disabled }) => {
-        const items = (Array.isArray(value) ? value : []) as { provider?: string; mode?: string }[];
         const byId = new Map<string, LookupProviderDef>((providers.data ?? []).map((p) => [p.id ?? "", p]));
-        const move = (i: number, d: number) => {
-          const next = [...items];
-          const [x] = next.splice(i, 1);
-          next.splice(i + d, 0, x);
-          onChange(next);
-        };
         return (
-          <div className="space-y-2" role="group" aria-labelledby={`${id}-label`}>
-            {items.length === 0 && <p className="text-xs text-muted-foreground">No lookup providers attached.</p>}
-            {items.map((item, i) => {
-              const pid = typeof item?.provider === "string" ? item.provider : "";
-              const lp = pid ? byId.get(pid) : undefined;
-              const heading = lp?.name ? `${lp.name} (${lp.id})` : pid;
+          <ObjectArrayItems
+            c={c}
+            id={id}
+            path={path}
+            items={Array.isArray(value) ? value : []}
+            onChange={onChange}
+            disabled={disabled}
+            depth={2}
+            root={openapiRoot}
+            emptyText="No lookup providers attached."
+            addLabel="Add a lookup provider"
+            labelsAddButton
+            removeLabel={(i) => `Remove lookup provider ${i + 1}`}
+            heading={(item, i) => {
+              const provider = (item as { provider?: unknown } | null)?.provider;
+              const pid = typeof provider === "string" ? provider : "";
+              if (!pid) return <span className="tabular-nums">Lookup provider #{i + 1}</span>;
+              const lp = byId.get(pid);
               return (
-                <div key={i} className="rounded-md border p-3">
-                  <div className="mb-2 flex items-center justify-between gap-2">
-                    <span className="flex min-w-0 items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                      {pid ? (
-                        <>
-                          <span className="tabular-nums">#{i + 1}</span>
-                          <span className="truncate text-foreground">
-                            <SafeText>{heading}</SafeText>
-                          </span>
-                        </>
-                      ) : (
-                        <span className="tabular-nums">Lookup provider #{i + 1}</span>
-                      )}
-                    </span>
-                    {!disabled && (
-                      <div className="flex gap-1">
-                        <Button variant="ghost" size="icon-sm" aria-label="Move up" disabled={i === 0} onClick={() => move(i, -1)}>
-                          <ArrowUpIcon />
-                        </Button>
-                        <Button variant="ghost" size="icon-sm" aria-label="Move down" disabled={i === items.length - 1} onClick={() => move(i, 1)}>
-                          <ArrowDownIcon />
-                        </Button>
-                        <Button variant="ghost" size="icon-sm" aria-label={`Remove lookup provider ${i + 1}`} onClick={() => onChange(items.filter((_, j) => j !== i))}>
-                          <Trash2Icon />
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                  <Field
-                    schema={c.schema.items}
-                    name=""
-                    path={joinPath(path, i)}
-                    value={item}
-                    required
-                    depth={2}
-                    onChange={(v) => onChange(items.map((x, j) => (j === i ? v : x)))}
-                  />
-                </div>
+                <>
+                  <span className="tabular-nums">#{i + 1}</span>
+                  <span className="truncate text-foreground">
+                    <SafeText>{lp?.name ? `${lp.name} (${lp.id})` : pid}</SafeText>
+                  </span>
+                </>
               );
-            })}
-            {!disabled && (
-              <Button
-                id={id}
-                aria-labelledby={`${id}-add`}
-                variant="outline"
-                size="sm"
-                onClick={() => onChange([...items, defaultValue(c.schema.items, openapiRoot) ?? {}])}
-                disabled={c.schema.maxItems !== undefined && items.length >= c.schema.maxItems}
-              >
-                <PlusIcon aria-hidden />
-                <span id={`${id}-add`}>Add a lookup provider</span>
-              </Button>
-            )}
-          </div>
+            }}
+          />
         );
       },
       allowed_sources: ({ renderDefault }) => (
