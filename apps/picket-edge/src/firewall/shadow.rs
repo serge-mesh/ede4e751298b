@@ -337,6 +337,16 @@ impl Shadow {
         self.grant_count
     }
 
+    /// This device's live DNS expiry for a set/destination, independent of the
+    /// address's last recorded owner and its key's accounting owner.
+    pub fn grant_exp(&self, mac: &Mac, set: SetId, dst: IpAddr, now: u64) -> Option<u64> {
+        self.grants
+            .get(mac)?
+            .get(&(set, dst))
+            .copied()
+            .filter(|exp| *exp > now)
+    }
+
     /// The live grants of device `mac`.
     pub fn grants_of(&self, mac: &Mac, now: u64) -> Vec<(SetId, IpAddr, u64)> {
         self.grants
