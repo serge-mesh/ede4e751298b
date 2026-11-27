@@ -593,6 +593,13 @@ pub struct Sanity {
     pub min_change_allowance: u64,
     pub confirm_after: DurationStr,
     pub max_parse_error_ratio: f64,
+    /// Rejects a run whose net drop of a `replace` type's entries (removed − added) is at least
+    /// this share of its previous count: a broken source that still serves a handful of entries
+    /// is never applied, however long it waits. Null turns the gate off.
+    pub reject_drop_ratio: Option<f64>,
+    /// The drop gate applies to a type only from this many previous entries, so a small list
+    /// can still lose its last few.
+    pub reject_drop_min_entries: u64,
 }
 
 impl Default for Sanity {
@@ -604,6 +611,8 @@ impl Default for Sanity {
             min_change_allowance: 100,
             confirm_after: DurationStr::hours(1),
             max_parse_error_ratio: 0.01,
+            reject_drop_ratio: Some(0.99),
+            reject_drop_min_entries: 100,
         }
     }
 }

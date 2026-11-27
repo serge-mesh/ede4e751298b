@@ -3283,7 +3283,9 @@ export interface components {
              *       "max_entries": null,
              *       "max_parse_error_ratio": 0.01,
              *       "min_change_allowance": 100,
-             *       "min_entries": 1
+             *       "min_entries": 1,
+             *       "reject_drop_min_entries": 100,
+             *       "reject_drop_ratio": 0.99
              *     }
              */
             sanity?: components["schemas"]["Sanity"];
@@ -5396,6 +5398,21 @@ export interface components {
              * @default 1
              */
             min_entries?: number | null;
+            /**
+             * Format: uint64
+             * @description The drop gate applies to a type only from this many previous entries, so a small list
+             *     can still lose its last few.
+             * @default 100
+             */
+            reject_drop_min_entries?: number;
+            /**
+             * Format: double
+             * @description Rejects a run whose net drop of a `replace` type's entries (removed − added) is at least
+             *     this share of its previous count: a broken source that still serves a handful of entries
+             *     is never applied, however long it waits. Null turns the gate off.
+             * @default 0.99
+             */
+            reject_drop_ratio?: number | null;
         };
         /** @description What a write returns: the file's version afterwards, and when it was saved. */
         SaveResult: {

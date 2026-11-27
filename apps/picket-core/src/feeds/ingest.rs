@@ -1293,12 +1293,19 @@ impl IngestJob {
         Ok(next)
     }
 
-    /// The count against the applied entries is done: within the limit → applied; else the run
-    /// holds, unless a held run is waiting and this one is within *its* limit (the held blob is
-    /// parsed again for that, `Phase::ParseHeld`).
+    /// The count against the applied entries is done: an extreme drop → rejected (never applied,
+    /// whatever `confirm_after`); within the limit → applied; else the run holds, unless a held
+    /// run is waiting and this one is within *its* limit (the held blob is parsed again for
+    /// that, `Phase::ParseHeld`).
     async fn after_count_applied(&mut self, ch: Changes) -> Result<Phase> {
         let mut run = self.run.take().context("no run")?;
         run.vs_applied = ch;
+        if let Some(reason) = gates::drop_gate(&run.params.sanity, &run.vs_applied, &run.ratio_base) {
+            self.decided(&mut run, Outcome::Rejected { gate: "drop", reason });
+            let next = self.after_gates(&run);
+            self.run = Some(run);
+            return Ok(next);
+        }
         let next = match gates::change_gate(&run.params.sanity, &run.vs_applied, &run.ratio_base) {
             None => {
                 self.decided(&mut run, Outcome::Applied);

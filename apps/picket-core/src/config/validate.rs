@@ -1997,6 +1997,15 @@ fn feed_rules(m: &Model, o: &mut Out) {
                 "ratios must be between 0 and 1".into(),
             );
         }
+        if s.reject_drop_ratio.is_some_and(|r| !ratio_ok(r) || r <= 0.0) {
+            o.err(
+                e,
+                id,
+                Some("sanity.reject_drop_ratio"),
+                "range",
+                "reject_drop_ratio must be above 0 and at most 1".into(),
+            );
+        }
         if let (Some(a), Some(b)) = (s.min_entries, s.max_entries)
             && a > b
         {
@@ -2382,6 +2391,36 @@ mod tests {
         );
         assert_eq!(registrable_domain("dns.example.co.uk").unwrap(), "example.co.uk");
         assert_eq!(registrable_domain("dns.google").unwrap(), "dns.google");
+    }
+
+    /// `sanity.reject_drop_ratio` is null (off) or in (0, 1]: 0 would reject every run.
+    #[test]
+    fn reject_drop_ratio_range() {
+        let mut m = Model::default();
+        let issues = |m: &Model| {
+            validate(m)
+                .into_iter()
+                .filter(|i| i.field.as_deref() == Some("sanity.reject_drop_ratio"))
+                .count()
+        };
+        for (v, refused) in [
+            (None, false),
+            (Some(0.99), false),
+            (Some(1.0), false),
+            (Some(0.0), true),
+            (Some(-0.5), true),
+            (Some(1.5), true),
+            (Some(f64::NAN), true),
+        ] {
+            let mut feed = FeedDef {
+                id: "f".into(),
+                name: "f".into(),
+                ..Default::default()
+            };
+            feed.sanity.reject_drop_ratio = v;
+            m.feeds.insert("f".into(), feed);
+            assert_eq!(issues(&m), usize::from(refused), "{v:?}");
+        }
     }
 
     /// `limits.max_rrset_records` is 0 (no limit) or up to picket-wire's section bound.

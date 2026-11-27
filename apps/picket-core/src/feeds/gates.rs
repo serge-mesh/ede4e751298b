@@ -4,8 +4,11 @@
 //! - `min_entries` ≤ total ≤ `max_entries` (per feed, across types).
 //! - **Change ratio** per type: `|added| + |removed| ≤ max(max_change_ratio × previous total,
 //!   min_change_allowance)`; skipped on a feed's first run; an `aggregate` type removes none.
-//! - A parse-error or entry-count failure **rejects** the run; a change-ratio failure **holds**
-//!   it. Manual feeds skip the entry-count and change-ratio gates.
+//! - **Drop** per `replace` type, where the change-ratio gate applies: a net drop (removed −
+//!   added) of at least `reject_drop_ratio` × previous total, from `reject_drop_min_entries`
+//!   previous entries; an `aggregate` type removes none, so it never trips.
+//! - A parse-error, entry-count or drop failure **rejects** the run; a change-ratio failure
+//!   **holds** it. Manual feeds skip the entry-count, drop and change-ratio gates.
 
 use super::types::{ParseSummary, TypeCounts};
 use crate::config::model::Sanity;
@@ -100,6 +103,32 @@ pub fn change_gate(s: &Sanity, changes: &Changes, prev: &TypeCounts) -> Option<S
     None
 }
 
+/// The drop gate, per type: `None` when no type lost `reject_drop_ratio` of its previous
+/// entries (net of the ones added), else which type did and by how much. Types with fewer than
+/// `reject_drop_min_entries` previous entries are skipped.
+pub fn drop_gate(s: &Sanity, changes: &Changes, prev: &TypeCounts) -> Option<String> {
+    let ratio = s.reject_drop_ratio?;
+    for t in picket_rules::RuleType::ALL {
+        let before = prev.get(t);
+        if before == 0 || before < s.reject_drop_min_entries {
+            continue;
+        }
+        let dropped = changes.removed.get(t).saturating_sub(changes.added.get(t));
+        #[allow(clippy::cast_precision_loss, reason = "a share of entry counts")]
+        let share = dropped as f64 / before as f64;
+        if share >= ratio {
+            let after = before.saturating_sub(dropped);
+            return Some(format!(
+                "{} entries down from {before} to {after} (−{:.2} %, at least {:.2} %)",
+                t.as_str(),
+                share * 100.0,
+                ratio * 100.0
+            ));
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,5 +213,47 @@ mod tests {
         let mut c = Changes::default();
         c.added.ip = 1;
         assert!(change_gate(&s0, &c, &TypeCounts::default()).is_some());
+    }
+
+    #[test]
+    fn extreme_drop() {
+        let s = Sanity::default(); // 99 %, from 100 previous entries
+        let prev = TypeCounts {
+            dns: 1_000_000,
+            ip: 99,
+            browser: 0,
+        };
+        let mut c = Changes::default();
+        c.removed.dns = 989_999;
+        assert_eq!(drop_gate(&s, &c, &prev), None, "98.9999 % passes");
+        c.removed.dns = 990_000;
+        let reason = drop_gate(&s, &c, &prev).unwrap();
+        assert!(reason.contains("dns") && reason.contains("to 10000"), "{reason}");
+        // The drop is net: a source that replaces its entries isn't dropping them.
+        c.added.dns = 500_000;
+        assert_eq!(drop_gate(&s, &c, &prev), None);
+        // Below reject_drop_min_entries a type may lose everything.
+        let mut c = Changes::default();
+        c.removed.ip = 99;
+        assert_eq!(drop_gate(&s, &c, &prev), None);
+        let prev100 = TypeCounts {
+            ip: 100,
+            ..TypeCounts::default()
+        };
+        c.removed.ip = 99;
+        assert!(drop_gate(&s, &c, &prev100).unwrap().contains("ip"));
+        // Null turns it off.
+        let off = Sanity {
+            reject_drop_ratio: None,
+            ..Sanity::default()
+        };
+        c.removed.ip = 100;
+        assert_eq!(drop_gate(&off, &c, &prev100), None);
+        // Saved sanity without the new fields gets the defaults.
+        let saved: Sanity = serde_json::from_str(r#"{"max_change_ratio":0.2}"#).unwrap();
+        assert_eq!(
+            (saved.reject_drop_ratio, saved.reject_drop_min_entries),
+            (Some(0.99), 100)
+        );
     }
 }

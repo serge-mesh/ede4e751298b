@@ -250,6 +250,61 @@ async fn held_run_confirmed_after_confirm_after() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_extreme_drop_is_rejected_not_held() {
+    let (srv, body) = list_server().await;
+    let c = core_with(Some(&srv), None).await;
+    *body.lock().unwrap() = names("a", 200);
+    let def = json!({"id": "drop", "name": "Drop", "provider": "http", "provider_config": {"url": format!("https://{HOST}/d.txt")},
+                     "format": "plain"});
+    create_feed(&c, def.clone()).await;
+    wait_until("the first run", || async {
+        runs(&c, "drop").await >= 1 && !c.state.feeds.is_busy("drop")
+    })
+    .await;
+    assert_eq!(newest_run(&c, "drop").await["status"], "applied");
+
+    // 200 → 1 (99.5 %): rejected, never held for confirm_after; the applied set stays.
+    *body.lock().unwrap() = names("a", 1);
+    check_now(&c, "drop").await;
+    let r = newest_run(&c, "drop").await;
+    assert_eq!(
+        (r["status"].as_str(), r["gate"].as_str()),
+        (Some("rejected"), Some("drop")),
+        "{r}"
+    );
+    assert_eq!(open_keys(&c, "drop").await.len(), 200);
+    assert_eq!(alert_state(&c, "feed_held:drop").await.as_deref(), Some("open"));
+    assert!(get_json(&c, "/feeds/drop/status").await["held_run"].is_null());
+
+    // Turning the gate off judges the rejected run again: the change-ratio gate holds it.
+    let mut off = def.clone();
+    off["sanity"] = json!({"reject_drop_ratio": null});
+    update_feed(&c, "drop", off).await;
+    wait_until("the re-gate", || async {
+        newest_run(&c, "drop").await["status"] == "held"
+    })
+    .await;
+    assert_eq!(newest_run(&c, "drop").await["gate"], "change_ratio");
+    assert_eq!(open_keys(&c, "drop").await.len(), 200);
+
+    // With the gate back on, the source recovering is applied and resolves feed_held.
+    update_feed(&c, "drop", def).await;
+    wait_until("the re-gate", || async {
+        newest_run(&c, "drop").await["status"] == "rejected" && !c.state.feeds.is_busy("drop")
+    })
+    .await;
+    *body.lock().unwrap() = format!("{}{}", names("a", 195), names("c", 5));
+    check_now(&c, "drop").await;
+    let r = newest_run(&c, "drop").await;
+    assert_eq!(r["status"], "applied", "{r}");
+    assert_eq!(open_keys(&c, "drop").await.len(), 200);
+    assert_eq!(
+        alert_state(&c, "feed_held:drop").await.as_deref(),
+        Some("resolved")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn reject_gates_parse_errors_and_entry_counts() {
     let (srv, body) = list_server().await;
     let c = core_with(Some(&srv), None).await;
