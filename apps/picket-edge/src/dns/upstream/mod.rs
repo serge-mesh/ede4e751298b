@@ -13,8 +13,12 @@
 //!   carrying EDE 3 is a failure only for a caller that must not get stale data (a client that set
 //!   DO, edge.md §7 step 3), and doesn't count against health.
 //! - **Health** is passive (README §2 "Health": only timeouts, transport errors and malformed
-//!   answers count) plus a breaker per upstream. A group whose upstreams are all unhealthy for 30 s
-//!   holds `upstream_down` (key: the group). An upstream is healthy while its breaker is closed:
+//!   answers count) plus a breaker per upstream. An answer refused for its size alone
+//!   ([`Invalid::is_size_limit`]: too many records in a section, an RRset over
+//!   `limits.max_rrset_records`) fails the attempt but shows the upstream answering, so it counts
+//!   as a success for the breaker: one large domain can't take a single-upstream group down. A
+//!   group whose upstreams are all unhealthy for 30 s holds `upstream_down` (key: the group). An
+//!   upstream is healthy while its breaker is closed:
 //!   a half-open one takes a query as its probe but counts as unhealthy until that probe
 //!   succeeds, so a dead group no query reaches still holds `upstream_down` (a reading of
 //!   edge.md §6, flagged for the owner).
@@ -371,6 +375,8 @@ pub struct UpstreamPool {
     pub budget: Duration,
     /// How long a group stays all-unhealthy before `upstream_down` (30 s; tests shorten it).
     pub down_after: Duration,
+    /// `limits.max_rrset_records` from the config (0: no per-RRset limit).
+    max_rrset: AtomicU32,
 }
 
 impl UpstreamPool {
@@ -386,7 +392,18 @@ impl UpstreamPool {
             attempt_timeout: ATTEMPT_TIMEOUT,
             budget: RESOLVE_BUDGET,
             down_after: DOWN_AFTER,
+            max_rrset: AtomicU32::new(picket_api::edge_config::Limits::default().max_rrset_records),
         })
+    }
+
+    /// The answer limits for upstream answers: the configured per-RRset limit.
+    fn answer_limits(&self) -> AnswerLimits {
+        let max = self.max_rrset.load(Relaxed);
+        AnswerLimits {
+            // Past u16 is past the section bound anyway.
+            max_rrset: (max != 0).then(|| u16::try_from(max).unwrap_or(u16::MAX)),
+            ..AnswerLimits::default()
+        }
     }
 
     /// Applies a config: unchanged upstreams keep their actor. Returns warnings for items it
@@ -394,6 +411,7 @@ impl UpstreamPool {
     /// naming an unknown one).
     pub fn configure(&self, cfg: &EdgeConfig) -> Vec<String> {
         let mut warnings = vec![];
+        self.max_rrset.store(cfg.limits.max_rrset_records, Relaxed);
         let old = self.upstreams.load_full();
         let mut next: HashMap<String, Arc<Upstream>> = HashMap::new();
         for (id, u) in cfg.upstreams.iter().take(MAX_UPSTREAMS) {
@@ -646,7 +664,7 @@ impl UpstreamPool {
             qtype: req.qtype,
             qclass: req.qclass,
         };
-        match picket_wire::check_answer(&raw, &sent, &AnswerLimits::default()) {
+        match picket_wire::check_answer(&raw, &sent, &self.answer_limits()) {
             Ok(a) => {
                 for (reason, n) in a.removed.labelled() {
                     if n > 0 {
@@ -669,7 +687,12 @@ impl UpstreamPool {
             }
             Err(inv) => {
                 u.counters.invalid.get(inv.reason()).fetch_add(1, Relaxed);
-                u.breaker.failure(Instant::now());
+                if inv.is_size_limit() {
+                    // Well-formed DNS over a size limit: the upstream works (issue #16).
+                    u.breaker.success();
+                } else {
+                    u.breaker.failure(Instant::now());
+                }
                 Attempt::Fail(u, Cause::Invalid)
             }
         }
@@ -835,6 +858,106 @@ mod tests {
             "{p90:?}"
         );
         assert!(s.p99().unwrap() >= p90);
+    }
+
+    /// A fake UDP upstream on loopback answering every query with `answers` A records at the
+    /// question name and a header that claims `claimed` answers (more than are there to fake a
+    /// header over the section bound).
+    async fn fake_upstream(answers: u16, claimed: u16) -> u16 {
+        let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = sock.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            loop {
+                let Ok((n, from)) = sock.recv_from(&mut buf).await else {
+                    return;
+                };
+                let q = &buf[..n];
+                // The question ends at its name's root label plus type and class.
+                let name_end = 12 + q[12..].iter().position(|b| *b == 0).unwrap() + 1;
+                let mut a = Vec::new();
+                a.extend_from_slice(&q[..2]);
+                a.extend_from_slice(&[0x81, 0x80, 0, 1]);
+                a.extend_from_slice(&claimed.to_be_bytes());
+                a.extend_from_slice(&[0, 0, 0, 0]);
+                a.extend_from_slice(&q[12..name_end + 4]);
+                for i in 0..answers {
+                    let [hi, lo] = i.to_be_bytes();
+                    a.extend_from_slice(&[0xC0, 0x0C, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 10, 0, hi, lo]);
+                }
+                let _ = sock.send_to(&a, from).await;
+            }
+        });
+        port
+    }
+
+    fn pool_for(port: u16, max_rrset_records: u32) -> (Arc<UpstreamPool>, Arc<Upstream>) {
+        let (logs, _rx) = crate::logs::LogProducer::new("b".into(), Arc::default());
+        let pool = UpstreamPool::new(Metrics::new(), Conditions::new(logs));
+        let cfg: EdgeConfig = serde_json::from_value(serde_json::json!({
+            "edge": {"id": "e-01", "name": "test-edge", "platform": "debian"},
+            "listeners": [],
+            "upstreams": {"u": {"protocol": "udp", "ip": "127.0.0.1", "port": port}},
+            "upstream_groups": {"g": {"upstreams": ["u"], "strategy": "failover"}},
+            "limits": {"max_rrset_records": max_rrset_records},
+        }))
+        .unwrap();
+        assert!(pool.configure(&cfg).is_empty());
+        let u = Arc::clone(&pool.upstreams.load()["u"]);
+        (pool, u)
+    }
+
+    fn request() -> ResolveRequest {
+        ResolveRequest {
+            group: "g".into(),
+            qname: WireName::from_text("big.example").unwrap(),
+            qtype: 1,
+            qclass: 1,
+            do_up: false,
+            cd: false,
+            exclude: None,
+            reject_stale: false,
+        }
+    }
+
+    /// Issue #16: an answer refused for its size alone fails the query (SERVFAIL, `cause=invalid`)
+    /// and is counted by reason, but never opens the breaker: the upstream answered.
+    #[tokio::test]
+    async fn size_refusals_fail_the_query_but_not_the_upstream() {
+        assert_eq!(
+            picket_api::edge_config::Limits::default().max_rrset_records,
+            u32::from(picket_wire::answer::DEFAULT_MAX_RRSET),
+            "the config default is picket-wire's"
+        );
+        // Over the section bound, from the header alone.
+        let (pool, u) = pool_for(fake_upstream(0, 1025).await, 256);
+        for _ in 0..BREAKER_FAILURES * 2 {
+            let e = pool.resolve(&request()).await.err().unwrap();
+            assert_eq!(e.cause, Cause::Invalid);
+        }
+        assert!(u.healthy(), "the breaker stays closed");
+        assert_eq!(
+            u.counters.invalid.get("too_many_records").load(Relaxed),
+            u64::from(BREAKER_FAILURES * 2)
+        );
+
+        // Over the configured RRset limit; the same answer passes a higher one, and 0 is no limit.
+        let port = fake_upstream(3, 3).await;
+        let (pool, u) = pool_for(port, 2);
+        for _ in 0..BREAKER_FAILURES * 2 {
+            let e = pool.resolve(&request()).await.err().unwrap();
+            assert_eq!(e.cause, Cause::Invalid);
+        }
+        assert!(u.healthy(), "the breaker stays closed");
+        assert_eq!(
+            u.counters.invalid.get("rrset_too_large").load(Relaxed),
+            u64::from(BREAKER_FAILURES * 2)
+        );
+        for limit in [3, 0] {
+            let (pool, _) = pool_for(port, limit);
+            let ok = pool.resolve(&request()).await.ok().unwrap();
+            assert_eq!(ok.answer.facts.addrs.len(), 3, "limit {limit}");
+        }
     }
 
     /// edge.md §6 Health: an open breaker whose time is up takes one probe but stays unhealthy

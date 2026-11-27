@@ -775,6 +775,11 @@ impl Default for LoggingConfig {
 pub struct Limits {
     pub client_qps: u32,
     pub client_inflight: u32,
+    /// The most records one RRset (name, type, class) the edge keeps from an upstream answer may
+    /// hold; an answer over it is refused (`rrset_too_large`, SERVFAIL to the client). 0 = no
+    /// limit beyond picket-wire's 1,024 records per section. Default 256, above BIND's 100,
+    /// which real domains pass.
+    pub max_rrset_records: u32,
 }
 
 impl Default for Limits {
@@ -782,6 +787,7 @@ impl Default for Limits {
         Self {
             client_qps: 100,
             client_inflight: 64,
+            max_rrset_records: 256,
         }
     }
 }

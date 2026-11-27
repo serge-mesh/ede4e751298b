@@ -2,9 +2,10 @@
 //! picket-lookup's `dns` module (providers.md §5) and by core to rebuild a reply (core.md §6).
 //!
 //! 1. **Structure.** Before the body is decoded: the message is within the size cap and its
-//!    header counts at most 64 records per section; it is a QUERY response with one question and
-//!    the ID that was sent. hickory then decodes the body (label and name lengths, backward
-//!    non-overlapping pointers, RDLENGTH within the message, the formats of the types it knows).
+//!    header counts at most [`MAX_SECTION_RECORDS`] records per section; it is a QUERY response
+//!    with one question and the ID that was sent. hickory then decodes the body (label and name
+//!    lengths, backward non-overlapping pointers, RDLENGTH within the message, the formats of
+//!    the types it knows).
 //!    The question matches what was sent; nothing trails; at most one OPT, in the additional
 //!    section; at most 8 CNAME/DNAME hops. Where hickory reads data outside its type's format, the
 //!    record makes the answer invalid in any section, kept or not: empty data for a type that
@@ -20,11 +21,15 @@
 //!    negative caching (judged against the chain's terminal name) and the NSEC/NSEC3 proofs. An
 //!    RRSIG stays when it covers an RRset the scrub keeps in its section; a question for RRSIG
 //!    keeps the answer's RRSIGs. An ambiguous chain (two CNAME targets at one owner, a DNAME whose
-//!    synthesised CNAME conflicts with the CNAME present) is invalid.
+//!    synthesised CNAME conflicts with the CNAME present) is invalid. With
+//!    [`AnswerLimits::max_rrset`] set, a kept answer RRset over it makes the answer invalid
+//!    (`rrset_too_large`); records the scrub drops never count toward it.
 //! 3. **Encode.** hickory encodes the kept records, so compression pointers point only at names it
 //!    wrote, never at record data such as a TTL (edge.md §8). The DO=0 copy is encoded separately
 //!    from its own record list when there is something to strip.
 
+use std::collections::HashMap;
+use std::hash::{BuildHasher, RandomState};
 use std::net::{IpAddr, Ipv4Addr};
 use std::ops::Range;
 
@@ -43,8 +48,21 @@ use crate::reply::normalize_ttl;
 use crate::types::{class, ede_code, edns_code, is_meta_type, may_hold_compressed_names, rcode, rtype};
 use crate::wire::{TtlSlot, walk_ttls};
 
-/// The most records per section an upstream answer may claim in its header (edge.md §7).
-pub const MAX_SECTION_RECORDS: u16 = 64;
+/// The most records per section an upstream answer may claim in its header (edge.md §7). A
+/// safety bound on the work one answer can cause, not a judgement of what is normal: a 65,535-byte
+/// TCP answer holds about 4,000 address records, and real answers (large TXT sets, address pools)
+/// pass 64. What a kept RRset may hold is [`AnswerLimits::max_rrset`]'s job.
+pub const MAX_SECTION_RECORDS: u16 = 1024;
+/// The default [`AnswerLimits::max_rrset`] the edge applies to upstream answers: above BIND's 100
+/// (`max-records-per-type`), which real domains are known to pass.
+pub const DEFAULT_MAX_RRSET: u16 = 256;
+/// Below this many decoded records, exact duplicates are found by a linear scan, which allocates
+/// nothing; from it on, by a hash index, so a large answer costs linear time rather than quadratic.
+const LINEAR_SCAN_MAX: usize = 32;
+/// The most distinct RRSIG signers of the answer section that anchor NSEC/NSEC3 proofs in the
+/// authority section when no SOA does: a real answer has one per zone of its chain, at most
+/// [`MAX_CNAME_HOPS`] + 1; the bound keeps the proof check linear in the authority section.
+const MAX_SIGNER_ANCHORS: usize = 16;
 /// The most CNAME/DNAME hops in a chain (edge.md §7).
 pub const MAX_CNAME_HOPS: usize = 8;
 /// The most EDE options kept in an answer's facts. More is well-formed (README "Health"): the
@@ -52,17 +70,26 @@ pub const MAX_CNAME_HOPS: usize = 8;
 /// scanned for EDE 3.
 pub const MAX_EDE: usize = 8;
 
-/// The answer size cap.
+/// The answer size caps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AnswerLimits {
     /// The largest message accepted (default: the 65,535-byte DNS maximum; the edge may pass
     /// its transport's receive limit).
     pub max_len: usize,
+    /// The most records one kept answer RRset (owner, type, class) may hold, counted after
+    /// duplicates are removed; `None` (the default) for no limit beyond
+    /// [`MAX_SECTION_RECORDS`]. The edge sets it for upstream answers (`limits.max_rrset_records`,
+    /// default [`DEFAULT_MAX_RRSET`]); re-checks of answers already accepted (cache restores,
+    /// core's replays) and lookups leave it unset.
+    pub max_rrset: Option<u16>,
 }
 
 impl Default for AnswerLimits {
     fn default() -> Self {
-        Self { max_len: MAX_MESSAGE }
+        Self {
+            max_len: MAX_MESSAGE,
+            max_rrset: None,
+        }
     }
 }
 
@@ -88,7 +115,7 @@ pub enum Invalid {
     NotResponse,
     #[error("opcode is not QUERY")]
     Opcode,
-    #[error("more than 64 records in a section")]
+    #[error("more than 1024 records in a section")]
     TooManyRecords,
     #[error("QDCOUNT is not 1")]
     QuestionCount,
@@ -122,11 +149,13 @@ pub enum Invalid {
     BadSvcb,
     #[error("encoding the scrubbed answer failed")]
     Encode,
+    #[error("a kept answer RRset over the record limit")]
+    RrsetTooLarge,
 }
 
 impl Invalid {
     /// Every reason, so counters can be registered up front.
-    pub const ALL: [Invalid; 21] = [
+    pub const ALL: [Invalid; 22] = [
         Self::TooLarge,
         Self::ShortHeader,
         Self::NotResponse,
@@ -148,6 +177,7 @@ impl Invalid {
         Self::OpaqueCompressible,
         Self::BadSvcb,
         Self::Encode,
+        Self::RrsetTooLarge,
     ];
 
     /// A stable reason name for counters (`invalid` per reason and upstream, edge.md §7).
@@ -174,7 +204,15 @@ impl Invalid {
             Self::OpaqueCompressible => "opaque_compressible",
             Self::BadSvcb => "bad_svcb",
             Self::Encode => "encode",
+            Self::RrsetTooLarge => "rrset_too_large",
         }
+    }
+
+    /// True when the answer was refused for its size alone ([`Self::TooManyRecords`],
+    /// [`Self::RrsetTooLarge`]): the upstream answered well-formed DNS, so this says nothing about
+    /// its health and doesn't count against its breaker (edge.md §6).
+    pub fn is_size_limit(&self) -> bool {
+        matches!(self, Self::TooManyRecords | Self::RrsetTooLarge)
     }
 }
 
@@ -426,7 +464,7 @@ pub fn check_answer(
     })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Section {
     Answer,
     Authority,
@@ -439,6 +477,51 @@ struct Rec {
     rtype: u16,
     class: u16,
     rec: Record,
+}
+
+/// What makes two records exact duplicates: section, type, class, owner and data.
+type RecKey<'a> = (Section, u16, u16, &'a WireName, &'a RData);
+
+impl Rec {
+    fn key(&self) -> RecKey<'_> {
+        (self.section, self.rtype, self.class, &self.owner, &self.rec.data)
+    }
+}
+
+/// Finds exact duplicates among the decoded records: a linear scan below [`LINEAR_SCAN_MAX`]
+/// records (no allocation, the common case), then a hash index (randomly keyed, so an upstream
+/// can't aim collisions at it) from each record's hash to the first record with that hash.
+#[derive(Default)]
+struct DupIndex {
+    index: Option<(RandomState, HashMap<u64, usize>)>,
+}
+
+impl DupIndex {
+    /// True when `cand` duplicates a record in `recs`. When it doesn't, the caller pushes it next
+    /// (it is indexed at `recs.len()`).
+    fn is_dup(&mut self, recs: &[Rec], cand: RecKey<'_>) -> bool {
+        if self.index.is_none() && recs.len() < LINEAR_SCAN_MAX {
+            return recs.iter().any(|p| p.key() == cand);
+        }
+        let (state, map) = self.index.get_or_insert_with(|| {
+            let state = RandomState::new();
+            let mut map = HashMap::with_capacity(recs.len().saturating_mul(2));
+            for (i, p) in recs.iter().enumerate() {
+                map.entry(state.hash_one(p.key())).or_insert(i);
+            }
+            (state, map)
+        });
+        let h = state.hash_one(cand);
+        match map.get(&h) {
+            Some(&i) if recs.get(i).is_some_and(|p| p.key() == cand) => true,
+            // A 64-bit collision with a different record: the scan settles it.
+            Some(_) => recs.iter().any(|p| p.key() == cand),
+            None => {
+                map.insert(h, recs.len());
+                false
+            }
+        }
+    }
 }
 
 /// A link of the chain: the name, and how it was reached.
@@ -528,11 +611,15 @@ pub(crate) fn analyze(msg: &[u8], sent: &SentQuery<'_>, limits: &AnswerLimits) -
     let question_len =
         u16::try_from(qwire.wire().len().saturating_add(4)).map_err(|_| Invalid::Undecodable)?;
 
+    // The header's counts are unchecked claims: room for more than a few is made as records
+    // decode, so a lying header can't make this allocate for records that aren't there.
     let mut recs: Vec<Rec> = Vec::with_capacity(
         usize::from(counts.answers)
             .saturating_add(usize::from(counts.authorities))
-            .saturating_add(usize::from(counts.additionals)),
+            .saturating_add(usize::from(counts.additionals))
+            .min(LINEAR_SCAN_MAX),
     );
+    let mut dups = DupIndex::default();
     let mut opt: Option<OptRecord> = None;
     let mut removed = ScrubCounts::default();
     for (section, count) in [
@@ -555,14 +642,7 @@ pub(crate) fn analyze(msg: &[u8], sent: &SentQuery<'_>, limits: &AnswerLimits) -
                     let owner = WireName::from_hickory(&r.rec.name).map_err(|_| Invalid::Undecodable)?;
                     let mut rec = r.rec;
                     rec.name = rec.name.to_lowercase();
-                    let dup = recs.iter().any(|p| {
-                        p.section == section
-                            && p.rtype == r.rtype
-                            && p.class == r.class
-                            && p.owner == owner
-                            && p.rec.data == rec.data
-                    });
-                    if dup {
+                    if dups.is_dup(&recs, (section, r.rtype, r.class, &owner, &rec.data)) {
                         removed.duplicate = removed.duplicate.saturating_add(1);
                         continue;
                     }
@@ -675,7 +755,10 @@ pub(crate) fn analyze(msg: &[u8], sent: &SentQuery<'_>, limits: &AnswerLimits) -
         let asked = (qtype == rtype::RRSIG || qtype == rtype::ANY) && in_chain(&r.owner);
         if covers || asked {
             mark(&mut keep_answer, i);
-            if let Ok(s) = WireName::from_hickory(&signer) {
+            if let Ok(s) = WireName::from_hickory(&signer)
+                && answer_signers.len() < MAX_SIGNER_ANCHORS
+                && !answer_signers.contains(&s)
+            {
                 answer_signers.push(s);
             }
         } else if in_chain(&r.owner) {
@@ -683,6 +766,10 @@ pub(crate) fn analyze(msg: &[u8], sent: &SentQuery<'_>, limits: &AnswerLimits) -
         } else {
             removed.out_of_bailiwick = removed.out_of_bailiwick.saturating_add(1);
         }
+    }
+
+    if let Some(max) = limits.max_rrset.filter(|m| *m > 0) {
+        check_rrset_sizes(&answer, &keep_answer, max)?;
     }
 
     // Negative or positive, judged at the chain's terminal name.
@@ -860,6 +947,25 @@ fn mark(keep: &mut [bool], i: usize) {
 
 fn count_dropped(keep: &[bool]) -> u16 {
     u16::try_from(keep.iter().filter(|k| !**k).count()).unwrap_or(u16::MAX)
+}
+
+/// [`Invalid::RrsetTooLarge`] when a kept answer RRset (owner, type, class) holds more than `max`
+/// records. Nothing is counted (or allocated) unless the kept records together pass `max`.
+fn check_rrset_sizes(answer: &[&Rec], keep: &[bool], max: u16) -> Result<(), Invalid> {
+    let max = usize::from(max);
+    let kept = || answer.iter().zip(keep).filter(|(_, k)| **k).map(|(r, _)| *r);
+    if kept().count() <= max {
+        return Ok(());
+    }
+    let mut sizes: HashMap<(&WireName, u16, u16), usize> = HashMap::new();
+    for r in kept() {
+        let n = sizes.entry((&r.owner, r.rtype, r.class)).or_insert(0);
+        *n = n.saturating_add(1);
+        if *n > max {
+            return Err(Invalid::RrsetTooLarge);
+        }
+    }
+    Ok(())
 }
 
 /// An RRSIG's covered type and signer name.
