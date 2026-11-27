@@ -83,6 +83,8 @@ Valgrind budget, release, signing, image-rebuild and firmware-canary pipelines a
 here yet.
 
 CodeQL scans affected languages on PRs, and all three languages on `main`, weekly and manual runs.
+SonarQube Cloud findings (vulnerabilities, bugs, and code smells) are synced into GitHub Code
+Scanning via `.github/workflows/sonar-sarif.yml`.
 Dependency review rejects newly introduced high/critical vulnerabilities on PRs. Dependabot
 checks for version updates daily at staggered times for Cargo (including fuzz workspaces), npm,
 Actions and the Docker base image, with at most two open version-update PRs per ecosystem.
