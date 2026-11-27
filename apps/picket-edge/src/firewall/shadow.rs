@@ -92,8 +92,12 @@ impl FwKey {
 pub struct Entry {
     /// Expiry from DNS answers (seconds, monotonic).
     pub dns_exp: u64,
+    /// DNS authorization's device, independent of share accounting; None until first discovery.
+    pub dns_owner: Option<u64>,
     /// Expiry from a temporary IP allow (0: none).
     pub allow_exp: u64,
+    /// The device that granted the allow, independent of the key's share accounting.
+    pub allow_owner: Option<u64>,
     /// The client whose share the key counts against.
     pub owner: u64,
     /// When the edge last changed it (the reconcile ignores keys changed after its dump began);
@@ -127,6 +131,9 @@ pub struct Shadow {
     /// §2 "Share per client").
     pending: HashMap<(u64, SetId), u32>,
     pending_fill: [u32; 4],
+    /// The map's pair keys per source address, so a neighbour change visits only that
+    /// address's keys instead of scanning the whole map under the lock.
+    by_src: HashMap<IpAddr, std::collections::HashSet<FwKey>>,
 }
 
 /// Most devices whose grants are tracked (README §2 Bounded).
@@ -161,6 +168,33 @@ impl Shadow {
         self.share.get(&(owner, s)).copied().unwrap_or(0)
     }
 
+    /// The map's keys whose source is `src` (any expiry).
+    pub fn keys_from(&self, src: &IpAddr) -> impl Iterator<Item = FwKey> + '_ {
+        self.by_src.get(src).into_iter().flatten().copied()
+    }
+
+    /// Recharges an existing key without allocating another set slot.
+    pub fn transfer_owner(&mut self, k: &FwKey, owner: u64) -> bool {
+        let Some(old) = self.map.get(k).map(|e| e.owner) else {
+            return false;
+        };
+        if old == owner {
+            return true;
+        }
+        let charged = self
+            .share_of(owner, k.set)
+            .saturating_add(self.pending.get(&(owner, k.set)).copied().unwrap_or(0));
+        if charged >= super::SHARE {
+            return false;
+        }
+        self.dec_share(old, k.set);
+        *self.share.entry((owner, k.set)).or_default() += 1;
+        if let Some(e) = self.map.get_mut(k) {
+            e.owner = owner;
+        }
+        true
+    }
+
     /// Whether `owner` may add `n` keys to `set`: within its share and the set's `maxelem`,
     /// counting the keys still waiting for their ack (edge-firewall.md §2).
     pub fn room(&self, owner: u64, set: SetId, n: u32) -> bool {
@@ -169,6 +203,15 @@ impl Shadow {
             .saturating_add(self.pending.get(&(owner, set)).copied().unwrap_or(0));
         let fill = self.fill(set).saturating_add(self.pending_fill[set.index()]);
         share.saturating_add(n) <= super::SHARE && fill.saturating_add(n) <= sets::MAXELEM
+    }
+
+    /// Whether `owner`'s share has room for `n` more keys that already hold set slots (a charge
+    /// moving to it, which doesn't change the set's fill).
+    pub fn share_room(&self, owner: u64, set: SetId, n: u32) -> bool {
+        self.share_of(owner, set)
+            .saturating_add(self.pending.get(&(owner, set)).copied().unwrap_or(0))
+            .saturating_add(n)
+            <= super::SHARE
     }
 
     /// Counts a key whose `ensure` is going out against `owner`'s share and the set's room.
@@ -196,15 +239,46 @@ impl Shadow {
     /// Inserts or updates `k`. Returns true when it was new (absent or expired). An expired
     /// entry taken up again is confirmed (the caller sends or has sent its `ensure`).
     pub fn upsert(&mut self, k: FwKey, dns_exp: u64, allow_exp: Option<u64>, owner: u64, now: u64) -> bool {
+        self.upsert_owned(k, dns_exp, allow_exp, owner, Some(owner), now)
+    }
+
+    pub fn upsert_dns(
+        &mut self,
+        k: FwKey,
+        dns_exp: u64,
+        owner: u64,
+        dns_owner: Option<u64>,
+        now: u64,
+    ) -> bool {
+        self.upsert_owned(k, dns_exp, None, owner, dns_owner, now)
+    }
+
+    fn upsert_owned(
+        &mut self,
+        k: FwKey,
+        dns_exp: u64,
+        allow_exp: Option<u64>,
+        owner: u64,
+        dns_owner: Option<u64>,
+        now: u64,
+    ) -> bool {
         match self.map.get_mut(&k) {
             Some(e) => {
                 let was_live = e.exp() > now;
                 if !was_live {
                     e.unconfirmed = false;
                 }
-                e.dns_exp = e.dns_exp.max(dns_exp);
+                if dns_exp > 0 {
+                    e.dns_exp = if e.dns_owner == dns_owner {
+                        e.dns_exp.max(dns_exp)
+                    } else {
+                        dns_exp
+                    };
+                    e.dns_owner = dns_owner;
+                }
                 if let Some(a) = allow_exp {
                     e.allow_exp = a;
+                    e.allow_owner = (a > 0).then_some(owner);
                 }
                 e.changed = stamp(now);
                 let prev_owner = e.owner;
@@ -220,7 +294,9 @@ impl Shadow {
                     k,
                     Entry {
                         dns_exp,
+                        dns_owner: dns_owner.filter(|_| dns_exp > 0),
                         allow_exp: allow_exp.unwrap_or(0),
+                        allow_owner: allow_exp.filter(|a| *a > 0).map(|_| owner),
                         owner,
                         changed: stamp(now),
                         unconfirmed: false,
@@ -228,16 +304,29 @@ impl Shadow {
                 );
                 self.fill[k.set.index()] += 1;
                 *self.share.entry((owner, k.set)).or_default() += 1;
+                if let Some(src) = k.src {
+                    self.by_src.entry(src).or_default().insert(k);
+                }
                 true
             }
         }
     }
 
     /// Sets a key's expiries outright (the reconcile and allow changes).
-    pub fn set_exps(&mut self, k: &FwKey, dns_exp: u64, allow_exp: u64, now: u64) {
+    pub fn set_exps(
+        &mut self,
+        k: &FwKey,
+        dns_exp: u64,
+        dns_owner: Option<u64>,
+        allow_exp: u64,
+        allow_owner: Option<u64>,
+        now: u64,
+    ) {
         if let Some(e) = self.map.get_mut(k) {
             e.dns_exp = dns_exp;
+            e.dns_owner = dns_owner.filter(|_| dns_exp > 0);
             e.allow_exp = allow_exp;
+            e.allow_owner = allow_owner.filter(|_| allow_exp > 0);
             e.changed = stamp(now);
         }
     }
@@ -276,6 +365,14 @@ impl Shadow {
     /// Removes `k`.
     pub fn remove(&mut self, k: &FwKey) -> Option<Entry> {
         let e = self.map.remove(k)?;
+        if let Some(src) = k.src
+            && let Some(keys) = self.by_src.get_mut(&src)
+        {
+            keys.remove(k);
+            if keys.is_empty() {
+                self.by_src.remove(&src);
+            }
+        }
         self.fill[k.set.index()] = self.fill[k.set.index()].saturating_sub(1);
         self.dec_share(e.owner, k.set);
         Some(e)
@@ -332,6 +429,27 @@ impl Shadow {
         self.grant_count
     }
 
+    /// This device's live DNS expiry for a set/destination, independent of the
+    /// address's last recorded owner and its key's accounting owner.
+    pub fn grant_exp(&self, mac: &Mac, set: SetId, dst: IpAddr, now: u64) -> Option<u64> {
+        self.grants
+            .get(mac)?
+            .get(&(set, dst))
+            .copied()
+            .filter(|exp| *exp > now)
+    }
+
+    /// Existing admitted DNS access remains valid for its device even if the bounded
+    /// backfill table rejected it. Unidentified entries can be adopted on first discovery.
+    pub fn dns_exp_for(&self, k: &FwKey, mac: &Mac, now: u64, adopt: bool) -> u64 {
+        let owner = owner_of_mac(mac);
+        let retained = self
+            .get(k)
+            .filter(|e| e.dns_owner == Some(owner) || (e.dns_owner.is_none() && adopt))
+            .map_or(0, |e| e.dns_exp);
+        retained.max(self.grant_exp(mac, k.set, k.dst, now).unwrap_or(0))
+    }
+
     /// The live grants of device `mac`.
     pub fn grants_of(&self, mac: &Mac, now: u64) -> Vec<(SetId, IpAddr, u64)> {
         self.grants
@@ -363,9 +481,46 @@ pub fn owner_of(text: &str) -> u64 {
     h.finish()
 }
 
+/// [`owner_of`] for a MAC's text, written on the stack: the firewall checks owners per key on
+/// the query path, which must not allocate (build-and-test.md §4).
+pub fn owner_of_mac(mac: &Mac) -> u64 {
+    crate::dns::profiles::DeviceKey::Mac(*mac).with_text(owner_of)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keys_are_indexed_by_source_until_removed() {
+        let mut s = Shadow::default();
+        let src: IpAddr = "192.168.1.5".parse().unwrap();
+        let pair = |dst: &str| FwKey {
+            set: SetId::P4,
+            src: Some(src),
+            dst: dst.parse().unwrap(),
+        };
+        let (a, b) = (pair("1.1.1.1"), pair("2.2.2.2"));
+        s.upsert(a, 10, None, 1, 0);
+        s.upsert(b, 20, None, 1, 0);
+        s.upsert(k("3.3.3.3"), 30, None, 1, 0);
+        let mut keys: Vec<FwKey> = s.keys_from(&src).collect();
+        keys.sort();
+        assert_eq!(keys, [a, b]);
+        s.remove(&a);
+        assert_eq!(s.keys_from(&src).collect::<Vec<_>>(), [b]);
+        s.prune(25);
+        assert_eq!(s.keys_from(&src).count(), 0);
+        assert_eq!(s.by_src.len(), 1, "only the other source's key is left");
+        s.prune(35);
+        assert!(s.by_src.is_empty());
+    }
+
+    #[test]
+    fn mac_owner_matches_the_formatted_text() {
+        let m = [0xaa, 0x0b, 0, 0xff, 1, 2];
+        assert_eq!(owner_of_mac(&m), owner_of(&crate::neighbours::format_mac(&m)));
+    }
 
     fn k(dst: &str) -> FwKey {
         FwKey {

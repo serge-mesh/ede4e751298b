@@ -12,8 +12,8 @@ export default defineConfig({
   // Scaled for slower machines (test/browser/harness/time.ts).
   timeout: scaled(90_000),
   expect: { timeout: scaled(15_000) },
-  // Each test launches its own browser; two at a time keep this machine responsive.
-  workers: process.env['CI'] === undefined ? 2 : 1,
+  // Each CI runner now tests one browser; two workers fit the hosted runner's CPU budget.
+  workers: 2,
   retries: 0,
   forbidOnly: process.env['CI'] !== undefined,
   reporter: [['list']],

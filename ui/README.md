@@ -9,14 +9,15 @@ embeds with rust-embed (debug builds read it from disk).
 
 Use Node ≥ 26.13.1 (the exact version in the repository’s `.node-version` in CI).
 
-The `typescript-native` alias supplies the TypeScript 7 compiler used by the build and lint
+The `typescript-native` alias supplies the TypeScript 7 compiler used by the build and typecheck
 scripts. `typescript` stays on 5.9.3 for the compiler API required by ESLint and
 `openapi-typescript`; invoke the compiler through the npm scripts to select it explicitly.
 
 ```sh
 export PATH=$HOME/.local/opt/node/bin:$PATH
 npm ci            # install the pinned dependencies (package-lock.json)
-npm run lint      # eslint (no warnings allowed) and tsc
+npm run lint      # eslint (no warnings allowed)
+npm run typecheck # TypeScript only; build also runs it once
 npm run build     # type-check and build ui/dist
 npm test          # vitest: API client, schema forms, every page and the main flows
 npm run dev       # dev server; proxies /api, /lists, /lanca to PICKET_CORE_DEV_URL
