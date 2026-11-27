@@ -1019,7 +1019,7 @@ impl FwClient {
                     sh.remove(k);
                     out.delete(*k);
                 } else {
-                    sh.set_exps(k, cur.dns_exp, allow, now);
+                    sh.set_exps(k, cur.dns_exp, allow, old.and_then(|e| e.allow_owner), now);
                     sh.unconfirm(k);
                     out.ensure(*k, exp - now);
                 }
@@ -1044,7 +1044,7 @@ impl FwClient {
                 let Some(e) = sh.get(k).copied() else { continue };
                 let old = e.exp();
                 let new = e.dns_exp.max(new_allow);
-                sh.set_exps(k, e.dns_exp, new_allow, now);
+                sh.set_exps(k, e.dns_exp, new_allow, e.allow_owner, now);
                 if new == old {
                     continue;
                 }
@@ -1136,6 +1136,7 @@ impl FwClient {
         {
             let mut sh = self.shadow();
             if let Some(old) = old {
+                let old_owner = owner_of(&crate::neighbours::format_mac(&old));
                 for (set, dst, _) in sh.grants_of(&old, now) {
                     if dst.is_ipv4() != v4 {
                         continue;
@@ -1145,18 +1146,27 @@ impl FwClient {
                         src: Some(ip),
                         dst,
                     };
-                    if sh.remove(&k).is_some() {
-                        out.delete(k);
+                    if let Some(e) = sh.get(&k).copied() {
+                        // A new owner's allow may already share the old DNS grant's key.
+                        // Remove the DNS expiry while preserving that newer allow.
+                        if e.allow_exp > now && e.allow_owner.is_some_and(|o| o != old_owner) {
+                            sh.set_exps(&k, 0, e.allow_exp, e.allow_owner, now);
+                            if e.exp() != e.allow_exp {
+                                out.ensure(k, e.allow_exp - now);
+                            }
+                        } else {
+                            sh.remove(&k);
+                            out.delete(k);
+                        }
                     }
                 }
                 // A bypass re-check may already have removed this address from the
                 // stored allow. The shadow still owns its kernel entries, so revoke from
                 // that map rather than depending on which subscriber ran first.
-                let old_owner = owner_of(&crate::neighbours::format_mac(&old));
                 let moved_keys: Vec<FwKey> = sh
                     .map
                     .iter()
-                    .filter(|(k, e)| k.src == Some(ip) && e.owner == old_owner && e.allow_exp > 0)
+                    .filter(|(k, e)| k.src == Some(ip) && e.allow_owner == Some(old_owner) && e.allow_exp > 0)
                     .map(|(k, _)| *k)
                     .collect();
                 for k in moved_keys {
@@ -1169,7 +1179,7 @@ impl FwClient {
                         sh.remove(&k);
                         out.delete(k);
                     } else {
-                        sh.set_exps(&k, e.dns_exp, 0, now);
+                        sh.set_exps(&k, e.dns_exp, 0, None, now);
                         if e.exp() != e.dns_exp {
                             out.ensure(k, e.dns_exp - now);
                         }
@@ -2702,6 +2712,112 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_move_revokes_allows_on_dns_keys_with_a_different_share_owner() {
+        for share_text in ["192.168.1.50", "configured-client"] {
+            for rechecked_first in [false, true] {
+                let f = fake(Duration::ZERO);
+                let c = client(&f.path);
+                ready(&c).await;
+                let (a, b) = ([0xaa, 0, 0, 0, 0, 1], [0xbb, 0, 0, 0, 0, 2]);
+                let x: IpAddr = "192.168.1.50".parse().unwrap();
+                let k = FwKey {
+                    set: SetId::P4,
+                    src: Some(x),
+                    dst: "100.100.100.100".parse().unwrap(),
+                };
+                let share_owner = owner_of(share_text);
+                let dns_exp = c.now_s() + 60;
+                // DNS installed this key before the source MAC was known.
+                c.shadow().upsert(k, dns_exp, None, share_owner, c.now_s());
+                c.neighbours.replace(&[(x, a)]);
+                let a_text = crate::neighbours::format_mac(&a);
+                c.grant_allow(&a_text, &[x], k.dst, 600).await.unwrap();
+                let mut stored =
+                    crate::allows::tests::allow("mixed-owner", picket_api::logs::AllowKind::Ip, 600);
+                stored.device = a_text;
+                stored.addresses = vec![x.to_string()];
+                c.allows.upsert(stored.clone()).unwrap();
+                if rechecked_first {
+                    stored.addresses.clear();
+                    c.allows.change_held(vec![stored]).unwrap();
+                }
+                c.neighbours.replace(&[(x, b)]);
+                c.neighbour_event(NeighbourEvent::Gained { mac: b, ip: x });
+                {
+                    let sh = c.shadow();
+                    let e = sh.get(&k).unwrap();
+                    assert_eq!((e.allow_exp, e.allow_owner), (0, None));
+                    assert_eq!(e.dns_exp, dns_exp, "keep the original DNS lifetime");
+                    assert_eq!(
+                        e.owner, share_owner,
+                        "share accounting stays with its original owner"
+                    );
+                    assert_eq!(sh.share_of(share_owner, k.set), 1);
+                    assert_eq!(
+                        sh.share_of(owner_of(&crate::neighbours::format_mac(&a)), k.set),
+                        0
+                    );
+                }
+                assert!(
+                    until(Duration::from_secs(3), || ops_on(&f, &k)
+                        .last()
+                        .is_some_and(|(ensure, secs)| *ensure && *secs <= 60))
+                    .await,
+                    "the helper must lose the extended allow lifetime"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_catch_up_preserves_the_new_owners_shared_allow() {
+        for old_dns_grant in [false, true] {
+            let f = fake(Duration::ZERO);
+            let c = client(&f.path);
+            ready(&c).await;
+            let (a, b, next) = (
+                [0xaa, 0, 0, 0, 0, 1],
+                [0xbb, 0, 0, 0, 0, 2],
+                [0xcc, 0, 0, 0, 0, 3],
+            );
+            let x: IpAddr = "192.168.1.50".parse().unwrap();
+            let k = FwKey {
+                set: SetId::P4,
+                src: Some(x),
+                dst: "100.100.100.100".parse().unwrap(),
+            };
+            let a_text = crate::neighbours::format_mac(&a);
+            let b_text = crate::neighbours::format_mac(&b);
+            c.neighbours.replace(&[(x, a)]);
+            if old_dns_grant {
+                let now = c.now_s();
+                let mut sh = c.shadow();
+                sh.upsert(k, now + 900, None, owner_of(&a_text), now);
+                sh.grant(a, k.set, k.dst, now + 900);
+            }
+            c.grant_allow(&a_text, &[x], k.dst, 600).await.unwrap();
+            // Both grants precede maintenance's first subscription.
+            c.neighbours.replace(&[(x, b)]);
+            c.grant_allow(&b_text, &[x], k.dst, 1200).await.unwrap();
+            c.neighbour_catch_up(&c.neighbours.snapshot());
+            {
+                let sh = c.shadow();
+                let e = sh.get(&k).unwrap();
+                assert_eq!(e.allow_owner, Some(owner_of(&b_text)));
+                assert!(e.allow_exp >= c.now_s() + 1190, "B keeps its current allow");
+                assert_eq!(e.dns_exp, 0, "A's DNS grant is gone");
+                assert_eq!(sh.share_of(e.owner, k.set), 1);
+            }
+            assert!(!f.st().deleted.iter().any(|e| e.src == Some(x) && e.dst == k.dst));
+            // The surviving allow is still revoked on the next move, without a stored record.
+            c.neighbours.replace(&[(x, next)]);
+            c.neighbour_event(NeighbourEvent::Gained { mac: next, ip: x });
+            assert!(c.live_exp(&k).is_none());
+            assert_eq!(c.shadow().fill(k.set), 0);
+        }
+    }
+
+    #[tokio::test]
     async fn maintenance_catches_a_move_before_it_subscribes() {
         let f = fake(Duration::ZERO);
         let c = client(&f.path);
@@ -3084,12 +3200,17 @@ mod tests {
         let ip: IpAddr = "100.64.1.1".parse().unwrap();
         let keys = c.grant_allow("dev", &[x1, x2], ip, 600).await.unwrap();
         f.st().fail_src = vec![x2];
-        let r = c.grant_allow("dev", &[x1, x2], ip, 1200).await;
+        let r = c.grant_allow("replacement-device", &[x1, x2], ip, 1200).await;
         assert!(r.is_err());
         tokio::time::sleep(Duration::from_millis(300)).await;
         for k in &keys {
             let left = c.live_exp(k).unwrap() - c.now_s();
             assert!((590..=601).contains(&left), "shadow map back at 600 s: {left}");
+            assert_eq!(
+                c.shadow().get(k).unwrap().allow_owner,
+                Some(owner_of("dev")),
+                "restore the previous granting device too"
+            );
             if k.src == Some(x1) {
                 let (is_e, t) = *ops_on(&f, k).last().unwrap();
                 assert!(
