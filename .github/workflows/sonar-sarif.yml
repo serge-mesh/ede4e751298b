@@ -84,10 +84,7 @@ jobs:
           FALLBACK_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          args=(
-            --output "${RUNNER_TEMP}/sonarcloud.sarif"
-            --github-output "${GITHUB_OUTPUT}"
-          )
+          args=()
           if [ -n "${SONAR_PROJECT_KEY}" ]; then
             args+=(--project-key "${SONAR_PROJECT_KEY}")
           fi
@@ -116,13 +113,27 @@ jobs:
               )
               ;;
           esac
-          python3 scripts/sonarcloud-to-sarif.py "${args[@]}"
+
+          export_json="${RUNNER_TEMP}/sonar-export.json"
+          python3 scripts/sonarcloud-to-sarif.py "${args[@]}" > "${export_json}"
+          jq -r '"skip=\(.skip)\nref=\(.ref // "")\nsha=\(.sha // "")\nissues_count=\(.issues_count // 0)\nrules_count=\(.rules_count // 0)"' \
+            "${export_json}" >> "${GITHUB_OUTPUT}"
+
+          if [ "$(jq -r '.skip' "${export_json}")" != "true" ]; then
+            jq '.sarif' "${export_json}" > "${RUNNER_TEMP}/sonarcloud.sarif"
+            # upload-sarif's getCommitOid prefers `git rev-parse HEAD` over the explicit `sha`
+            # input whenever `checkout_path` is a Git repository. Pointing `checkout_path` at an
+            # empty non-Git directory forces it to use our verified `ref` and `sha` inputs (and
+            # keeps our precomputed partialFingerprints untouched) without checking out PR code.
+            mkdir -p "${RUNNER_TEMP}/sarif-upload"
+          fi
 
       - name: Upload SARIF to GitHub Code Scanning
         if: steps.export.outputs.skip != 'true'
         uses: github/codeql-action/upload-sarif@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
         with:
           sarif_file: ${{ runner.temp }}/sonarcloud.sarif
+          checkout_path: ${{ runner.temp }}/sarif-upload
           category: sonarqube-cloud
           ref: ${{ steps.export.outputs.ref }}
           sha: ${{ steps.export.outputs.sha }}

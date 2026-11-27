@@ -6,7 +6,6 @@ from __future__ import annotations
 import importlib.util
 import pathlib
 import sys
-import tempfile
 import unittest
 
 SCRIPT_PATH = pathlib.Path(__file__).resolve().parent / "sonarcloud-to-sarif.py"
@@ -286,14 +285,31 @@ class BuildSarifTests(unittest.TestCase):
         results = run["results"]
         self.assertEqual(len(results), 4)
 
-        # Sorted deterministically by line: line 49 comes before line 112 and gets unique fingerprints.
+        # Sorted deterministically by line: line 49 comes before line 112 and gets unique, stable fingerprints.
         self.assertEqual(results[0]["locations"][0]["physicalLocation"]["region"]["startLine"], 49)
         self.assertEqual(results[0]["locations"][0]["physicalLocation"]["region"]["startColumn"], 13)
         self.assertEqual(results[0]["locations"][0]["physicalLocation"]["region"]["endColumn"], 51)
-        self.assertEqual(results[0]["partialFingerprints"]["primaryLocationLineHash"], "samehash:1")
+        self.assertEqual(
+            results[0]["partialFingerprints"]["primaryLocationLineHash"], "samehash:issue-1"
+        )
         self.assertEqual(results[1]["locations"][0]["physicalLocation"]["region"]["startLine"], 112)
-        self.assertEqual(results[1]["partialFingerprints"]["primaryLocationLineHash"], "samehash:2")
+        self.assertEqual(
+            results[1]["partialFingerprints"]["primaryLocationLineHash"], "samehash:issue-2"
+        )
         self.assertEqual(results[0]["level"], "error")
+
+        # Resolving/removing issue-1 must not change issue-2's fingerprint.
+        after_resolve = mod.build_sarif(
+            target, [i for i in issues if i["key"] != "issue-1"], rules
+        )
+        remaining_s8482 = [
+            r for r in after_resolve["runs"][0]["results"] if r["ruleId"] == "githubactions:S8482"
+        ]
+        self.assertEqual(len(remaining_s8482), 1)
+        self.assertEqual(
+            remaining_s8482[0]["partialFingerprints"]["primaryLocationLineHash"],
+            "samehash:issue-2",
+        )
 
         bug_result = results[2]
         self.assertEqual(bug_result["level"], "warning")
@@ -304,7 +320,9 @@ class BuildSarifTests(unittest.TestCase):
 
         smell_result = results[3]
         self.assertEqual(smell_result["level"], "note")
-        self.assertTrue(smell_result["partialFingerprints"]["primaryLocationLineHash"].endswith(":1"))
+        self.assertTrue(
+            smell_result["partialFingerprints"]["primaryLocationLineHash"].endswith(":issue-smell")
+        )
 
     def test_empty_issues_still_produces_valid_sarif(self) -> None:
         target = mod.SyncTarget(
@@ -317,15 +335,6 @@ class BuildSarifTests(unittest.TestCase):
         sarif = mod.build_sarif(target, [], {})
         self.assertEqual(sarif["runs"][0]["results"], [])
         self.assertEqual(sarif["runs"][0]["tool"]["driver"]["rules"], [])
-
-    def test_write_github_outputs(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            out_path = pathlib.Path(tmpdir) / "outputs.txt"
-            mod.write_github_outputs(str(out_path), {"skip": "false", "ref": "refs/heads/main"})
-            self.assertEqual(
-                out_path.read_text(encoding="utf-8"),
-                "skip=false\nref=refs/heads/main\n",
-            )
 
 
 if __name__ == "__main__":

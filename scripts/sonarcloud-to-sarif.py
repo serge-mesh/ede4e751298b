@@ -14,7 +14,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 SONARCLOUD_HOST = "sonarcloud.io"
@@ -487,7 +486,6 @@ def build_sarif(
 
     sorted_issues = sorted(issues, key=lambda i: issue_sort_key(i, target.project_key))
     issues_by_rule: dict[str, list[dict[str, Any]]] = {}
-    fingerprint_counts: dict[tuple[str, str, str], int] = {}
     results: list[dict[str, Any]] = []
 
     for issue in sorted_issues:
@@ -514,11 +512,18 @@ def build_sarif(
 
         base_hash = str(issue.get("hash") or "")
         if not base_hash:
-            digest_input = f"{rule_id}\0{rel_path}\0{region['startLine']}\0{message_text}"
+            start_col = region.get("startColumn", 0)
+            digest_input = (
+                f"{rule_id}\0{rel_path}\0{region['startLine']}\0{start_col}\0{message_text}"
+            )
             base_hash = hashlib.sha256(digest_input.encode("utf-8")).hexdigest()[:32]
-        fp_key = (rule_id, rel_path, base_hash)
-        occurrence = fingerprint_counts.get(fp_key, 0) + 1
-        fingerprint_counts[fp_key] = occurrence
+        # Pair Sonar's line hash with its immutable issue key so identical lines
+        # stay distinct and resolving one issue never shifts another's fingerprint.
+        if issue_key:
+            fingerprint = f"{base_hash}:{issue_key}"
+        else:
+            start_col = region.get("startColumn", 0)
+            fingerprint = f"{base_hash}:{region['startLine']}:{start_col}"
 
         result: dict[str, Any] = {
             "ruleId": rule_id,
@@ -533,7 +538,7 @@ def build_sarif(
                 }
             ],
             "partialFingerprints": {
-                "primaryLocationLineHash": f"{base_hash}:{occurrence}",
+                "primaryLocationLineHash": fingerprint,
             },
         }
         related = build_related_locations(issue, target.project_key)
@@ -570,14 +575,8 @@ def build_sarif(
     }
 
 
-def write_github_outputs(path: str | None, outputs: dict[str, str]) -> None:
-    if not path:
-        return
-    with open(path, "a", encoding="utf-8") as handle:
-        for key, value in outputs.items():
-            if "\n" in value or "\r" in value:
-                raise ValueError(f"Output {key!r} contains newline characters")
-            handle.write(f"{key}={value}\n")
+def emit_json(payload: dict[str, Any]) -> None:
+    sys.stdout.write(json.dumps(payload, indent=2) + "\n")
 
 
 def resolve_cli_target(
@@ -666,8 +665,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Verify SonarQube Cloud's latest analyzed SHA matches --head-sha before exporting",
     )
-    parser.add_argument("--output", required=True, help="Output SARIF file path")
-    parser.add_argument("--github-output", help="Optional GITHUB_OUTPUT file path")
+    parser.add_argument(
+        "--sarif-only",
+        action="store_true",
+        help="Write only the SARIF 2.1.0 JSON document to stdout instead of the metadata envelope",
+    )
     return parser.parse_args(argv)
 
 
@@ -677,48 +679,51 @@ def main(argv: list[str] | None = None) -> int:
 
     target, skip_reason = resolve_cli_target(args, token)
     if target is None:
-        print(f"Skipping SonarQube Cloud SARIF export: {skip_reason}")
-        write_github_outputs(args.github_output, {"skip": "true"})
+        print(f"Skipping SonarQube Cloud SARIF export: {skip_reason}", file=sys.stderr)
+        if not args.sarif_only:
+            emit_json({"skip": True, "reason": skip_reason})
         return 0
 
     if args.verify_sha:
         matched, reason = verify_target_sha(target, token=token)
         if not matched:
-            print(f"Skipping SonarQube Cloud SARIF export: {reason}")
-            write_github_outputs(args.github_output, {"skip": "true"})
+            print(f"Skipping SonarQube Cloud SARIF export: {reason}", file=sys.stderr)
+            if not args.sarif_only:
+                emit_json({"skip": True, "reason": reason})
             return 0
 
     try:
         issues, rules = fetch_open_issues(target, token=token)
     except SonarApiError as exc:
         if exc.status == 404:
-            print(f"Skipping SonarQube Cloud SARIF export: {exc}")
-            write_github_outputs(args.github_output, {"skip": "true"})
+            print(f"Skipping SonarQube Cloud SARIF export: {exc}", file=sys.stderr)
+            if not args.sarif_only:
+                emit_json({"skip": True, "reason": str(exc)})
             return 0
         raise
 
     sarif = build_sarif(target, issues, rules, organization=args.organization)
-    output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(sarif, indent=2) + "\n", encoding="utf-8")
-
     run = sarif["runs"][0]
     results_count = len(run["results"])
     rules_count = len(run["tool"]["driver"]["rules"])
     print(
-        f"Wrote {results_count} SonarQube Cloud findings across {rules_count} rules "
-        f"for {target.ref} @ {target.sha} -> {output_path}"
+        f"Exported {results_count} SonarQube Cloud findings across {rules_count} rules "
+        f"for {target.ref} @ {target.sha}",
+        file=sys.stderr,
     )
-    write_github_outputs(
-        args.github_output,
-        {
-            "skip": "false",
-            "ref": target.ref,
-            "sha": target.sha,
-            "issues_count": str(results_count),
-            "rules_count": str(rules_count),
-        },
-    )
+    if args.sarif_only:
+        emit_json(sarif)
+    else:
+        emit_json(
+            {
+                "skip": False,
+                "ref": target.ref,
+                "sha": target.sha,
+                "issues_count": results_count,
+                "rules_count": rules_count,
+                "sarif": sarif,
+            }
+        )
     return 0
 
 
