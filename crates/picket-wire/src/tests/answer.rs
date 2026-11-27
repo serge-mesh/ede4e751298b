@@ -125,6 +125,22 @@ fn record_counts_checked_before_body() {
         check(&m, "example.com", rtype::A).unwrap_err(),
         Invalid::QuestionCount
     );
+    // The size refusal comes only once the header matches the query (the edge doesn't count it
+    // against the upstream): not a response, or another ID, is refused as such first.
+    let mut q = Msg::query(ID, "example.com", rtype::A);
+    q.raw(&[0xC0; 32]);
+    q.set_counts(1, 1025, 0, 0);
+    assert_eq!(
+        check(&q, "example.com", rtype::A).unwrap_err(),
+        Invalid::NotResponse
+    );
+    let mut other = Msg::response(ID + 1, "example.com", rtype::A, 0);
+    other.raw(&[0xC0; 32]);
+    other.set_counts(1, 1025, 0, 0);
+    assert_eq!(
+        check(&other, "example.com", rtype::A).unwrap_err(),
+        Invalid::IdMismatch
+    );
 }
 
 #[test]

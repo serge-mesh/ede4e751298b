@@ -1,9 +1,9 @@
 //! The upstream answer pipeline (edge.md §7), used by the edge for every upstream answer, by
 //! picket-lookup's `dns` module (providers.md §5) and by core to rebuild a reply (core.md §6).
 //!
-//! 1. **Structure.** Before the body is decoded: the message is within the size cap and its
-//!    header counts at most [`MAX_SECTION_RECORDS`] records per section; it is a QUERY response
-//!    with one question and the ID that was sent. hickory then decodes the body (label and name
+//! 1. **Structure.** Before the body is decoded: the message is within the size cap; it is a
+//!    QUERY response with one question and the ID that was sent; then its header counts at most
+//!    [`MAX_SECTION_RECORDS`] records per section. hickory then decodes the body (label and name
 //!    lengths, backward non-overlapping pointers, RDLENGTH within the message, the formats of
 //!    the types it knows).
 //!    The question matches what was sent; nothing trails; at most one OPT, in the additional
@@ -209,8 +209,8 @@ impl Invalid {
     }
 
     /// True when the answer was refused for its size alone ([`Self::TooManyRecords`],
-    /// [`Self::RrsetTooLarge`]): the upstream answered well-formed DNS, so this says nothing about
-    /// its health and doesn't count against its breaker (edge.md §6).
+    /// [`Self::RrsetTooLarge`]), both reached only once the header matched the query: a limit,
+    /// not a sign the upstream is broken, so the edge leaves its breaker alone (edge.md §6).
     pub fn is_size_limit(&self) -> bool {
         matches!(self, Self::TooManyRecords | Self::RrsetTooLarge)
     }
@@ -579,12 +579,6 @@ pub(crate) fn analyze(msg: &[u8], sent: &SentQuery<'_>, limits: &AnswerLimits) -
     let mut dec = BinDecoder::new(msg);
     let header = Header::read(&mut dec).map_err(|_| Invalid::ShortHeader)?;
     let counts = header.counts;
-    if counts.answers > MAX_SECTION_RECORDS
-        || counts.authorities > MAX_SECTION_RECORDS
-        || counts.additionals > MAX_SECTION_RECORDS
-    {
-        return Err(Invalid::TooManyRecords);
-    }
     if header.message_type != MessageType::Response {
         return Err(Invalid::NotResponse);
     }
@@ -596,6 +590,14 @@ pub(crate) fn analyze(msg: &[u8], sent: &SentQuery<'_>, limits: &AnswerLimits) -
     }
     if header.id != sent.id {
         return Err(Invalid::IdMismatch);
+    }
+    // After the header says this is the response to what was sent: a refusal for size alone
+    // isn't a health signal for the edge, so it must not be reachable by a reply that isn't one.
+    if counts.answers > MAX_SECTION_RECORDS
+        || counts.authorities > MAX_SECTION_RECORDS
+        || counts.additionals > MAX_SECTION_RECORDS
+    {
+        return Err(Invalid::TooManyRecords);
     }
 
     // hickory decodes the body.
