@@ -418,10 +418,10 @@ impl LookupClient {
     }
 
     /// The reply's deadline for a query that started at `query_start` (edge.md §10
-    /// "Execution"): `min(sync_timeout_ms, lookup_budget_ms)` after it.
-    pub fn sync_deadline(&self, query_start: Instant, lookup_budget_ms: u32) -> Instant {
+    /// "Execution"): `min(sync_timeout_ms, sync_lookup_budget_ms)` after it.
+    pub fn sync_deadline(&self, query_start: Instant, sync_lookup_budget_ms: u32) -> Instant {
         let s = self.inner.spec.load();
-        let budget = Duration::from_millis(u64::from(lookup_budget_ms));
+        let budget = Duration::from_millis(u64::from(sync_lookup_budget_ms));
         query_start + sync_timeout(&s.settings).min(budget)
     }
 

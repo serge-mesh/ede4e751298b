@@ -1950,8 +1950,8 @@ async fn sync_lookups_ask_only_about_names_the_local_lists_left_undecided() {
     let mut cfg = one_upstream(&up, "udp");
     cfg["profiles"]["default"]["allow"] = json!(["allow-common"]);
     cfg["profiles"]["default"]["block"] = json!(["block-common"]);
-    cfg["profiles"]["default"]["lookups"] = json!([{"provider": "am", "mode": "sync"}]);
-    cfg["profiles"]["default"]["lookup_budget_ms"] = 3000.into();
+    cfg["profiles"]["default"]["lookup_providers"] = json!([{"provider": "am", "mode": "sync"}]);
+    cfg["profiles"]["default"]["sync_lookup_budget_ms"] = 3000.into();
     cfg["lookup_providers"] = json!({"am": {"module": "scripted", "config": {}, "cache_generation": "0123456789abcdef",
         "sync_timeout_ms": 3000, "async_timeout_ms": 5000, "fail_mode": "open",
         "scope": {"exclude_bundles": [], "qtypes": ["A", "AAAA"]}}});
@@ -2047,8 +2047,8 @@ async fn sync_lookups_block_fail_modes_and_late_answers() {
     reg.insert(module.clone());
     let up = FakeUpstream::plain(ok_upstream()).await;
     let mut cfg = one_upstream(&up, "udp");
-    cfg["profiles"]["default"]["lookups"] = json!([{"provider": "am", "mode": "sync"}]);
-    cfg["profiles"]["default"]["lookup_budget_ms"] = 150.into();
+    cfg["profiles"]["default"]["lookup_providers"] = json!([{"provider": "am", "mode": "sync"}]);
+    cfg["profiles"]["default"]["sync_lookup_budget_ms"] = 150.into();
     cfg["lookup_providers"] = json!({"am": {"module": "scripted", "config": {}, "cache_generation": "0123456789abcdef",
         "sync_timeout_ms": 150, "async_timeout_ms": 2000, "fail_mode": "open",
         "scope": {"exclude_bundles": [], "qtypes": ["A", "AAAA"]}}});
@@ -2399,8 +2399,8 @@ async fn http_json_lookups_use_the_edges_http_client_and_resolver() {
     })
     .await;
     let mut cfg = one_upstream(&up, "udp");
-    cfg["profiles"]["default"]["lookups"] = json!([{"provider": "api", "mode": "sync"}]);
-    cfg["profiles"]["default"]["lookup_budget_ms"] = 3000.into();
+    cfg["profiles"]["default"]["lookup_providers"] = json!([{"provider": "api", "mode": "sync"}]);
+    cfg["profiles"]["default"]["sync_lookup_budget_ms"] = 3000.into();
     cfg["lookup_providers"] = json!({"api": {"module": "http_json", "cache_generation": "0123456789abcdef",
         "config": {"url": format!("https://api.test:{api_port}/v1/domain/{{domain}}"),
                    "verdict": {"pointer": "/risk", "block_if": ">= 7", "clean_if": "< 4"}},
@@ -2437,8 +2437,8 @@ async fn dns_lookups_ask_their_servers_over_the_upstream_transports() {
     .await;
     let up = FakeUpstream::plain(ok_upstream()).await;
     let mut cfg = one_upstream(&up, "udp");
-    cfg["profiles"]["default"]["lookups"] = json!([{"provider": "q9", "mode": "sync"}]);
-    cfg["profiles"]["default"]["lookup_budget_ms"] = 2000.into();
+    cfg["profiles"]["default"]["lookup_providers"] = json!([{"provider": "q9", "mode": "sync"}]);
+    cfg["profiles"]["default"]["sync_lookup_budget_ms"] = 2000.into();
     cfg["lookup_providers"] = json!({"q9": {"module": "dns", "cache_generation": "0123456789abcdef",
         "config": {"transport": "dot",
                    "servers": [{"ip": "127.0.0.1", "port": filt.addr.port(), "tls_host": UPSTREAM_TLS_NAME, "trust_store": filt.cert_pem}],

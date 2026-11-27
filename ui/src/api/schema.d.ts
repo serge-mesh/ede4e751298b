@@ -4276,12 +4276,25 @@ export interface components {
              */
             ssd_spool_max_mib?: number | null;
         };
+        /** @description One lookup provider attached to a profile. */
         LookupAttachment: {
-            /** @default [] */
+            /**
+             * @description Names matching any of these bundles are skipped for this provider (in addition to the
+             *     provider's own `scope.exclude_bundles`).
+             * @default []
+             */
             exclude_bundles?: string[];
-            /** @default [] */
+            /**
+             * @description When non-empty, only names matching one of these bundles are sent to this provider (in
+             *     addition to the provider's own `scope.include_bundles`).
+             * @default []
+             */
             include_bundles?: string[];
-            /** @default sync */
+            /**
+             * @description Whether this provider runs inline on the edge (`sync`) or on core from the query log
+             *     (`async`).
+             * @default sync
+             */
             mode?: components["schemas"]["LookupMode"];
             /**
              * @description Lookup provider id (not the module id).
@@ -4318,7 +4331,10 @@ export interface components {
              */
             rps?: number;
         };
-        /** @enum {string} */
+        /**
+         * @description When an attached lookup provider runs: inline on the edge (`sync`) or on core after answering
+         *     (`async`).
+         */
         LookupMode: "sync" | "async";
         /** @description A lookup module and its config form (api.md §7 `lookup-modules`). */
         LookupModuleInfo: {
@@ -4518,13 +4534,17 @@ export interface components {
         };
         LookupScope: {
             /**
+             * @description Names matching any of these bundles are skipped for this provider.
              * @default [
              *       "lookup-exclude",
              *       "allow-common"
              *     ]
              */
             exclude_bundles?: string[];
-            /** @default [] */
+            /**
+             * @description When non-empty, only names matching one of these bundles are sent to this provider.
+             * @default []
+             */
             include_bundles?: string[];
             /**
              * @description Query types that call the provider (a live Block blocks every type in scope).
@@ -4860,11 +4880,11 @@ export interface components {
              */
             alert_categories?: string[];
             /**
-             * @description Lookup provider ids whose Blocks alert; null = every provider whose category is
+             * @description Lookup provider ids whose Blocks alert; null = every lookup provider whose category is
              *     `security`; `[]` turns them off.
              * @default null
              */
-            alert_providers?: string[] | null;
+            alert_lookup_providers?: string[] | null;
             /**
              * @description Allow bundles, in order (ladder step 2).
              * @default []
@@ -4925,18 +4945,24 @@ export interface components {
             /** @default full */
             log?: components["schemas"]["LogLevel"];
             /**
-             * Format: uint32
-             * @default 150
+             * @description Lookup providers attached to this profile: `sync` waits up to `sync_lookup_budget_ms` on
+             *     the edge before answering, `async` checks on core after answering.
+             * @default []
              */
-            lookup_budget_ms?: number;
-            /** @default [] */
-            lookups?: components["schemas"]["LookupAttachment"][];
+            lookup_providers?: components["schemas"]["LookupAttachment"][];
             /** @default  */
             name?: string;
             /** @default nxdomain */
             private_reverse?: components["schemas"]["PrivateReverse"];
             /** @default skip_after_allow */
             response_checks?: components["schemas"]["ResponseChecks"];
+            /**
+             * Format: uint32
+             * @description Maximum time in milliseconds (1–10000) the edge waits for `sync` lookup providers before
+             *     answering; each provider also has its own `sync_timeout_ms`.
+             * @default 150
+             */
+            sync_lookup_budget_ms?: number;
             /**
              * @description System profiles can be edited but not deleted (read-only).
              * @default false

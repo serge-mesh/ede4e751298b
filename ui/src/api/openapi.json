@@ -6015,9 +6015,11 @@
         "type": "object"
       },
       "LookupAttachment": {
+        "description": "One lookup provider attached to a profile.",
         "properties": {
           "exclude_bundles": {
             "default": [],
+            "description": "Names matching any of these bundles are skipped for this provider (in addition to the\nprovider's own `scope.exclude_bundles`).",
             "items": {
               "type": "string"
             },
@@ -6025,6 +6027,7 @@
           },
           "include_bundles": {
             "default": [],
+            "description": "When non-empty, only names matching one of these bundles are sent to this provider (in\naddition to the provider's own `scope.include_bundles`).",
             "items": {
               "type": "string"
             },
@@ -6032,7 +6035,8 @@
           },
           "mode": {
             "$ref": "#/components/schemas/LookupMode",
-            "default": "sync"
+            "default": "sync",
+            "description": "Whether this provider runs inline on the edge (`sync`) or on core from the query log\n(`async`)."
           },
           "provider": {
             "default": "",
@@ -6102,11 +6106,19 @@
         "type": "object"
       },
       "LookupMode": {
-        "enum": [
-          "sync",
-          "async"
-        ],
-        "type": "string"
+        "description": "When an attached lookup provider runs: inline on the edge (`sync`) or on core after answering\n(`async`).",
+        "oneOf": [
+          {
+            "const": "sync",
+            "description": "Run on the edge before answering, waiting up to `sync_lookup_budget_ms`.",
+            "type": "string"
+          },
+          {
+            "const": "async",
+            "description": "Run on core after the edge answers, from the query log.",
+            "type": "string"
+          }
+        ]
       },
       "LookupModuleInfo": {
         "description": "A lookup module and its config form (api.md §7 `lookup-modules`).",
@@ -6447,6 +6459,7 @@
               "lookup-exclude",
               "allow-common"
             ],
+            "description": "Names matching any of these bundles are skipped for this provider.",
             "items": {
               "type": "string"
             },
@@ -6454,6 +6467,7 @@
           },
           "include_bundles": {
             "default": [],
+            "description": "When non-empty, only names matching one of these bundles are sent to this provider.",
             "items": {
               "type": "string"
             },
@@ -8263,9 +8277,9 @@
             },
             "type": "array"
           },
-          "alert_providers": {
+          "alert_lookup_providers": {
             "default": null,
-            "description": "Lookup provider ids whose Blocks alert; null = every provider whose category is\n`security`; `[]` turns them off.",
+            "description": "Lookup provider ids whose Blocks alert; null = every lookup provider whose category is\n`security`; `[]` turns them off.",
             "items": {
               "type": "string"
             },
@@ -8349,14 +8363,9 @@
             "$ref": "#/components/schemas/LogLevel",
             "default": "full"
           },
-          "lookup_budget_ms": {
-            "default": 150,
-            "format": "uint32",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "lookups": {
+          "lookup_providers": {
             "default": [],
+            "description": "Lookup providers attached to this profile: `sync` waits up to `sync_lookup_budget_ms` on\nthe edge before answering, `async` checks on core after answering.",
             "items": {
               "$ref": "#/components/schemas/LookupAttachment"
             },
@@ -8373,6 +8382,13 @@
           "response_checks": {
             "$ref": "#/components/schemas/ResponseChecks",
             "default": "skip_after_allow"
+          },
+          "sync_lookup_budget_ms": {
+            "default": 150,
+            "description": "Maximum time in milliseconds (1–10000) the edge waits for `sync` lookup providers before\nanswering; each provider also has its own `sync_timeout_ms`.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
           },
           "system": {
             "default": false,

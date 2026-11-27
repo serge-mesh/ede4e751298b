@@ -175,8 +175,12 @@ pub struct Profile {
     pub block: Vec<String>,
     pub forward_zones: Vec<String>,
     pub private_reverse: PrivateReverse,
-    pub lookups: Vec<LookupAttachment>,
-    pub lookup_budget_ms: u32,
+    /// Lookup providers attached to this profile: `sync` waits up to `sync_lookup_budget_ms` on
+    /// the edge before answering, `async` checks on core after answering.
+    pub lookup_providers: Vec<LookupAttachment>,
+    /// Maximum time in milliseconds (1–10000) the edge waits for `sync` lookup providers before
+    /// answering; each provider also has its own `sync_timeout_ms`.
+    pub sync_lookup_budget_ms: u32,
     /// Upstream group id.
     pub upstream: String,
     pub ttl: TtlClamp,
@@ -195,8 +199,8 @@ impl Default for Profile {
             block: vec![],
             forward_zones: vec![],
             private_reverse: PrivateReverse::default(),
-            lookups: vec![],
-            lookup_budget_ms: 150,
+            lookup_providers: vec![],
+            sync_lookup_budget_ms: 150,
             upstream: "cloudflare".into(),
             ttl: TtlClamp::default(),
             block_response: BlockResponse::default(),
@@ -219,21 +223,32 @@ pub enum PrivateReverse {
     Upstream,
 }
 
+/// When an attached lookup provider runs: inline on the edge (`sync`) or on core after answering
+/// (`async`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum LookupMode {
+    /// Run on the edge before answering, waiting up to `sync_lookup_budget_ms`.
     #[default]
     Sync,
+    /// Run on core after the edge answers, from the query log.
     Async,
 }
 
+/// One lookup provider attached to a profile.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct LookupAttachment {
     /// Lookup provider id (not the module id).
     pub provider: String,
+    /// Whether this provider runs inline on the edge (`sync`) or on core from the query log
+    /// (`async`).
     pub mode: LookupMode,
+    /// When non-empty, only names matching one of these bundles are sent to this provider (in
+    /// addition to the provider's own `scope.include_bundles`).
     pub include_bundles: Vec<String>,
+    /// Names matching any of these bundles are skipped for this provider (in addition to the
+    /// provider's own `scope.exclude_bundles`).
     pub exclude_bundles: Vec<String>,
 }
 
@@ -595,7 +610,9 @@ impl Default for Recheck {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct LookupScope {
+    /// When non-empty, only names matching one of these bundles are sent to this provider.
     pub include_bundles: Vec<String>,
+    /// Names matching any of these bundles are skipped for this provider.
     pub exclude_bundles: Vec<String>,
     /// Query types that call the provider (a live Block blocks every type in scope).
     pub qtypes: Vec<String>,
@@ -907,7 +924,7 @@ mod tests {
           "default_profile": "kids",
           "clients": [{"name": "office-pc", "macs": ["aa:bb:cc:dd:ee:01"], "profile": "adults", "tags": ["pc"]}],
           "profiles": {"adults": {"allow": ["allow-common"], "block": ["block-common"],
-              "lookups": [{"provider": "am-rt", "mode": "sync", "exclude_bundles": ["my-domains"]}],
+              "lookup_providers": [{"provider": "am-rt", "mode": "sync", "exclude_bundles": ["my-domains"]}],
               "bypass": {"mode": "self", "max_duration": "24h", "ips": true}}},
           "upstreams": {"cf-dot": {"protocol": "dot", "ip": "1.1.1.1", "port": 853, "tls_host": "one.one.one.one", "trust_store": null}},
           "upstream_groups": {"cloudflare": {"upstreams": ["cf-dot"], "strategy": "fastest", "optimistic": true}},
@@ -921,6 +938,9 @@ mod tests {
         let c: EdgeConfig = serde_json::from_str(doc).unwrap();
         let p = &c.profiles["adults"];
         assert_eq!(p.allowed_sources, vec!["0.0.0.0/0", "::/0"]);
+        assert_eq!(p.lookup_providers.len(), 1);
+        assert_eq!(p.lookup_providers[0].provider, "am-rt");
+        assert_eq!(p.sync_lookup_budget_ms, 150);
         assert_eq!(p.block_response.ttl, 10);
         assert_eq!(p.bypass.mode, BypassMode::SelfService);
         assert_eq!(p.bypass.max_active, 50);

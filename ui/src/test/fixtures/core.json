@@ -1013,8 +1013,8 @@
      },
      "forward_zones": [],
      "log": "full",
-     "lookup_budget_ms": 150,
-     "lookups": [],
+     "sync_lookup_budget_ms": 150,
+     "lookup_providers": [],
      "private_reverse": "nxdomain",
      "response_checks": "skip_after_allow",
      "ttl": {
@@ -1067,8 +1067,8 @@
      },
      "forward_zones": [],
      "log": "off",
-     "lookup_budget_ms": 150,
-     "lookups": [],
+     "sync_lookup_budget_ms": 150,
+     "lookup_providers": [],
      "private_reverse": "nxdomain",
      "response_checks": "skip_after_allow",
      "ttl": {
@@ -2477,7 +2477,7 @@
     "alert_categories": [
      "security"
     ],
-    "alert_providers": null,
+    "alert_lookup_providers": null,
     "allow": [
      "allow-common"
     ],
@@ -2511,8 +2511,8 @@
     "forward_zones": [],
     "id": "default",
     "log": "full",
-    "lookup_budget_ms": 150,
-    "lookups": [],
+    "sync_lookup_budget_ms": 150,
+    "lookup_providers": [],
     "name": "Default",
     "private_reverse": "nxdomain",
     "response_checks": "skip_after_allow",
@@ -2526,7 +2526,7 @@
    },
    {
     "alert_categories": [],
-    "alert_providers": [],
+    "alert_lookup_providers": [],
     "allow": [],
     "allowed_sources": [],
     "block": [],
@@ -2553,8 +2553,8 @@
     "forward_zones": [],
     "id": "dnssec-validator",
     "log": "off",
-    "lookup_budget_ms": 150,
-    "lookups": [],
+    "sync_lookup_budget_ms": 150,
+    "lookup_providers": [],
     "name": "DNSSEC validator",
     "private_reverse": "nxdomain",
     "response_checks": "skip_after_allow",
@@ -2573,7 +2573,7 @@
   "alert_categories": [
    "security"
   ],
-  "alert_providers": null,
+  "alert_lookup_providers": null,
   "allow": [
    "allow-common"
   ],
@@ -2607,8 +2607,8 @@
   "forward_zones": [],
   "id": "default",
   "log": "full",
-  "lookup_budget_ms": 150,
-  "lookups": [],
+  "sync_lookup_budget_ms": 150,
+  "lookup_providers": [],
   "name": "Default",
   "private_reverse": "nxdomain",
   "response_checks": "skip_after_allow",

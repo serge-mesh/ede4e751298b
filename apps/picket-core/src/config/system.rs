@@ -107,7 +107,7 @@ fn system_bundle(id: &str, action: BundleAction, feeds: &[&str]) -> BundleDef {
     }
 }
 
-/// The `dnssec-validator` profile (core.md §8): no bundles, lookups or forward zones,
+/// The `dnssec-validator` profile (core.md §8): no bundles, lookup providers or forward zones,
 /// `firewall.add_entries = false`, `log = off`. Its `allowed_sources` are rendered from
 /// `dnssec.source_ips`, so the stored list is left empty.
 pub fn dnssec_profile() -> ProfileDef {
@@ -125,7 +125,7 @@ pub fn dnssec_profile() -> ProfileDef {
         system: true,
         edge,
         alert_categories: vec![],
-        alert_providers: Some(vec![]),
+        alert_lookup_providers: Some(vec![]),
         ..ProfileDef::default()
     }
 }

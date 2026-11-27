@@ -1113,12 +1113,12 @@ async fn parts_replay_against_their_own_heads() {
 }
 
 /// `category_blocked` for a block by a sync lookup (core.md §9 "Block alerts per profile";
-/// build-and-test.md §5 "Block alerts", each `alert_providers` setting): unset alerts on every
+/// build-and-test.md §5 "Block alerts", each `alert_lookup_providers` setting): unset alerts on every
 /// `security` provider, a list on the providers it names (a non-security one raises `info`), `[]`
 /// on none. The alert keys on (device, domain) with the feed blocks' evidence rule and edge, and
 /// names the provider's reason and detail; analysing again or a resent record adds nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn sync_lookup_blocks_raise_category_blocked_per_alert_providers() {
+async fn sync_lookup_blocks_raise_category_blocked_per_alert_lookup_providers() {
     let s = Setup::new(None).await;
     for (id, category) in [("q-sec", "security"), ("q-priv", "privacy")] {
         put_entity(
@@ -1137,9 +1137,9 @@ async fn sync_lookup_blocks_raise_category_blocked_per_alert_providers() {
         ("p-none", Some(json!([]))),
     ] {
         let mut body = json!({"id": id, "name": id,
-            "lookups": [{"provider": "q-sec", "mode": "sync"}, {"provider": "q-priv", "mode": "sync"}]});
+            "lookup_providers": [{"provider": "q-sec", "mode": "sync"}, {"provider": "q-priv", "mode": "sync"}]});
         if let Some(a) = alerting {
-            body["alert_providers"] = a;
+            body["alert_lookup_providers"] = a;
         }
         put_entity(&s.c, "profiles", id, body).await;
     }
@@ -1195,7 +1195,7 @@ async fn sync_lookup_blocks_raise_category_blocked_per_alert_providers() {
     let a = s
         .alert(&key("dev-1", "www.bad.example"))
         .await
-        .expect("unset alert_providers: a security provider's Block alerts");
+        .expect("unset alert_lookup_providers: a security provider's Block alerts");
     assert_eq!(a["severity"], "warning", "{a}");
     assert_eq!(a["edge"], json!(s.edge.id), "{a}");
     assert_eq!(a["details"]["domain"], "bad.example", "{a}");
@@ -1232,7 +1232,7 @@ async fn sync_lookup_blocks_raise_category_blocked_per_alert_providers() {
 
     assert!(
         s.alert(&key("dev-2", "priv.example")).await.is_none(),
-        "unset alert_providers: a privacy provider doesn't alert"
+        "unset alert_lookup_providers: a privacy provider doesn't alert"
     );
     let a = s
         .alert(&key("dev-3", "listed.example"))
@@ -1246,7 +1246,7 @@ async fn sync_lookup_blocks_raise_category_blocked_per_alert_providers() {
     );
     assert!(
         s.alert(&key("dev-5", "none.example")).await.is_none(),
-        "alert_providers [] turns them off"
+        "alert_lookup_providers [] turns them off"
     );
     let n: i64 = s
         .scalar_core("SELECT count(*) FROM alerts WHERE kind = 'category_blocked'")

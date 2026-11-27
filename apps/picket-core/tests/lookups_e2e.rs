@@ -151,7 +151,7 @@ async fn the_real_edge_activates_a_published_verdict_set_and_answers_from_it() {
         .apply(
             EntityKind::Profile,
             Op::Create(
-                json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "sync"}]}),
+                json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "sync"}]}),
             ),
             Actor::cli(),
             None,

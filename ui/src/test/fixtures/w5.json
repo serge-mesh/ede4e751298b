@@ -874,8 +874,8 @@
      },
      "forward_zones": [],
      "log": "full",
-     "lookup_budget_ms": 150,
-     "lookups": [],
+     "sync_lookup_budget_ms": 150,
+     "lookup_providers": [],
      "private_reverse": "nxdomain",
      "response_checks": "skip_after_allow",
      "ttl": {
@@ -929,8 +929,8 @@
      },
      "forward_zones": [],
      "log": "off",
-     "lookup_budget_ms": 150,
-     "lookups": [],
+     "sync_lookup_budget_ms": 150,
+     "lookup_providers": [],
      "private_reverse": "nxdomain",
      "response_checks": "skip_after_allow",
      "ttl": {
@@ -967,8 +967,8 @@
      },
      "forward_zones": [],
      "log": "full",
-     "lookup_budget_ms": 150,
-     "lookups": [],
+     "sync_lookup_budget_ms": 150,
+     "lookup_providers": [],
      "private_reverse": "nxdomain",
      "response_checks": "skip_after_allow",
      "ttl": {
@@ -25605,8 +25605,8 @@
      ],
      "forward_zones": [],
      "private_reverse": "nxdomain",
-     "lookups": [],
-     "lookup_budget_ms": 150,
+     "lookup_providers": [],
+     "sync_lookup_budget_ms": 150,
      "upstream": "cloudflare",
      "ttl": {
       "min": 0,
@@ -25635,7 +25635,7 @@
      "alert_categories": [
       "security"
      ],
-     "alert_providers": null,
+     "alert_lookup_providers": null,
      "browser_list": {
       "enabled": false
      }
@@ -25649,8 +25649,8 @@
      "block": [],
      "forward_zones": [],
      "private_reverse": "nxdomain",
-     "lookups": [],
-     "lookup_budget_ms": 150,
+     "lookup_providers": [],
+     "sync_lookup_budget_ms": 150,
      "upstream": "cloudflare",
      "ttl": {
       "min": 0,
@@ -25677,7 +25677,7 @@
      },
      "trial_bundles": [],
      "alert_categories": [],
-     "alert_providers": [],
+     "alert_lookup_providers": [],
      "browser_list": {
       "enabled": false
      }
@@ -25696,8 +25696,8 @@
      ],
      "forward_zones": [],
      "private_reverse": "nxdomain",
-     "lookups": [],
-     "lookup_budget_ms": 150,
+     "lookup_providers": [],
+     "sync_lookup_budget_ms": 150,
      "upstream": "cloudflare",
      "ttl": {
       "min": 30,
@@ -25728,7 +25728,7 @@
      "alert_categories": [
       "security"
      ],
-     "alert_providers": null,
+     "alert_lookup_providers": null,
      "browser_list": {
       "enabled": false
      }
@@ -27069,7 +27069,7 @@
    },
    {
     "at": "2026-11-25T01:19:07.091273Z",
-    "diff_json": "{\"after\":{\"alert_categories\":[\"security\"],\"alert_providers\":null,\"allow\":[],\"allowed_sources\":[\"0.0.0.0/0\",\"::/0\"],\"block\":[\"b1\"],\"block_response\":{\"ttl\":10,\"type\":\"null_ip\"},\"browser_list\":{\"enabled\":false},\"bypass\":{\"ips\":false,\"max_active\":50,\"max_duration\":\"1d\",\"mode\":\"off\",\"rate_per_hour\":20},\"firewall\":{\"add_entries\":true,\"grace_s\":120,\"granularity\":\"per_client_ip\",\"on_full\":\"reply_anyway\"},\"forward_zones\":[],\"id\":\"p1\",\"log\":\"full\",\"lookup_budget_ms\":150,\"lookups\":[],\"name\":\"p1\",\"private_reverse\":\"nxdomain\",\"response_checks\":\"skip_after_allow\",\"system\":false,\"trial_bundles\":[\"trial-b\"],\"ttl\":{\"max\":120,\"min\":30},\"upstream\":\"cloudflare\"},\"op\":\"create\",\"source\":\"ui\"}",
+    "diff_json": "{\"after\":{\"alert_categories\":[\"security\"],\"alert_lookup_providers\":null,\"allow\":[],\"allowed_sources\":[\"0.0.0.0/0\",\"::/0\"],\"block\":[\"b1\"],\"block_response\":{\"ttl\":10,\"type\":\"null_ip\"},\"browser_list\":{\"enabled\":false},\"bypass\":{\"ips\":false,\"max_active\":50,\"max_duration\":\"1d\",\"mode\":\"off\",\"rate_per_hour\":20},\"firewall\":{\"add_entries\":true,\"grace_s\":120,\"granularity\":\"per_client_ip\",\"on_full\":\"reply_anyway\"},\"forward_zones\":[],\"id\":\"p1\",\"log\":\"full\",\"sync_lookup_budget_ms\":150,\"lookup_providers\":[],\"name\":\"p1\",\"private_reverse\":\"nxdomain\",\"response_checks\":\"skip_after_allow\",\"system\":false,\"trial_bundles\":[\"trial-b\"],\"ttl\":{\"max\":120,\"min\":30},\"upstream\":\"cloudflare\"},\"op\":\"create\",\"source\":\"ui\"}",
     "entity": "profile",
     "entity_id": "p1",
     "id": 26,

@@ -1376,7 +1376,7 @@ impl<'a> Ctx<'a> {
                     .qtypes
                     .iter()
                     .any(|t| t.eq_ignore_ascii_case(&qtype_text));
-            let deadline = client.sync_deadline(self.tstart, self.profile.cfg.lookup_budget_ms);
+            let deadline = client.sync_deadline(self.tstart, self.profile.cfg.sync_lookup_budget_ms);
             let provider = Arc::clone(&att.provider);
             let fail_mode = settings.fail_mode;
             let tag: Arc<str> = Arc::clone(&self.profile.id);

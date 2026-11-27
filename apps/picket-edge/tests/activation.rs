@@ -496,8 +496,8 @@ async fn restart_mid_activation_then_an_offline_start_from_disk() {
 fn lookup_config(up: &FakeUpstream, sets: Value) -> Value {
     let mut c = config(up, json!({}));
     c["profiles"]["default"]["block"] = json!([]);
-    c["profiles"]["default"]["lookups"] = json!([{"provider": "vp", "mode": "sync"}]);
-    c["profiles"]["default"]["lookup_budget_ms"] = 500.into();
+    c["profiles"]["default"]["lookup_providers"] = json!([{"provider": "vp", "mode": "sync"}]);
+    c["profiles"]["default"]["sync_lookup_budget_ms"] = 500.into();
     c["lookup_providers"] = json!({"vp": {"module": "scripted", "config": {}, "cache_generation": "0123456789abcdef",
         "sync_timeout_ms": 500, "async_timeout_ms": 2000, "fail_mode": "open",
         "scope": {"exclude_bundles": [], "qtypes": ["A", "AAAA"]}}});
@@ -1039,7 +1039,7 @@ async fn a_verdict_set_head_that_fails_leaves_the_running_configs_versions_alone
     core.with(|s| s.objects.remove(&format!("blobs/{}", qh.base)));
     let mut c2 = lookup_config(&up, json!({"vp": vid, "vq": qid}));
     c2["lookup_providers"]["vq"] = c2["lookup_providers"]["vp"].clone();
-    c2["profiles"]["default"]["lookups"] =
+    c2["profiles"]["default"]["lookup_providers"] =
         json!([{"provider": "vp", "mode": "sync"}, {"provider": "vq", "mode": "sync"}]);
     let cfg2 = core.set_config(&c2);
     core.changed(&cfg2);
@@ -1148,7 +1148,7 @@ async fn a_failed_config_never_swaps_a_running_providers_set() {
     core.with(|s| s.objects.remove(&format!("blobs/{}", qh.base)));
     let mut c2 = lookup_config(&up, json!({"vp": vid2, "vq": qid}));
     c2["lookup_providers"]["vq"] = c2["lookup_providers"]["vp"].clone();
-    c2["profiles"]["default"]["lookups"] =
+    c2["profiles"]["default"]["lookup_providers"] =
         json!([{"provider": "vp", "mode": "sync"}, {"provider": "vq", "mode": "sync"}]);
     let cfg2 = core.set_config(&c2);
     core.changed(&cfg2);
@@ -1571,8 +1571,8 @@ async fn queries_held_across_back_to_back_swaps() {
     let id2 = publish(&core, &h2, &s2);
     let cfg = |bundle: &str| {
         let mut c = config(&up, json!({"b": bundle}));
-        c["profiles"]["default"]["lookups"] = json!([{"provider": "vp", "mode": "sync"}]);
-        c["profiles"]["default"]["lookup_budget_ms"] = 30_000.into();
+        c["profiles"]["default"]["lookup_providers"] = json!([{"provider": "vp", "mode": "sync"}]);
+        c["profiles"]["default"]["sync_lookup_budget_ms"] = 30_000.into();
         c["lookup_providers"] = json!({"vp": {"module": "scripted", "config": {},
             "cache_generation": "0123456789abcdef", "sync_timeout_ms": 30_000,
             "async_timeout_ms": 30_000, "fail_mode": "open",

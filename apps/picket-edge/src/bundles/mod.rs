@@ -8,7 +8,7 @@
 //! - **One activation at a time** (a lock), **one part at a time** within a bundle head
 //!   (a split or merge swaps all its shards at once), each swap waiting until the part it
 //!   replaced is freed, so the peak extra RAM is one part (bundles.md §6). A query holds the
-//!   active state it loaded for its whole life (its lookups wait up to `lookup_budget_ms`, at most
+//!   active state it loaded for its whole life (its lookups wait up to `sync_lookup_budget_ms`, at most
 //!   60 s, and resolution up to 3.5 s), so the wait has no short bound: past
 //!   [`WAIT_FREED_MAX`] (2 min) a part still held is taken to be held by a stuck query, and the
 //!   swap goes ahead with a warning naming the part (the bound is a policy choice).
@@ -101,7 +101,7 @@ use store::StepError;
 
 const MIB: usize = 1 << 20;
 /// The longest a swap waits for the part it replaced to be freed (bundles.md §6): well past the
-/// longest a query holds the active state (`lookup_budget_ms` ≤ 60 s plus resolution).
+/// longest a query holds the active state (`sync_lookup_budget_ms` ≤ 60 s plus resolution).
 pub const WAIT_FREED_MAX: Duration = Duration::from_secs(120);
 
 /// Knobs tests shorten.
@@ -323,7 +323,7 @@ fn referenced_bundles(c: &EdgeConfig) -> bool {
     c.profiles.values().any(|p| {
         !p.allow.is_empty()
             || !p.block.is_empty()
-            || p.lookups
+            || p.lookup_providers
                 .iter()
                 .any(|l| !l.include_bundles.is_empty() || !l.exclude_bundles.is_empty())
     }) || !c.lookup_providers.is_empty()

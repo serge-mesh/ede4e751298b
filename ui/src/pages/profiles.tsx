@@ -2,7 +2,7 @@ import * as React from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import type { ColumnDef } from "@tanstack/react-table";
 import { toast } from "sonner";
-import { FlaskConicalIcon, MonitorSmartphoneIcon, PlusIcon, TriangleAlertIcon } from "lucide-react";
+import { ArrowDownIcon, ArrowUpIcon, FlaskConicalIcon, MonitorSmartphoneIcon, PlusIcon, Trash2Icon, TriangleAlertIcon } from "lucide-react";
 import { PageHeader, Section } from "@/components/common/page";
 import { EntityList } from "@/components/common/entity-list";
 import { EntityForm } from "@/components/common/entity-editor";
@@ -16,8 +16,10 @@ import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useBrowserLists, useEntities, useEntity, useModifyEntity, useSettings } from "@/api/queries";
 import { errorMessage } from "@/api/errors";
-import type { BundleDef, ListenerDef, ProfileDef } from "@/api/types";
-import type { FieldOverride } from "@/components/schema-form/schema-form";
+import type { BundleDef, ListenerDef, LookupProviderDef, ProfileDef } from "@/api/types";
+import { Field, type FieldOverride } from "@/components/schema-form/schema-form";
+import { openapiRoot } from "@/lib/openapi";
+import { defaultValue, joinPath } from "@/lib/schema";
 import { formatCompact } from "@/lib/format";
 import { escapeControl } from "@/lib/text";
 
@@ -144,7 +146,7 @@ export function useProfileFormProps() {
       upstream: ({ value, onChange, disabled, id }) => (
         <IdSelect id={id} value={value as string} onChange={(v) => onChange(v ?? "")} disabled={disabled} options={(groups.data ?? []).map((g) => ({ value: g.id ?? "", label: g.name ? `${g.name} (${g.id})` : g.id }))} />
       ),
-      alert_providers: ({ value, onChange, disabled, id }) => (
+      alert_lookup_providers: ({ value, onChange, disabled, id }) => (
         <div className="space-y-1.5">
           <IdSelect
             id={`${id}-mode`}
@@ -152,8 +154,8 @@ export function useProfileFormProps() {
             onChange={(v) => onChange(v === "__default" ? null : ((value as string[] | null) ?? []))}
             disabled={disabled}
             options={[
-              { value: "__default", label: "Every provider whose category is security" },
-              { value: "__list", label: "These providers ([] turns them off)" },
+              { value: "__default", label: "Every lookup provider whose category is security" },
+              { value: "__list", label: "These lookup providers ([] turns them off)" },
             ]}
           />
           {Array.isArray(value) && (
@@ -164,12 +166,85 @@ export function useProfileFormProps() {
               onChange={onChange}
               disabled={disabled}
               addLabel="Add a lookup provider…"
-              emptyText="None: no provider's Blocks alert."
+              emptyText="None: no lookup provider's Blocks alert."
               options={(providers.data ?? []).map((p) => ({ value: p.id ?? "", label: p.id, hint: p.category }))}
             />
           )}
         </div>
       ),
+      lookup_providers: ({ c, id, path, value, onChange, disabled }) => {
+        const items = (Array.isArray(value) ? value : []) as { provider?: string; mode?: string }[];
+        const byId = new Map<string, LookupProviderDef>((providers.data ?? []).map((p) => [p.id ?? "", p]));
+        const move = (i: number, d: number) => {
+          const next = [...items];
+          const [x] = next.splice(i, 1);
+          next.splice(i + d, 0, x);
+          onChange(next);
+        };
+        return (
+          <div className="space-y-2" role="group" aria-labelledby={`${id}-label`}>
+            {items.length === 0 && <p className="text-xs text-muted-foreground">No lookup providers attached.</p>}
+            {items.map((item, i) => {
+              const pid = typeof item?.provider === "string" ? item.provider : "";
+              const lp = pid ? byId.get(pid) : undefined;
+              const heading = lp?.name ? `${lp.name} (${lp.id})` : pid;
+              return (
+                <div key={i} className="rounded-md border p-3">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <span className="flex min-w-0 items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                      {pid ? (
+                        <>
+                          <span className="tabular-nums">#{i + 1}</span>
+                          <span className="truncate text-foreground">
+                            <SafeText>{heading}</SafeText>
+                          </span>
+                        </>
+                      ) : (
+                        <span className="tabular-nums">Lookup provider #{i + 1}</span>
+                      )}
+                    </span>
+                    {!disabled && (
+                      <div className="flex gap-1">
+                        <Button variant="ghost" size="icon-sm" aria-label="Move up" disabled={i === 0} onClick={() => move(i, -1)}>
+                          <ArrowUpIcon />
+                        </Button>
+                        <Button variant="ghost" size="icon-sm" aria-label="Move down" disabled={i === items.length - 1} onClick={() => move(i, 1)}>
+                          <ArrowDownIcon />
+                        </Button>
+                        <Button variant="ghost" size="icon-sm" aria-label={`Remove lookup provider ${i + 1}`} onClick={() => onChange(items.filter((_, j) => j !== i))}>
+                          <Trash2Icon />
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                  <Field
+                    schema={c.schema.items}
+                    name=""
+                    path={joinPath(path, i)}
+                    value={item}
+                    required
+                    depth={2}
+                    onChange={(v) => onChange(items.map((x, j) => (j === i ? v : x)))}
+                  />
+                </div>
+              );
+            })}
+            {!disabled && (
+              <Button
+                id={id}
+                aria-labelledby={`${id}-add`}
+                variant="outline"
+                size="sm"
+                onClick={() => onChange([...items, defaultValue(c.schema.items, openapiRoot) ?? {}])}
+                disabled={c.schema.maxItems !== undefined && items.length >= c.schema.maxItems}
+              >
+                <PlusIcon aria-hidden />
+                <span id={`${id}-add`}>Add a lookup provider</span>
+              </Button>
+            )}
+          </div>
+        );
+      },
       allowed_sources: ({ renderDefault }) => (
         <div className="space-y-1">
           {renderDefault()}
@@ -206,11 +281,11 @@ export function useProfileFormProps() {
   const withLookups = React.useMemo<Record<string, FieldOverride>>(() => {
     const out: Record<string, FieldOverride> = { ...overrides };
     for (let i = 0; i < 32; i++) {
-      out[`lookups.${i}.provider`] = ({ value, onChange, disabled, id }) => (
+      out[`lookup_providers.${i}.provider`] = ({ value, onChange, disabled, id }) => (
         <IdSelect id={id} value={value as string} onChange={(v) => onChange(v ?? "")} disabled={disabled} options={(providers.data ?? []).map((p) => ({ value: p.id ?? "", label: p.name ? `${p.name} (${p.id})` : p.id, hint: p.module }))} />
       );
       for (const k of ["include_bundles", "exclude_bundles"]) {
-        out[`lookups.${i}.${k}`] = ({ value, onChange, disabled, id }) => (
+        out[`lookup_providers.${i}.${k}`] = ({ value, onChange, disabled, id }) => (
           <OrderedPicker
             id={id}
             ordered={false}
@@ -226,10 +301,27 @@ export function useProfileFormProps() {
     }
     return out;
   }, [overrides, providers.data, bundles.data]);
+  const labels = React.useMemo<Record<string, string>>(() => {
+    const out: Record<string, string> = {
+      allow: "Allow bundles (in order)",
+      block: "Block bundles (in order)",
+      trial_bundles: "Trial bundles",
+      lookup_providers: "Lookup providers",
+      sync_lookup_budget_ms: "Sync lookup budget (ms)",
+      alert_lookup_providers: "Alert lookup providers",
+    };
+    for (let i = 0; i < 32; i++) {
+      out[`lookup_providers.${i}.provider`] = "Provider";
+      out[`lookup_providers.${i}.mode`] = "Mode";
+      out[`lookup_providers.${i}.include_bundles`] = "Only for these bundles";
+      out[`lookup_providers.${i}.exclude_bundles`] = "Except these bundles";
+    }
+    return out;
+  }, []);
   return {
     overrides: withLookups,
-    order: ["allowed_sources", "upstream", "log", "allow", "block", "trial_bundles"],
-    labels: { allow: "Allow bundles (in order)", block: "Block bundles (in order)", trial_bundles: "Trial bundles" },
+    order: ["allowed_sources", "upstream", "log", "allow", "block", "trial_bundles", "lookup_providers", "sync_lookup_budget_ms"],
+    labels,
   };
 }
 
