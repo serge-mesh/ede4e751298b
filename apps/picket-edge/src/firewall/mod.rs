@@ -916,9 +916,10 @@ impl FwClient {
                     }
                     let cur = sh.live(&k, now).copied();
                     match cur {
-                        // An earlier op's ack can confirm the key while a move's correction is
-                        // still queued; the answer then waits for the correction, as below.
-                        Some(e) if !e.unconfirmed && !inf.get(&k).is_some_and(|f| f.correct) => {
+                        // A recordless ack (an IP allow, a re-send) can confirm the key while an
+                        // answer's `ensure` or a move's correction is still queued; the answer then
+                        // joins that flight and waits for its recorded ack, as below.
+                        Some(e) if !e.unconfirmed && !inf.contains_key(&k) => {
                             granted = true;
                             if e.dns_exp + hyst >= desired {
                                 continue;
@@ -2961,7 +2962,14 @@ mod tests {
         assert!(c.inflight().get(&k).is_some_and(|f| f.correct));
         let c3 = Arc::clone(&c);
         let b_ans = tokio::spawn(async move { ensure_mac(&c3, ip, b, k.dst, 60).await });
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // B reached the decision and joined the flight (A's waiter and B's) instead of answering.
+        assert!(
+            until(Duration::from_secs(5), || {
+                c.inflight().get(&k).is_some_and(|f| f.tx.receiver_count() >= 2)
+            })
+            .await,
+            "B joins the flight"
+        );
         assert!(!b_ans.is_finished(), "B waits for the correction");
         // The helper applies the rest in order; B is answered once its key is back.
         let mut kernel = true;
@@ -2976,6 +2984,126 @@ mod tests {
         let b_out = b_ans.await.unwrap();
         assert!(!b_out.servfail && !b_out.late);
         assert!(a_ans.await.unwrap().servfail);
+    }
+
+    /// A's DNS ensure, then A's recordless allow ensure, then the move's delete are queued; B takes
+    /// over the flight. The DNS ack queues B's correction behind the delete (clearing
+    /// `f.correct`), the allow ack confirms B's entry by key. A second B answer must still wait
+    /// for the correction and see it refused, not take the confirmed-entry fast path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_later_allow_ack_does_not_let_an_answer_skip_a_queued_correction() {
+        let d = tempfile::tempdir().unwrap();
+        let (logs, _rx) = LogProducer::new("b".into(), Arc::default());
+        let c = FwClient::new(
+            FwTuning::default(),
+            Neighbours::new(),
+            Interfaces::new(),
+            Conditions::new(logs.clone()),
+            logs.clone(),
+            Clock::fixed(true),
+            AllowsStore::load(&d.path().join("allows.json"), logs),
+        );
+        c.set_needed(true);
+        c.view.store(Arc::new(View {
+            ack_wait_ms: 3000,
+            ..View::default()
+        }));
+        let mut rx = c.fast_rx.lock().unwrap().take().unwrap();
+        let (a, b) = ([0x02, 0, 0, 0, 0, 1], [0x02, 0, 0, 0, 0, 2]);
+        let k = pkey("192.168.1.50", "100.100.100.100");
+        let ip = k.src.unwrap();
+        c.neighbours.replace(&[(ip, a)]);
+        c.neighbour_event(NeighbourEvent::Gained { mac: a, ip });
+        let ob = owner_of_mac(&b);
+        let servfail_req = |c: Arc<FwClient>| async move {
+            let device = DeviceKey::Mac(b);
+            let firewall = ProfileFirewall {
+                on_full: OnFull::Servfail,
+                ..Default::default()
+            };
+            let addrs = [FwAddr {
+                ip: k.dst,
+                client_ttl: 60,
+            }];
+            c.ensure(&FwRequest {
+                client: ip,
+                device: &device,
+                profile: "p",
+                firewall: &firewall,
+                addrs: &addrs,
+            })
+            .await
+        };
+        // 1. A's answer: a recorded ensure (E1) and a flight.
+        let c1 = Arc::clone(&c);
+        let a_ans = tokio::spawn(async move { ensure_mac(&c1, ip, a, k.dst, 600).await });
+        assert!(until(Duration::from_secs(5), || c.inflight().contains_key(&k)).await);
+        // 2. A's IP allow: a recordless ensure (E2) behind it.
+        let c2 = Arc::clone(&c);
+        let a_allow = tokio::spawn(async move {
+            c2.grant_allow(&crate::neighbours::format_mac(&a), &[ip], k.dst, 3600)
+                .await
+        });
+        assert!(
+            until(Duration::from_secs(5), || c
+                .shadow()
+                .get(&k)
+                .is_some_and(|e| e.allow_exp > 0))
+            .await
+        );
+        // 3. The move to B: the allow-only entry goes (D3), the flight is revoked.
+        c.neighbours.replace(&[(ip, b)]);
+        c.neighbour_event(NeighbourEvent::Gained { mac: b, ip });
+        assert!(c.shadow().get(&k).is_none());
+        assert!(c.inflight().get(&k).is_some_and(|f| f.revoked && f.correct));
+        // 4. B's first answer takes the flight over.
+        let b1 = tokio::spawn(servfail_req(Arc::clone(&c)));
+        assert!(
+            until(Duration::from_secs(5), || c.inflight().get(&k).is_some_and(|f| f
+                .dns_owner
+                == Some(ob)
+                && f.generation == 1
+                && f.correct))
+            .await
+        );
+        // 5. E1 acked: B's entry recorded, the correction (F4) queued behind D3, `correct` cleared.
+        let e1 = rx.recv().await.unwrap();
+        assert!(e1.kind == OpKind::Ensure && e1.record.is_some());
+        c.complete(e1, &OpResult::Ok);
+        assert!(c.shadow().get(&k).is_some_and(|e| e.unconfirmed));
+        assert!(c.inflight().get(&k).is_some_and(|f| !f.correct));
+        // 6. E2 (A's allow, no record) acked: confirms B's entry by key.
+        let e2 = rx.recv().await.unwrap();
+        assert!(e2.kind == OpKind::Ensure && e2.record.is_none());
+        c.complete(e2, &OpResult::Ok);
+        assert!(c.shadow().get(&k).is_some_and(|e| !e.unconfirmed));
+        // 7. B's second answer must wait for the correction (D3 and F4 are still queued).
+        let b2 = tokio::spawn(servfail_req(Arc::clone(&c)));
+        // It joined the flight (A's waiter, B's first and second) instead of answering.
+        assert!(
+            until(Duration::from_secs(5), || {
+                c.inflight().get(&k).is_some_and(|f| f.tx.receiver_count() >= 3)
+            })
+            .await,
+            "B's second answer joins the flight"
+        );
+        assert!(
+            !b2.is_finished(),
+            "B's second answer returned before the queued delete and correction were applied: {:?}",
+            b2.await.unwrap()
+        );
+        // 8. The delete lands, then the helper refuses the correction.
+        let d3 = rx.recv().await.unwrap();
+        assert_eq!(d3.kind, OpKind::Delete);
+        c.complete(d3, &OpResult::Ok);
+        let f4 = rx.recv().await.unwrap();
+        assert!(f4.kind == OpKind::Ensure && f4.record.is_some());
+        c.complete(f4, &OpResult::Failed("set_full".into()));
+        assert!(b1.await.unwrap().servfail, "B's first answer sees the refusal");
+        assert!(b2.await.unwrap().servfail, "B's second answer sees the refusal");
+        assert!(a_ans.await.unwrap().servfail);
+        assert!(a_allow.await.unwrap().is_ok());
+        assert!(c.inflight().get(&k).is_none());
     }
 
     #[tokio::test]
