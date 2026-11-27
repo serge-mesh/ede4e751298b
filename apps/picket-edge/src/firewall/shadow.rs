@@ -92,6 +92,8 @@ impl FwKey {
 pub struct Entry {
     /// Expiry from DNS answers (seconds, monotonic).
     pub dns_exp: u64,
+    /// DNS authorization's device, independent of share accounting; None until first discovery.
+    pub dns_owner: Option<u64>,
     /// Expiry from a temporary IP allow (0: none).
     pub allow_exp: u64,
     /// The device that granted the allow, independent of the key's share accounting.
@@ -198,13 +200,43 @@ impl Shadow {
     /// Inserts or updates `k`. Returns true when it was new (absent or expired). An expired
     /// entry taken up again is confirmed (the caller sends or has sent its `ensure`).
     pub fn upsert(&mut self, k: FwKey, dns_exp: u64, allow_exp: Option<u64>, owner: u64, now: u64) -> bool {
+        self.upsert_owned(k, dns_exp, allow_exp, owner, Some(owner), now)
+    }
+
+    pub fn upsert_dns(
+        &mut self,
+        k: FwKey,
+        dns_exp: u64,
+        owner: u64,
+        dns_owner: Option<u64>,
+        now: u64,
+    ) -> bool {
+        self.upsert_owned(k, dns_exp, None, owner, dns_owner, now)
+    }
+
+    fn upsert_owned(
+        &mut self,
+        k: FwKey,
+        dns_exp: u64,
+        allow_exp: Option<u64>,
+        owner: u64,
+        dns_owner: Option<u64>,
+        now: u64,
+    ) -> bool {
         match self.map.get_mut(&k) {
             Some(e) => {
                 let was_live = e.exp() > now;
                 if !was_live {
                     e.unconfirmed = false;
                 }
-                e.dns_exp = e.dns_exp.max(dns_exp);
+                if dns_exp > 0 {
+                    e.dns_exp = if e.dns_owner == dns_owner {
+                        e.dns_exp.max(dns_exp)
+                    } else {
+                        dns_exp
+                    };
+                    e.dns_owner = dns_owner;
+                }
                 if let Some(a) = allow_exp {
                     e.allow_exp = a;
                     e.allow_owner = (a > 0).then_some(owner);
@@ -223,6 +255,7 @@ impl Shadow {
                     k,
                     Entry {
                         dns_exp,
+                        dns_owner: dns_owner.filter(|_| dns_exp > 0),
                         allow_exp: allow_exp.unwrap_or(0),
                         allow_owner: allow_exp.filter(|a| *a > 0).map(|_| owner),
                         owner,
@@ -238,9 +271,18 @@ impl Shadow {
     }
 
     /// Sets a key's expiries outright (the reconcile and allow changes).
-    pub fn set_exps(&mut self, k: &FwKey, dns_exp: u64, allow_exp: u64, allow_owner: Option<u64>, now: u64) {
+    pub fn set_exps(
+        &mut self,
+        k: &FwKey,
+        dns_exp: u64,
+        dns_owner: Option<u64>,
+        allow_exp: u64,
+        allow_owner: Option<u64>,
+        now: u64,
+    ) {
         if let Some(e) = self.map.get_mut(k) {
             e.dns_exp = dns_exp;
+            e.dns_owner = dns_owner.filter(|_| dns_exp > 0);
             e.allow_exp = allow_exp;
             e.allow_owner = allow_owner.filter(|_| allow_exp > 0);
             e.changed = stamp(now);
@@ -345,6 +387,17 @@ impl Shadow {
             .get(&(set, dst))
             .copied()
             .filter(|exp| *exp > now)
+    }
+
+    /// Existing admitted DNS access remains valid for its device even if the bounded
+    /// backfill table rejected it. Unidentified entries can be adopted on first discovery.
+    pub fn dns_exp_for(&self, k: &FwKey, mac: &Mac, now: u64, adopt: bool) -> u64 {
+        let owner = owner_of(&crate::neighbours::format_mac(mac));
+        let retained = self
+            .get(k)
+            .filter(|e| e.dns_owner == Some(owner) || (e.dns_owner.is_none() && adopt))
+            .map_or(0, |e| e.dns_exp);
+        retained.max(self.grant_exp(mac, k.set, k.dst, now).unwrap_or(0))
     }
 
     /// The live grants of device `mac`.
