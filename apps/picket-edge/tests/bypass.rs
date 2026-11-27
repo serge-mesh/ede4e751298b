@@ -61,6 +61,7 @@ fn tuning(d: &Dirs, socket: PathBuf) -> Tuning {
     let mut t = Tuning {
         platform: Some(picket_edge::paths::HostPlatform::Debian),
         clock: Some(picket_edge::clock::Clock::fixed(true)),
+        neighbours: Some(picket_edge::neighbours::Neighbours::new()),
         update_result: Some(d.data.join("no-update-result.json")),
         service: Some(false),
         firmware_file: d.data.join("no-such-version-file"),

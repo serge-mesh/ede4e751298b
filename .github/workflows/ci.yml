@@ -184,7 +184,7 @@ jobs:
           path: |
             ~/.local/zig-${{ env.ZIG_VERSION }}
             ~/.local/cargo-zigbuild-${{ env.CARGO_ZIGBUILD_VERSION }}
-          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ env.ZIG_VERSION }}-${{ env.ZIG_SHA256 }}-cargo-zigbuild-${{ env.CARGO_ZIGBUILD_VERSION }}
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ env.ZIG_VERSION }}-${{ env.ZIG_SHA256 }}-cargo-zigbuild-${{ env.CARGO_ZIGBUILD_VERSION }}-${{ hashFiles('scripts/install-ci-tool.sh') }}
 
       - name: Install pinned Rust, aarch64 and llvm-objdump
         run: |
@@ -198,7 +198,7 @@ jobs:
       - name: Pruned ARM dependency cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          key: edge-aarch64-zig-${{ env.ZIG_VERSION }}-zigbuild-${{ env.CARGO_ZIGBUILD_VERSION }}
+          key: edge-aarch64-zig-${{ env.ZIG_VERSION }}-zigbuild-${{ env.CARGO_ZIGBUILD_VERSION }}-${{ hashFiles('scripts/check-edge-aarch64.sh') }}
           cache-bin: false
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -254,7 +254,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.local/cargo-deny-${{ env.CARGO_DENY_VERSION }}
-          key: cargo-deny-${{ runner.os }}-${{ runner.arch }}-${{ env.CARGO_DENY_VERSION }}
+          key: cargo-deny-${{ runner.os }}-${{ runner.arch }}-${{ env.CARGO_DENY_VERSION }}-${{ hashFiles('scripts/install-ci-tool.sh') }}
 
       - name: Install the pinned Rust toolchain
         run: |
