@@ -153,7 +153,7 @@ export class FakeEdge {
   /** The `retry_after_s` of DNS allows a PATCH creates or re-times (IP allows get 0, as on the edge). */
   retryAfterS = 1;
   /**
-   * DNS allows get the edge's `retry_after_s` instead: block time + max(60 s, block TTL + 5 s) − now
+   * DNS allows get the edge's `retry_after_s` instead: block time + max(60 s, block TTL + 5 s) − now, at most expires_at − 5 s − now
    * (edge.md §12; apps/picket-edge bypass `retry_after`).
    */
   edgeRetry = false;
@@ -477,7 +477,8 @@ export class FakeEdge {
     if (!this.edgeRetry || a.blockAt === undefined) {
       return this.retryAfterS;
     }
-    const end = a.blockAt + Math.max(60, this.blockTtl + 5) * 1000;
+    // As the edge: never later than 5 s before the allow ends (expires_at is Unix seconds).
+    const end = Math.min(a.blockAt + Math.max(60, this.blockTtl + 5) * 1000, (a.expires_at - 5) * 1000);
     return Math.max(0, Math.trunc((end - Date.now()) / 1000));
   }
 

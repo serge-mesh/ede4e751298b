@@ -194,8 +194,14 @@ fn view(a: &StoredAllow, retry_after: Option<u64>) -> AllowView {
     }
 }
 
+/// How long before an allow's `expires_at` its reload must happen at the latest: room for the
+/// reload and the extension's second attempt 2 s later while the allow still holds.
+pub const RETRY_BEFORE_EXPIRY_S: i64 = 5;
+
 /// `retry_after_s` (edge.md §12): `max(0, block_time + hold − now)` for a DNS allow,
-/// `hold = max(60 s, block TTL + 5 s)` ([`ring::hold_s`]); 0 for an IP allow.
+/// `hold = max(60 s, block TTL + 5 s)` ([`ring::hold_s`]), but never later than
+/// [`RETRY_BEFORE_EXPIRY_S`] before the allow expires: a block TTL about as long as the allow
+/// would otherwise put the reload after it, where it meets the block again; 0 for an IP allow.
 pub fn retry_after(a: &StoredAllow, now: Timestamp) -> u64 {
     if a.kind == AllowKind::Ip {
         return 0;
@@ -205,7 +211,9 @@ pub fn retry_after(a: &StoredAllow, now: Timestamp) -> u64 {
     };
     let hold = SignedDuration::from_secs(i64::try_from(ring::hold_s(ttl)).unwrap_or(i64::MAX));
     let end = picket_api::time::saturating_add(t, hold);
-    u64::try_from((end - now).as_secs()).unwrap_or(0)
+    let latest =
+        picket_api::time::saturating_add(a.expires_at, SignedDuration::from_secs(-RETRY_BEFORE_EXPIRY_S));
+    u64::try_from((end.min(latest) - now).as_secs()).unwrap_or(0)
 }
 
 /// The labels of a wire name.
@@ -1564,6 +1572,13 @@ mod tests {
         assert_eq!(retry_after(&a, now), 295);
         a.block_time = Some(now - jiff::SignedDuration::from_secs(400));
         assert_eq!(retry_after(&a, now), 0);
+        // A block TTL about as long as the allow: the reload comes 5 s before the allow ends.
+        a.block_time = Some(now - jiff::SignedDuration::from_secs(1));
+        a.block_ttl = Some(898);
+        a.expires_at = now + jiff::SignedDuration::from_secs(900);
+        assert_eq!(retry_after(&a, now), 895, "bounded by expires_at − 5 s");
+        a.expires_at = now + jiff::SignedDuration::from_secs(3);
+        assert_eq!(retry_after(&a, now), 0, "too late to wait: reload now");
         let ip = crate::allows::tests::allow("b", AllowKind::Ip, 3600);
         assert_eq!(retry_after(&ip, now), 0);
     }
@@ -1579,6 +1594,8 @@ mod tests {
         let mut a = crate::allows::tests::allow("a", AllowKind::Dns, 3600);
         a.block_time = Some(near_end);
         a.block_ttl = Some(300);
-        assert_eq!(retry_after(&a, near_end), 10);
+        a.expires_at = Timestamp::MAX;
+        // The hold saturates at the range end; the allow's end, 5 s earlier, bounds it.
+        assert_eq!(retry_after(&a, near_end), 5);
     }
 }
