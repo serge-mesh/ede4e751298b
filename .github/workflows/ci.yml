@@ -25,10 +25,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Cache cargo and toolchain
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.rustup/toolchains
@@ -78,10 +80,12 @@ jobs:
       # Optional in CI (empty on forks); release workflows also set PICKET_REQUIRE_RELEASE_KEYS=1.
       PICKET_RELEASE_PUB: ${{ vars.RELEASE_PUB }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Cache zig and cargo-zigbuild
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.local/zig-${{ env.ZIG_VERSION }}
@@ -89,7 +93,7 @@ jobs:
           key: zig-${{ env.ZIG_VERSION }}-${{ env.ZIG_SHA256 }}-cargo-zigbuild-${{ env.CARGO_ZIGBUILD_VERSION }}
 
       - name: Cache cargo and toolchain
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.rustup/toolchains
@@ -160,16 +164,18 @@ jobs:
     env:
       CARGO_DENY_VERSION: "0.22.1"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Cache cargo-deny
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.local/cargo-deny-${{ env.CARGO_DENY_VERSION }}
           key: cargo-deny-${{ env.CARGO_DENY_VERSION }}
 
       - name: Cache cargo and toolchain
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.rustup/toolchains
@@ -205,12 +211,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       # Exact Node: the extension's archives use Node's bundled zlib, so their bytes (and the
       # published SHA-256 sums) are reproducible only on the same Node (security.md §6).
       - name: Pinned Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
 
@@ -248,15 +256,17 @@ jobs:
       image: mcr.microsoft.com/playwright:v1.65.1-noble@sha256:1507cbfc550a63a6b7396791ca4f00df17beb56342d2447b3f106c306f525579
       options: --ipc=host
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Pinned Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
 
       - name: Cache npm
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.npm
           key: extension-npm-${{ hashFiles('extension/package-lock.json') }}
@@ -276,7 +286,7 @@ jobs:
 
       - name: Keep the test results of a failed run
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: extension-browser-test-results
           path: extension/test-results/
