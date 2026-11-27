@@ -208,8 +208,8 @@ pub enum Work {
     /// The latest applied blob, read with the current parameters, without the change-ratio gate
     /// (feeds.md §3 "Editing a feed", §8).
     Reingest,
-    /// A held run confirmed by a check (feeds.md §5): applied without the change-ratio gate.
-    /// `source_gen`: the source generation the confirming check observed for.
+    /// A held run confirmed by a check (feeds.md §5): applied without the change-ratio gate, but
+    /// still counted for the drop gate (an extreme drop is never confirmed). `source_gen`: the source generation the confirming check observed for.
     Confirm {
         run_id: i64,
         at: Timestamp,
@@ -1242,8 +1242,8 @@ impl IngestJob {
     }
 
     /// The first gates (feeds.md §5): parse errors and entry counts, which a confirmation
-    /// doesn't skip either; then, where the change-ratio gate applies, the count against the
-    /// applied entries starts (`Phase::CountApplied`). Otherwise the outcome is decided here.
+    /// doesn't skip either; then, where the drop or change-ratio gate applies, the count against
+    /// the applied entries starts (`Phase::CountApplied`). Otherwise the outcome is decided here.
     async fn gates(&mut self) -> Result<Phase> {
         let mut run = self.run.take().context("no run")?;
         run.staged_totals = self.table_totals(&run.stage).await?;
@@ -1266,13 +1266,16 @@ impl IngestJob {
                 Verdict::Reject { gate, reason } => Some(Outcome::Rejected { gate, reason }),
                 Verdict::Hold { reason } => Some(Outcome::Held(reason)),
                 Verdict::Pass => {
-                    // A confirmation applies without the change-ratio gate: that is the gate it
-                    // confirms (feeds.md §5).
-                    let ratio_gate = !run.manual
+                    // A confirmation is counted too, for the drop gate only: it applies without
+                    // the change-ratio gate, the gate it confirms (feeds.md §5).
+                    let count = !run.manual
                         && !import
                         && !run.first_run
-                        && matches!(self.work, Work::Download(_) | Work::Regate { .. });
-                    if ratio_gate { None } else { Some(Outcome::Applied) }
+                        && matches!(
+                            self.work,
+                            Work::Download(_) | Work::Regate { .. } | Work::Confirm { .. }
+                        );
+                    if count { None } else { Some(Outcome::Applied) }
                 }
             },
         };
@@ -1293,12 +1296,25 @@ impl IngestJob {
         Ok(next)
     }
 
-    /// The count against the applied entries is done: within the limit → applied; else the run
-    /// holds, unless a held run is waiting and this one is within *its* limit (the held blob is
-    /// parsed again for that, `Phase::ParseHeld`).
+    /// The count against the applied entries is done: an extreme drop → rejected (never applied,
+    /// whatever `confirm_after`); a confirmation → applied; within the limit → applied; else the
+    /// run holds, unless a held run is waiting and this one is within *its* limit (the held blob
+    /// is parsed again for that, `Phase::ParseHeld`).
     async fn after_count_applied(&mut self, ch: Changes) -> Result<Phase> {
         let mut run = self.run.take().context("no run")?;
         run.vs_applied = ch;
+        if let Some(reason) = gates::drop_gate(&run.params.sanity, &run.vs_applied, &run.ratio_base) {
+            self.decided(&mut run, Outcome::Rejected { gate: "drop", reason });
+            let next = self.after_gates(&run);
+            self.run = Some(run);
+            return Ok(next);
+        }
+        if matches!(self.work, Work::Confirm { .. }) {
+            self.decided(&mut run, Outcome::Applied);
+            let next = self.after_gates(&run);
+            self.run = Some(run);
+            return Ok(next);
+        }
         let next = match gates::change_gate(&run.params.sanity, &run.vs_applied, &run.ratio_base) {
             None => {
                 self.decided(&mut run, Outcome::Applied);

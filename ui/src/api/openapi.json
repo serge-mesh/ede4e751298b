@@ -3706,7 +3706,9 @@
               "max_entries": null,
               "max_parse_error_ratio": 0.01,
               "min_change_allowance": 100,
-              "min_entries": 1
+              "min_entries": 1,
+              "reject_drop_min_entries": 100,
+              "reject_drop_ratio": 0.99
             }
           },
           "system": {
@@ -9384,6 +9386,22 @@
             "minimum": 0,
             "type": [
               "integer",
+              "null"
+            ]
+          },
+          "reject_drop_min_entries": {
+            "default": 100,
+            "description": "The drop gate applies to a type only from this many previous entries, so a small list\ncan still lose its last few.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reject_drop_ratio": {
+            "default": 0.99,
+            "description": "Rejects a run whose net drop of a `replace` type's entries (removed − added) is at least\nthis share of its previous count: a broken source that still serves a handful of entries\nis never applied, however long it waits. Null turns the gate off.",
+            "format": "double",
+            "type": [
+              "number",
               "null"
             ]
           }
