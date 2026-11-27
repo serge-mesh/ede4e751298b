@@ -165,6 +165,28 @@ impl Shadow {
         self.share.get(&(owner, s)).copied().unwrap_or(0)
     }
 
+    /// Recharges an existing key without allocating another set slot.
+    pub fn transfer_owner(&mut self, k: &FwKey, owner: u64) -> bool {
+        let Some(old) = self.map.get(k).map(|e| e.owner) else {
+            return false;
+        };
+        if old == owner {
+            return true;
+        }
+        let charged = self
+            .share_of(owner, k.set)
+            .saturating_add(self.pending.get(&(owner, k.set)).copied().unwrap_or(0));
+        if charged >= super::SHARE {
+            return false;
+        }
+        self.dec_share(old, k.set);
+        *self.share.entry((owner, k.set)).or_default() += 1;
+        if let Some(e) = self.map.get_mut(k) {
+            e.owner = owner;
+        }
+        true
+    }
+
     /// Whether `owner` may add `n` keys to `set`: within its share and the set's `maxelem`,
     /// counting the keys still waiting for their ack (edge-firewall.md §2).
     pub fn room(&self, owner: u64, set: SetId, n: u32) -> bool {
