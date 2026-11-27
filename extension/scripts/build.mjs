@@ -50,7 +50,7 @@ async function checkNoRemoteCode(dir) {
   for (const f of await files(dir)) {
     const text = await readFile(f, 'utf8').catch(() => '');
     if (f.endsWith('.html')) {
-      for (const m of text.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
+      for (const m of text.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\b[^>]*>/gi)) {
         const attrs = m[1] ?? '';
         const src = /\bsrc="([^"]*)"/.exec(attrs)?.[1];
         if (src === undefined || /^[a-z][a-z0-9+.-]*:|^\/\//i.test(src) || (m[2] ?? '').trim() !== '') {
