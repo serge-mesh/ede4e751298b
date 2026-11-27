@@ -91,7 +91,7 @@ use crate::hooks::{HelperProbe, HelperSeed, HelperSnapshot, SelfCheck};
 use crate::logs::{LogProducer, fields};
 use crate::neighbours::{Mac, NeighbourEvent, Neighbours};
 use conn::{Conn, ConnError};
-use shadow::{FwKey, SetId, Shadow, owner_of};
+use shadow::{FwKey, SetId, Shadow, owner_of, owner_of_mac};
 
 /// Most ops coalesced into one `ensure` or `delete` (edge-firewall.md §3 "Batching").
 pub const BATCH: usize = 64;
@@ -616,12 +616,15 @@ impl FwClient {
         if op.kind == OpKind::Ensure {
             let now = self.now_s();
             let mut sh = self.shadow();
-            let flight = match op.record {
+            let mut flight = match op.record {
                 Some(_) => self.inflight().remove(&op.key),
                 None => None,
             };
+            let reserved = op
+                .record
+                .is_some_and(|r| flight.as_ref().map_or(r.reserved, |f| f.reserved));
             if let Some(r) = op.record
-                && flight.as_ref().map_or(r.reserved, |f| f.reserved)
+                && reserved
             {
                 sh.release(flight.as_ref().map_or(r.owner, |f| f.owner), op.key.set);
             }
@@ -641,7 +644,7 @@ impl FwClient {
                 });
                 let mut stale = revoked;
                 if let (Some(ip), Some(mac)) = (op.key.src, current) {
-                    let owner = owner_of(&crate::neighbours::format_mac(&mac));
+                    let owner = owner_of_mac(&mac);
                     let mut known = self.addr_owner.lock().unwrap_or_else(|p| p.into_inner());
                     if dns_owner.is_none() && !revoked && known.get(&ip).is_none_or(|old| *old == mac) {
                         dns_owner = Some(owner); // first discovery of an address-scoped request
@@ -651,6 +654,13 @@ impl FwClient {
                         known.insert(ip, mac);
                     }
                 }
+                // An unreserved flight relied on the map's charge for the key. If that entry went
+                // away (or lapsed under another owner) while the ensure was out, recording it
+                // would charge the key again without a room check.
+                let acct = flight.as_ref().map_or(r.owner, |f| f.owner);
+                let no_room = !reserved
+                    && sh.get(&op.key).is_none_or(|e| e.exp() <= now && e.owner != acct)
+                    && !sh.room(acct, op.key.set, 1);
                 if stale {
                     confirmed = false;
                     result = OpResult::Failed("address_changed".into());
@@ -669,6 +679,11 @@ impl FwClient {
                             follow.delete(op.key);
                         }
                     }
+                } else if no_room {
+                    confirmed = false;
+                    result = OpResult::Failed("set_full".into());
+                    sh.remove(&op.key);
+                    follow.delete(op.key);
                 } else {
                     if let Some(mac) = current
                         && op.key.src.is_some()
@@ -683,18 +698,35 @@ impl FwClient {
                         now,
                     );
                     let exp = sh.get(&op.key).map_or(want, |e| e.exp());
-                    // A move may have queued a delete while this op awaited its ack.
-                    // A fresh current-owner request can replace that revoked flight;
-                    // its correction must follow the delete even if the expiry matches.
-                    if exp != r.sent_exp
-                        || r.dns_owner != dns_owner
-                        || flight.as_ref().is_some_and(|f| f.correct)
-                    {
-                        follow.ensure(op.key, exp.saturating_sub(now).max(1));
-                    }
-                    if !follow.failed.is_empty() {
+                    let secs = exp.saturating_sub(now).max(1);
+                    if let Some(mut f) = flight.take_if(|f| f.correct) {
+                        // A move queued a delete while this op awaited its ack, and a fresh
+                        // current-owner request replaced the revoked flight: the correction
+                        // follows the delete even if the expiry matches. The flight's waiters
+                        // are settled by the correction's own ack, not this one, so a refused
+                        // correction can't report success; the key stays unconfirmed (later
+                        // answers join the flight) until then.
+                        f.correct = false;
+                        f.reserved = false; // the map counts the key now
+                        f.want = want;
+                        f.dns_owner = dns_owner;
+                        let mut fix = Self::op(OpKind::Ensure, op.key, timeout_s(secs), None);
+                        fix.record = Some(Record {
+                            dns_exp: want,
+                            dns_owner,
+                            owner: f.owner,
+                            sent_exp: exp,
+                            reserved: false,
+                        });
+                        self.inflight().insert(op.key, f);
+                        follow.push(fix);
                         confirmed = false;
-                        result = OpResult::Unreachable;
+                    } else if exp != r.sent_exp || r.dns_owner != dns_owner {
+                        follow.ensure(op.key, secs);
+                        if !follow.failed.is_empty() {
+                            confirmed = false;
+                            result = OpResult::Unreachable;
+                        }
                     }
                 }
             }
@@ -852,12 +884,24 @@ impl FwClient {
                 // The grant follows only entries the device may hold (its share, the set's room).
                 let mut granted = false;
                 for k in keys {
-                    if let Some(current) = k.src.and_then(|ip| self.neighbours.mac_of(&ip)) {
-                        if owner_of(&crate::neighbours::format_mac(&current)) != owner {
+                    if let Some(src) = k.src
+                        && let Some(current) = self.neighbours.mac_of(&src)
+                    {
+                        if owner_of_mac(&current) != owner {
                             out.servfail = true;
                             continue;
                         }
-                        self.reconcile_key(&mut sh, &mut q, k, current, false, false);
+                        // The neighbour table can learn a MAC before maintenance handles its
+                        // `Gained`: an unowned (seeded) entry is adopted on first discovery here
+                        // too, as [`Self::neighbour_event`] would, but never after a known move.
+                        let adopt = sh.get(&k).is_some_and(|e| e.dns_owner.is_none())
+                            && self
+                                .addr_owner
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .get(&src)
+                                .is_none_or(|old| *old == current);
+                        self.reconcile_key(&mut sh, &mut q, k, current, adopt, false);
                     }
                     let cur = sh.live(&k, now).copied();
                     match cur {
@@ -885,7 +929,7 @@ impl FwClient {
                                 let dns_owner = mac.filter(|_| k.src.is_some()).map(|_| owner);
                                 if f.revoked || f.dns_owner != dns_owner {
                                     if f.dns_owner != dns_owner
-                                        && !Self::transfer_flight(&mut sh, f, k, owner)
+                                        && !Self::transfer_flight(&mut sh, f, k, owner, now)
                                     {
                                         full = true;
                                         continue;
@@ -990,20 +1034,18 @@ impl FwClient {
         out
     }
 
-    /// A replacement device must pay for its own pending key. Existing slots are
-    /// recharged; a reservation transfer frees its old slot before testing capacity.
-    fn transfer_flight(sh: &mut Shadow, f: &mut Flight, key: FwKey, owner: u64) -> bool {
+    /// A replacement device must pay for its own pending key. A flight over a live entry the map
+    /// charges moves that charge; otherwise the flight keeps (or takes) a reservation until its
+    /// ack, so the charge can't disappear with a lapsed entry. A reservation transfer frees its
+    /// old slot before testing capacity.
+    fn transfer_flight(sh: &mut Shadow, f: &mut Flight, key: FwKey, owner: u64, now: u64) -> bool {
         if f.owner == owner {
             return true;
         }
-        if sh.get(&key).is_some() {
+        if !f.reserved && sh.live(&key, now).is_some() {
             if !sh.transfer_owner(&key, owner) {
                 return false;
             }
-            if f.reserved {
-                sh.release(f.owner, key.set);
-            }
-            f.reserved = false;
         } else {
             if f.reserved {
                 sh.release(f.owner, key.set);
@@ -1120,7 +1162,7 @@ impl FwClient {
             if keys.iter().any(|k| {
                 k.src
                     .and_then(|ip| neighbours.by_ip.get(&ip))
-                    .is_some_and(|mac| owner_of(&crate::neighbours::format_mac(mac)) != owner)
+                    .is_some_and(|mac| owner_of_mac(mac) != owner)
             }) {
                 return Err("the device's address changed owner".into());
             }
@@ -1190,7 +1232,7 @@ impl FwClient {
                                 .copied()
                         })
                     })
-                    .map(|mac| owner_of(&crate::neighbours::format_mac(&mac)));
+                    .map(|mac| owner_of_mac(&mac));
                 // A replacement can fail after maintenance has revoked the old device's
                 // access. Its saved expiry is usable only by the address's current owner.
                 let restore = old.filter(|e| current_owner.is_none_or(|o| e.allow_owner == Some(o)));
@@ -1268,7 +1310,7 @@ impl FwClient {
                 for k in crate::bypass::allow_keys(&a) {
                     if k.src
                         .and_then(|ip| self.neighbours.mac_of(&ip))
-                        .is_some_and(|mac| owner_of(&crate::neighbours::format_mac(&mac)) != owner)
+                        .is_some_and(|mac| owner_of_mac(&mac) != owner)
                     {
                         continue;
                     }
@@ -1305,7 +1347,7 @@ impl FwClient {
             }
             return;
         };
-        let owner = owner_of(&crate::neighbours::format_mac(&mac));
+        let owner = owner_of_mac(&mac);
         let dns_exp = sh.dns_exp_for(&k, &mac, now, adopt);
         if adopt && e.dns_owner.is_none() && dns_exp > now {
             sh.grant(mac, k.set, k.dst, dns_exp);
@@ -1349,6 +1391,21 @@ impl FwClient {
         let now = self.now_s();
         let v4 = ip.is_ipv4();
         let mut out = Outbox::new(self);
+        // The stored IP allows listing this address, found outside the shadow lock (the file can
+        // hold MAX_ALLOWS records); which of them moved is decided under it, below.
+        let ip_text = ip.to_string();
+        let listing: Vec<crate::allows::StoredAllow> = self
+            .allows
+            .snapshot()
+            .allows
+            .iter()
+            .filter(|a| {
+                a.kind == picket_api::logs::AllowKind::Ip
+                    && a.addresses.contains(&ip_text)
+                    && crate::neighbours::parse_mac(&a.device).is_some()
+            })
+            .cloned()
+            .collect();
         let moved_allows = {
             let mut sh = self.shadow();
             // Serialize the authoritative owner read with grants and cleanup. A new
@@ -1363,20 +1420,9 @@ impl FwClient {
                 }
                 g.insert(ip, mac).is_none_or(|old| old == mac)
             };
-            let ip_text = ip.to_string();
-            let moved_allows: Vec<crate::allows::StoredAllow> = self
-                .allows
-                .list()
-                .into_iter()
-                .filter(|a| {
-                    a.kind == picket_api::logs::AllowKind::Ip
-                        && crate::neighbours::parse_mac(&a.device).is_some()
-                        && a.device != owner_text
-                        && a.addresses.contains(&ip_text)
-                })
-                .collect();
-            let mut keys: std::collections::HashSet<FwKey> =
-                sh.map.keys().filter(|k| k.src == Some(ip)).copied().collect();
+            let moved_allows: Vec<crate::allows::StoredAllow> =
+                listing.into_iter().filter(|a| a.device != owner_text).collect();
+            let mut keys: std::collections::HashSet<FwKey> = sh.keys_from(&ip).collect();
             let mut inflight = self.inflight();
             for (key, flight) in inflight.iter_mut().filter(|(k, _)| k.src == Some(ip)) {
                 keys.insert(*key);
@@ -1420,7 +1466,7 @@ impl FwClient {
         // until it lands), so nothing later grants the old device's allow on this address again
         // (edge.md §12).
         if !moved_allows.is_empty() {
-            self.allows.remove_address_held(&moved_allows, &ip.to_string());
+            self.allows.remove_address_held(&moved_allows, &ip_text);
         }
     }
 
@@ -1447,7 +1493,7 @@ impl FwClient {
             if let Some(ip) = key.src
                 && let Some(mac) = map.by_ip.get(&ip)
             {
-                let owner = owner_of(&crate::neighbours::format_mac(mac));
+                let owner = owner_of_mac(mac);
                 let adopt = known.get(&ip).is_none_or(|old| old == mac);
                 if (entry.allow_exp > 0 && entry.allow_owner != Some(owner))
                     || (entry.dns_exp > now
@@ -1461,7 +1507,7 @@ impl FwClient {
         for (key, flight) in self.inflight().iter() {
             if let Some(ip) = key.src
                 && let Some(mac) = map.by_ip.get(&ip)
-                && (flight.revoked || flight.dns_owner != Some(owner_of(&crate::neighbours::format_mac(mac))))
+                && (flight.revoked || flight.dns_owner != Some(owner_of_mac(mac)))
             {
                 changed.insert(ip, *mac);
             }
@@ -1711,7 +1757,7 @@ impl FwClient {
                 let owner = match mac {
                     Some(m) => {
                         sh.grant(m, k.set, k.dst, exp);
-                        owner_of(&crate::neighbours::format_mac(&m))
+                        owner_of_mac(&m)
                     }
                     None => owner_of(&owner_text),
                 };
@@ -2828,6 +2874,140 @@ mod tests {
         assert_eq!(rx.borrow().as_ref().unwrap().result, OpResult::Unreachable);
         assert!(c.shadow().get(&k).unwrap().unconfirmed);
         assert_eq!(c.shadow().pending_of(7, k.set), 0);
+    }
+
+    #[tokio::test]
+    async fn a_replacement_waits_for_its_correction_and_sees_it_refused() {
+        let f = fake(Duration::ZERO);
+        let c = client(&f.path);
+        ready(&c).await;
+        let (a, b) = ([0x02, 0, 0, 0, 0, 1], [0x02, 0, 0, 0, 0, 2]);
+        let k = pkey("192.168.1.50", "100.100.100.100");
+        let ip = k.src.unwrap();
+        c.neighbours.replace(&[(ip, a)]);
+        let pause = Arc::new(Notify::new());
+        f.st().pause_ensure = Some(Arc::clone(&pause));
+        let firewall = ProfileFirewall {
+            on_full: OnFull::Servfail,
+            ..Default::default()
+        };
+        let (old, new) = tokio::join!(ensure_mac(&c, ip, a, k.dst, 600), async {
+            assert!(until(Duration::from_secs(5), || !ops_on(&f, &k).is_empty()).await);
+            // The address moves (its delete is queued) and B takes over the pending flight.
+            c.neighbours.replace(&[(ip, b)]);
+            c.neighbour_event(NeighbourEvent::Gained { mac: b, ip });
+            // The helper refuses everything from now on, the correction included.
+            f.st().fail_src = vec![ip];
+            let device = DeviceKey::Mac(b);
+            let addrs = [FwAddr {
+                ip: k.dst,
+                client_ttl: 1,
+            }];
+            let req = FwRequest {
+                client: ip,
+                device: &device,
+                profile: "p",
+                firewall: &firewall,
+                addrs: &addrs,
+            };
+            let (new, ()) = tokio::join!(c.ensure(&req), async {
+                let owner = Some(owner_of_mac(&b));
+                assert!(
+                    until(Duration::from_secs(5), || c
+                        .inflight()
+                        .get(&k)
+                        .is_some_and(|f| f.dns_owner == owner && f.correct))
+                    .await
+                );
+                pause.notify_one();
+            });
+            new
+        });
+        assert!(old.servfail, "A's waiter must not accept B's result");
+        assert!(
+            new.servfail,
+            "B must not be told its entry is in place when the correction was refused"
+        );
+        assert!(c.inflight().get(&k).is_none());
+        assert!(c.shadow().get(&k).is_none_or(|e| e.unconfirmed));
+    }
+
+    #[tokio::test]
+    async fn a_dns_request_before_the_gained_event_keeps_seeded_access() {
+        let f = fake(Duration::ZERO);
+        let k = pkey("192.168.1.50", "100.100.100.100");
+        f.st().dump.insert(sets::PICKET4.into(), vec![k.entry(300)]);
+        let c = client(&f.path);
+        ready(&c).await;
+        let before = c.live_exp(&k).unwrap();
+        let a = [0x02, 0, 0, 0, 0, 1];
+        let ip = k.src.unwrap();
+        // The table has the MAC; maintenance hasn't handled its `Gained` yet.
+        c.neighbours.replace(&[(ip, a)]);
+        let out = ensure_mac(&c, ip, a, k.dst, 10).await;
+        assert!(!out.servfail);
+        assert_eq!(c.live_exp(&k), Some(before), "the cached expiry must survive");
+        assert_eq!(c.shadow().get(&k).unwrap().dns_owner, Some(owner_of_mac(&a)));
+        assert!(!f.st().deleted.iter().any(|e| e.src == k.src && e.dst == k.dst));
+    }
+
+    #[test]
+    fn an_unreserved_flight_whose_entry_vanished_needs_room_to_record() {
+        let d = tempfile::tempdir().unwrap();
+        let (logs, _rx) = LogProducer::new("b".into(), Arc::default());
+        let c = FwClient::new(
+            FwTuning::default(),
+            Neighbours::new(),
+            Interfaces::new(),
+            Conditions::new(logs.clone()),
+            logs.clone(),
+            Clock::fixed(true),
+            AllowsStore::load(&d.path().join("allows.json"), logs),
+        );
+        let k = pkey("192.168.1.50", "100.100.100.100");
+        let now = c.now_s();
+        let exp = now + 600;
+        {
+            let mut sh = c.shadow();
+            for i in 0..SHARE {
+                let other = FwKey {
+                    set: k.set,
+                    src: Some("192.168.1.60".parse().unwrap()),
+                    dst: ip4(0x0a00_0000 + i),
+                };
+                sh.upsert_dns(other, exp, 7, Some(7), now);
+            }
+        }
+        // The flight relied on a live entry's charge; that entry was removed meanwhile.
+        let (tx, rx) = watch::channel(None);
+        c.inflight().insert(
+            k,
+            Flight {
+                tx,
+                want: exp,
+                dns_owner: Some(7),
+                revoked: false,
+                correct: false,
+                owner: 7,
+                reserved: false,
+                generation: 0,
+            },
+        );
+        let mut op = FwClient::op(OpKind::Ensure, k, 600, None);
+        op.record = Some(Record {
+            dns_exp: exp,
+            dns_owner: Some(7),
+            owner: 7,
+            sent_exp: exp,
+            reserved: false,
+        });
+        c.complete(op, &OpResult::Ok);
+        assert_eq!(
+            rx.borrow().as_ref().unwrap().result,
+            OpResult::Failed("set_full".into())
+        );
+        assert!(c.shadow().get(&k).is_none());
+        assert_eq!(c.shadow().share_of(7, k.set), SHARE);
     }
 
     #[tokio::test]

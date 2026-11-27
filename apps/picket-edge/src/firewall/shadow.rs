@@ -131,6 +131,9 @@ pub struct Shadow {
     /// §2 "Share per client").
     pending: HashMap<(u64, SetId), u32>,
     pending_fill: [u32; 4],
+    /// The map's pair keys per source address, so a neighbour change visits only that
+    /// address's keys instead of scanning the whole map under the lock.
+    by_src: HashMap<IpAddr, std::collections::HashSet<FwKey>>,
 }
 
 /// Most devices whose grants are tracked (README §2 Bounded).
@@ -163,6 +166,11 @@ impl Shadow {
 
     pub fn share_of(&self, owner: u64, s: SetId) -> u32 {
         self.share.get(&(owner, s)).copied().unwrap_or(0)
+    }
+
+    /// The map's keys whose source is `src` (any expiry).
+    pub fn keys_from(&self, src: &IpAddr) -> impl Iterator<Item = FwKey> + '_ {
+        self.by_src.get(src).into_iter().flatten().copied()
     }
 
     /// Recharges an existing key without allocating another set slot.
@@ -287,6 +295,9 @@ impl Shadow {
                 );
                 self.fill[k.set.index()] += 1;
                 *self.share.entry((owner, k.set)).or_default() += 1;
+                if let Some(src) = k.src {
+                    self.by_src.entry(src).or_default().insert(k);
+                }
                 true
             }
         }
@@ -345,6 +356,14 @@ impl Shadow {
     /// Removes `k`.
     pub fn remove(&mut self, k: &FwKey) -> Option<Entry> {
         let e = self.map.remove(k)?;
+        if let Some(src) = k.src
+            && let Some(keys) = self.by_src.get_mut(&src)
+        {
+            keys.remove(k);
+            if keys.is_empty() {
+                self.by_src.remove(&src);
+            }
+        }
         self.fill[k.set.index()] = self.fill[k.set.index()].saturating_sub(1);
         self.dec_share(e.owner, k.set);
         Some(e)
@@ -414,7 +433,7 @@ impl Shadow {
     /// Existing admitted DNS access remains valid for its device even if the bounded
     /// backfill table rejected it. Unidentified entries can be adopted on first discovery.
     pub fn dns_exp_for(&self, k: &FwKey, mac: &Mac, now: u64, adopt: bool) -> u64 {
-        let owner = owner_of(&crate::neighbours::format_mac(mac));
+        let owner = owner_of_mac(mac);
         let retained = self
             .get(k)
             .filter(|e| e.dns_owner == Some(owner) || (e.dns_owner.is_none() && adopt))
@@ -453,9 +472,46 @@ pub fn owner_of(text: &str) -> u64 {
     h.finish()
 }
 
+/// [`owner_of`] for a MAC's text, written on the stack: the firewall checks owners per key on
+/// the query path, which must not allocate (build-and-test.md §4).
+pub fn owner_of_mac(mac: &Mac) -> u64 {
+    crate::dns::profiles::DeviceKey::Mac(*mac).with_text(owner_of)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keys_are_indexed_by_source_until_removed() {
+        let mut s = Shadow::default();
+        let src: IpAddr = "192.168.1.5".parse().unwrap();
+        let pair = |dst: &str| FwKey {
+            set: SetId::P4,
+            src: Some(src),
+            dst: dst.parse().unwrap(),
+        };
+        let (a, b) = (pair("1.1.1.1"), pair("2.2.2.2"));
+        s.upsert(a, 10, None, 1, 0);
+        s.upsert(b, 20, None, 1, 0);
+        s.upsert(k("3.3.3.3"), 30, None, 1, 0);
+        let mut keys: Vec<FwKey> = s.keys_from(&src).collect();
+        keys.sort();
+        assert_eq!(keys, [a, b]);
+        s.remove(&a);
+        assert_eq!(s.keys_from(&src).collect::<Vec<_>>(), [b]);
+        s.prune(25);
+        assert_eq!(s.keys_from(&src).count(), 0);
+        assert_eq!(s.by_src.len(), 1, "only the other source's key is left");
+        s.prune(35);
+        assert!(s.by_src.is_empty());
+    }
+
+    #[test]
+    fn mac_owner_matches_the_formatted_text() {
+        let m = [0xaa, 0x0b, 0, 0xff, 1, 2];
+        assert_eq!(owner_of_mac(&m), owner_of(&crate::neighbours::format_mac(&m)));
+    }
 
     fn k(dst: &str) -> FwKey {
         FwKey {
