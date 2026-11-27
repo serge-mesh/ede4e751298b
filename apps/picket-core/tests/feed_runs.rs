@@ -478,6 +478,55 @@ async fn a_confirmation_judges_parse_errors_with_the_current_format() {
     assert!(get_json(&c, "/feeds/ab/status").await["held_run"].is_null());
 }
 
+/// A confirmation still counts for the drop gate: a held run that drops 99 % or more (held
+/// before the gate existed, with its params already saying the gate is on, so no re-gate judges
+/// it first) is rejected when the source keeps serving it, and the applied entries stay.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_confirmation_is_rejected_by_the_drop_gate() {
+    let (srv, body) = list_server().await;
+    let c = core_with(Some(&srv), None).await;
+    *body.lock().unwrap() = names("a", 200);
+    let def = |sanity: Value| {
+        json!({"id": "d", "name": "D", "provider": "http", "provider_config": {"url": format!("https://{HOST}/d.txt")},
+               "format": "plain", "sanity": sanity})
+    };
+    let base = json!({"max_change_ratio": 0.1, "min_change_allowance": 5, "confirm_after": "1h"});
+    let mut off = base.clone();
+    off["reject_drop_ratio"] = Value::Null;
+    create_feed(&c, def(off)).await;
+    first_run(&c, "d").await;
+    let applied = open_keys(&c, "d").await;
+    assert_eq!(applied.len(), 200);
+    *body.lock().unwrap() = names("a", 1);
+    check_now(&c, "d").await;
+    let held = newest_run(&c, "d").await;
+    assert_eq!(held["status"], "held", "{held}");
+    // As if held before the upgrade: its params carry the default drop gate, as the feed's do.
+    exec(
+        &c,
+        &format!(
+            "UPDATE feed_runs SET params_json = json_set(params_json, '$.sanity.reject_drop_ratio', 0.99) WHERE id = {}",
+            held["id"]
+        ),
+    )
+    .await;
+    update_feed(&c, "d", def(base)).await;
+    wait_until("the edit", || async { !c.state.feeds.is_busy("d") }).await;
+    assert_eq!(newest_run(&c, "d").await["status"], "held", "no re-gate");
+    age_hold(&c, "d").await;
+    check_now(&c, "d").await;
+    wait_until("the confirmation", || async { !c.state.feeds.is_busy("d") }).await;
+    let r = get_json(&c, &format!("/feeds/d/runs/{}", held["id"])).await;
+    assert_eq!(
+        (r["run"]["status"].as_str(), r["run"]["gate"].as_str()),
+        (Some("rejected"), Some("drop")),
+        "{r}"
+    );
+    assert_eq!(open_keys(&c, "d").await, applied, "nothing applied");
+    assert!(get_json(&c, "/feeds/d/status").await["held_run"].is_null());
+    assert_eq!(alert_state(&c, "feed_held:d").await.as_deref(), Some("open"));
+}
+
 /// F5: an unchanged result confirms only the held run whose blob the source serves: with A
 /// applied (and re-ingested), B held, and the source back to A, B is never applied; it is
 /// superseded and `feed_held` resolves.
