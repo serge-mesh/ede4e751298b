@@ -16,7 +16,7 @@
 //!   an out-of-scope name never reaches the provider. Async attachments never block.
 //! - **Source (c), re-checks:** the same answered queries, for every provider the profile attaches
 //!   (`sync` or `async`) with `recheck` on, add re-check deadlines ([`super::queue::admit`]).
-//!   `alert_providers` never adds a provider to a re-check.
+//!   `alert_lookup_providers` never adds a provider to a re-check.
 //! - **Answers against Blocks:** a real answer (allowed, or rewritten with records) in a profile
 //!   that alerts on providers is checked against their Blocks already checked in the window
 //!   ([`super::answered`]); a match raises `category_answered`. A batch's answers are grouped by
@@ -353,7 +353,7 @@ fn prepare(
             continue;
         };
         let mut seen: BTreeSet<&str> = BTreeSet::new();
-        for att in &prof.edge.lookups {
+        for att in &prof.edge.lookup_providers {
             if !seen.insert(att.provider.as_str()) {
                 continue;
             }
@@ -434,7 +434,7 @@ pub async fn apply(
         let Some(prof) = q.profile.as_ref().and_then(|p| model.profiles.get(p)) else {
             continue;
         };
-        let alerting = super::alert_providers(&model, prof);
+        let alerting = super::alert_lookup_providers(&model, prof);
         if !alerting.is_empty() {
             answers.push(AnswerCheck {
                 idx,

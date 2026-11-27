@@ -553,12 +553,12 @@ describe("V11: a reconnect or lagged stream never downloads an open manual file 
 
 describe("V12: Keep my changes merges fields core checks together as one value (core.md §2)", () => {
   it("never leaves a bundle Enforce moved in neither list", () => {
-    const base = { name: "Kids", block: ["block-common"], trial_bundles: ["trial-x"], lookups: [] };
+    const base = { name: "Kids", block: ["block-common"], trial_bundles: ["trial-x"], lookup_providers: [] };
     const mine = { ...base, name: "Kids 2", block: ["block-common", "ads"] };
     const theirs = { ...base, block: ["block-common", "trial-x"], trial_bundles: [] };
     const { value, replaced } = mergeKeepingMine(base, mine, theirs, COUPLED_FIELDS.profiles);
-    expect(value).toEqual({ name: "Kids 2", block: ["block-common", "ads"], trial_bundles: ["trial-x"], lookups: [] });
-    expect(replaced).toEqual([["block", "trial_bundles", "lookups"]]);
+    expect(value).toEqual({ name: "Kids 2", block: ["block-common", "ads"], trial_bundles: ["trial-x"], lookup_providers: [] });
+    expect(replaced).toEqual([["block", "trial_bundles", "lookup_providers"]]);
     // A change elsewhere to the group with none here is taken as it is.
     expect(mergeKeepingMine(base, { ...base, name: "Kids 2" }, theirs, COUPLED_FIELDS.profiles)).toEqual({ value: { ...theirs, name: "Kids 2" }, replaced: [] });
     expect(theirs.trial_bundles).toEqual([]);

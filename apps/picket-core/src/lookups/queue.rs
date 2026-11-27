@@ -613,7 +613,7 @@ pub fn recheck_decision(
         let Some(prof) = model.profiles.get(pid) else {
             continue;
         };
-        let Some(att) = prof.edge.lookups.iter().find(|a| a.provider == provider) else {
+        let Some(att) = prof.edge.lookup_providers.iter().find(|a| a.provider == provider) else {
             continue;
         };
         if super::scope::in_forward_zone(model, prof, name) {

@@ -144,6 +144,81 @@ describe("profiles", () => {
     renderApp("/profiles/default");
     expect(await screen.findByText(/block answers open no firewall entries/, undefined, T)).toBeInTheDocument();
   });
+
+  it("labels lookup provider fields clearly and saves attached lookup providers", async () => {
+    const user = userEvent.setup();
+    const { calls } = mockApi([
+      {
+        method: "GET",
+        path: "/lookup-providers",
+        body: { items: [{ id: "q9", name: "Quad9", module: "dns", category: "security" }], next_cursor: null },
+      },
+      { method: "POST", path: "/profiles", status: 201, body: (c: Call) => ({ id: (c.body as { id: string }).id, entity: c.body, warnings: [] }) },
+      { method: "GET", path: "/profiles/kids", body: { id: "kids", name: "Kids", allow: [], block: [], lookup_providers: [{ provider: "q9", mode: "sync", include_bundles: [], exclude_bundles: [] }], sync_lookup_budget_ms: 250, upstream: "cloudflare" } },
+    ]);
+    renderApp("/profiles/new");
+    const addBtn = await screen.findByRole("button", { name: "Add a lookup provider" }, T);
+    // Clicking the field's label names the list; it doesn't add a row.
+    await user.click(screen.getByText("Lookup providers", { selector: "label" }));
+    expect(screen.getByText("No lookup providers attached.")).toBeInTheDocument();
+    expect(screen.queryByText("Lookups", { selector: "label, span" })).toBeNull();
+    expect(screen.getByLabelText("Sync lookup budget (ms)")).toBeInTheDocument();
+    expect(screen.getByText("Alert lookup providers", { selector: "label" })).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Name"), "Kids");
+    const budget = screen.getByLabelText("Sync lookup budget (ms)");
+    await user.clear(budget);
+    await user.type(budget, "250");
+    await user.click(addBtn);
+    expect(screen.getByText("Lookup provider #1")).toBeInTheDocument();
+    expect(screen.getByText("Only for these bundles")).toBeInTheDocument();
+    expect(screen.getByText("Except these bundles")).toBeInTheDocument();
+    expect(screen.getByText(/waiting up to/)).toBeInTheDocument();
+    await user.click(screen.getByLabelText("Provider"));
+    await user.click(await screen.findByRole("option", { name: "Quad9 (q9)" }, T));
+    expect(screen.queryByText("Lookup provider #1")).toBeNull();
+    expect(screen.getAllByText("Quad9 (q9)").length).toBeGreaterThanOrEqual(2);
+    await user.click(screen.getByRole("button", { name: "Create profile" }));
+    await waitFor(() => expect(mutations(calls).some((c) => c.path === "/profiles")).toBe(true), T);
+    const post = mutations(calls).find((c) => c.path === "/profiles")!;
+    expect(post.body).toMatchObject({
+      id: "kids",
+      sync_lookup_budget_ms: 250,
+      lookup_providers: [{ provider: "q9", mode: "sync", include_bundles: [], exclude_bundles: [] }],
+    });
+    expect(post.body).not.toHaveProperty("lookups");
+    expect(post.body).not.toHaveProperty("lookup_budget_ms");
+    expect(post.body).not.toHaveProperty("alert_providers");
+  });
+
+  it("keeps the focus on a moved lookup provider, so repeated moves from the keyboard keep moving it", async () => {
+    const user = userEvent.setup();
+    const attach = (provider: string) => ({ provider, mode: "async", include_bundles: [], exclude_bundles: [] });
+    mockApi([
+      {
+        method: "GET",
+        path: "/lookup-providers",
+        body: {
+          items: ["a", "b", "c"].map((id) => ({ id, name: id.toUpperCase(), module: "dns", category: "security" })),
+          next_cursor: null,
+        },
+      },
+      { method: "GET", path: "/profiles/kids", body: { id: "kids", name: "Kids", allow: [], block: [], lookup_providers: ["a", "b", "c"].map(attach), upstream: "cloudflare" } },
+    ]);
+    renderApp("/profiles/kids");
+    const group = (await screen.findByRole("button", { name: "Add a lookup provider" }, T)).parentElement!;
+    // Each card's heading names its provider after its position.
+    const order = () => [...group.querySelectorAll("span.tabular-nums + span")].map((e) => e.textContent?.[0]);
+    await waitFor(() => expect(order()).toEqual(["A", "B", "C"]), T);
+    within(group).getAllByRole("button", { name: "Move up" })[2].focus();
+    await user.keyboard("{Enter}");
+    expect(order()).toEqual(["A", "C", "B"]);
+    await user.keyboard("{Enter}");
+    expect(order()).toEqual(["C", "A", "B"]);
+    // At the top, the focus passes to the row's Move down button.
+    expect(document.activeElement).toBe(within(group).getAllByRole("button", { name: "Move down" })[0]);
+    await user.keyboard("{Enter}");
+    expect(order()).toEqual(["A", "C", "B"]);
+  });
 });
 
 describe("manual feed editor", () => {

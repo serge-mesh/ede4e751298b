@@ -1550,6 +1550,31 @@ mod tests {
         // Field descriptions (UI tooltips) come through.
         let p = serde_json::to_string(&schemas["ProfileDef"]).unwrap();
         assert!(p.contains("trial"), "{p}");
+
+        // Profile lookup provider fields use consistent naming and carry descriptions.
+        let profile_props = schemas["ProfileDef"]["properties"].as_object().unwrap();
+        for old in ["lookups", "lookup_budget_ms", "alert_providers"] {
+            assert!(!profile_props.contains_key(old), "ProfileDef still has {old}");
+        }
+        for field in [
+            "lookup_providers",
+            "sync_lookup_budget_ms",
+            "alert_lookup_providers",
+        ] {
+            let desc = profile_props[field]["description"].as_str().unwrap_or_default();
+            assert!(!desc.is_empty(), "ProfileDef.{field} missing description");
+        }
+        let att_props = schemas["LookupAttachment"]["properties"].as_object().unwrap();
+        for field in ["provider", "mode", "include_bundles", "exclude_bundles"] {
+            let desc = att_props[field]["description"].as_str().unwrap_or_default();
+            assert!(!desc.is_empty(), "LookupAttachment.{field} missing description");
+        }
+        let mode_variants = schemas["LookupMode"]["oneOf"].as_array().unwrap();
+        assert_eq!(mode_variants.len(), 2);
+        for v in mode_variants {
+            let desc = v["description"].as_str().unwrap_or_default();
+            assert!(!desc.is_empty(), "LookupMode variant missing description: {v}");
+        }
     }
 }
 

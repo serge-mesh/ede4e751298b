@@ -16,8 +16,9 @@ import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useBrowserLists, useEntities, useEntity, useModifyEntity, useSettings } from "@/api/queries";
 import { errorMessage } from "@/api/errors";
-import type { BundleDef, ListenerDef, ProfileDef } from "@/api/types";
-import type { FieldOverride } from "@/components/schema-form/schema-form";
+import type { BundleDef, ListenerDef, LookupProviderDef, ProfileDef } from "@/api/types";
+import { ObjectArrayItems, type FieldOverride } from "@/components/schema-form/schema-form";
+import { openapiRoot } from "@/lib/openapi";
 import { formatCompact } from "@/lib/format";
 import { escapeControl } from "@/lib/text";
 
@@ -144,7 +145,7 @@ export function useProfileFormProps() {
       upstream: ({ value, onChange, disabled, id }) => (
         <IdSelect id={id} value={value as string} onChange={(v) => onChange(v ?? "")} disabled={disabled} options={(groups.data ?? []).map((g) => ({ value: g.id ?? "", label: g.name ? `${g.name} (${g.id})` : g.id }))} />
       ),
-      alert_providers: ({ value, onChange, disabled, id }) => (
+      alert_lookup_providers: ({ value, onChange, disabled, id }) => (
         <div className="space-y-1.5">
           <IdSelect
             id={`${id}-mode`}
@@ -152,8 +153,8 @@ export function useProfileFormProps() {
             onChange={(v) => onChange(v === "__default" ? null : ((value as string[] | null) ?? []))}
             disabled={disabled}
             options={[
-              { value: "__default", label: "Every provider whose category is security" },
-              { value: "__list", label: "These providers ([] turns them off)" },
+              { value: "__default", label: "Every lookup provider whose category is security" },
+              { value: "__list", label: "These lookup providers ([] turns them off)" },
             ]}
           />
           {Array.isArray(value) && (
@@ -164,12 +165,44 @@ export function useProfileFormProps() {
               onChange={onChange}
               disabled={disabled}
               addLabel="Add a lookup provider…"
-              emptyText="None: no provider's Blocks alert."
+              emptyText="None: no lookup provider's Blocks alert."
               options={(providers.data ?? []).map((p) => ({ value: p.id ?? "", label: p.id, hint: p.category }))}
             />
           )}
         </div>
       ),
+      lookup_providers: ({ c, id, path, value, onChange, disabled }) => {
+        const byId = new Map<string, LookupProviderDef>((providers.data ?? []).map((p) => [p.id ?? "", p]));
+        return (
+          <ObjectArrayItems
+            c={c}
+            id={id}
+            path={path}
+            items={Array.isArray(value) ? value : []}
+            onChange={onChange}
+            disabled={disabled}
+            depth={2}
+            root={openapiRoot}
+            emptyText="No lookup providers attached."
+            addLabel="Add a lookup provider"
+            removeLabel={(i) => `Remove lookup provider ${i + 1}`}
+            heading={(item, i) => {
+              const provider = (item as { provider?: unknown } | null)?.provider;
+              const pid = typeof provider === "string" ? provider : "";
+              if (!pid) return <span className="tabular-nums">Lookup provider #{i + 1}</span>;
+              const lp = byId.get(pid);
+              return (
+                <>
+                  <span className="tabular-nums">#{i + 1}</span>
+                  <span className="truncate text-foreground">
+                    <SafeText>{lp?.name ? `${lp.name} (${lp.id})` : pid}</SafeText>
+                  </span>
+                </>
+              );
+            }}
+          />
+        );
+      },
       allowed_sources: ({ renderDefault }) => (
         <div className="space-y-1">
           {renderDefault()}
@@ -206,11 +239,11 @@ export function useProfileFormProps() {
   const withLookups = React.useMemo<Record<string, FieldOverride>>(() => {
     const out: Record<string, FieldOverride> = { ...overrides };
     for (let i = 0; i < 32; i++) {
-      out[`lookups.${i}.provider`] = ({ value, onChange, disabled, id }) => (
+      out[`lookup_providers.${i}.provider`] = ({ value, onChange, disabled, id }) => (
         <IdSelect id={id} value={value as string} onChange={(v) => onChange(v ?? "")} disabled={disabled} options={(providers.data ?? []).map((p) => ({ value: p.id ?? "", label: p.name ? `${p.name} (${p.id})` : p.id, hint: p.module }))} />
       );
       for (const k of ["include_bundles", "exclude_bundles"]) {
-        out[`lookups.${i}.${k}`] = ({ value, onChange, disabled, id }) => (
+        out[`lookup_providers.${i}.${k}`] = ({ value, onChange, disabled, id }) => (
           <OrderedPicker
             id={id}
             ordered={false}
@@ -226,10 +259,27 @@ export function useProfileFormProps() {
     }
     return out;
   }, [overrides, providers.data, bundles.data]);
+  const labels = React.useMemo<Record<string, string>>(() => {
+    const out: Record<string, string> = {
+      allow: "Allow bundles (in order)",
+      block: "Block bundles (in order)",
+      trial_bundles: "Trial bundles",
+      lookup_providers: "Lookup providers",
+      sync_lookup_budget_ms: "Sync lookup budget (ms)",
+      alert_lookup_providers: "Alert lookup providers",
+    };
+    for (let i = 0; i < 32; i++) {
+      out[`lookup_providers.${i}.provider`] = "Provider";
+      out[`lookup_providers.${i}.mode`] = "Mode";
+      out[`lookup_providers.${i}.include_bundles`] = "Only for these bundles";
+      out[`lookup_providers.${i}.exclude_bundles`] = "Except these bundles";
+    }
+    return out;
+  }, []);
   return {
     overrides: withLookups,
-    order: ["allowed_sources", "upstream", "log", "allow", "block", "trial_bundles"],
-    labels: { allow: "Allow bundles (in order)", block: "Block bundles (in order)", trial_bundles: "Trial bundles" },
+    order: ["allowed_sources", "upstream", "log", "allow", "block", "trial_bundles", "lookup_providers", "sync_lookup_budget_ms"],
+    labels,
   };
 }
 

@@ -4,7 +4,7 @@
 //! only an rcode counts as a block) for a name a provider's Block marks bad, from any source: an
 //! edge's sync lookup or late answer, or core's async lookup, retry or re-check. It fires when the
 //! Block and an answer of that name both exist within the retention window, in either order,
-//! checked when either arrives, for answers in profiles whose `alert_providers` include the
+//! checked when either arrives, for answers in profiles whose `alert_lookup_providers` include the
 //! provider (a profile with `log: off` sends no answers):
 //!
 //! - **A Block arrives** (a new `lookup_blocks` row): this module's worker claims it
@@ -136,7 +136,11 @@ pub fn alerting_profiles(model: &Model, provider: &str) -> Vec<String> {
         .profiles
         .values()
         .filter(|p| p.edge.log != picket_api::edge_config::LogLevel::Off)
-        .filter(|p| super::alert_providers(model, p).iter().any(|x| x == provider))
+        .filter(|p| {
+            super::alert_lookup_providers(model, p)
+                .iter()
+                .any(|x| x == provider)
+        })
         .map(|p| p.id.clone())
         .collect()
 }

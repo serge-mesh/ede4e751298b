@@ -163,7 +163,7 @@ fn trial_bundles() {
             EntityKind::Profile,
             "p",
             json!({"name": "p", "trial_bundles": ["adult"],
-            "lookups": [{"provider": "lp", "mode": "sync", "exclude_bundles": ["adult"]}]}),
+            "lookup_providers": [{"provider": "lp", "mode": "sync", "exclude_bundles": ["adult"]}]}),
         ),
         "trial_in_sync_scope",
     );
@@ -172,14 +172,14 @@ fn trial_bundles() {
         EntityKind::Profile,
         "p",
         json!({"name": "p", "trial_bundles": ["adult"],
-        "lookups": [{"provider": "lp", "mode": "async", "exclude_bundles": ["adult"]}]}),
+        "lookup_providers": [{"provider": "lp", "mode": "async", "exclude_bundles": ["adult"]}]}),
     )
     .unwrap();
     // Order 1: the profile attaches lp sync and trials adult; then lp's scope names adult.
     c.update(
         EntityKind::Profile,
         "p",
-        json!({"name": "p", "trial_bundles": ["adult"], "lookups": [{"provider": "lp", "mode": "sync"}]}),
+        json!({"name": "p", "trial_bundles": ["adult"], "lookup_providers": [{"provider": "lp", "mode": "sync"}]}),
     )
     .unwrap();
     let mut lp = provider("lp");
@@ -193,7 +193,7 @@ fn trial_bundles() {
     c.update(
         EntityKind::Profile,
         "p",
-        json!({"name": "p", "lookups": [{"provider": "lp", "mode": "sync"}]}),
+        json!({"name": "p", "lookup_providers": [{"provider": "lp", "mode": "sync"}]}),
     )
     .unwrap();
     c.update(EntityKind::LookupProvider, "lp", lp).unwrap();
@@ -201,7 +201,7 @@ fn trial_bundles() {
         c.update(
             EntityKind::Profile,
             "p",
-            json!({"name": "p", "trial_bundles": ["adult"], "lookups": [{"provider": "lp", "mode": "sync"}]}),
+            json!({"name": "p", "trial_bundles": ["adult"], "lookup_providers": [{"provider": "lp", "mode": "sync"}]}),
         ),
         "trial_in_sync_scope",
     );
@@ -447,7 +447,7 @@ fn lookup_scopes() {
     );
     // Attachment scopes alike.
     refused(
-        c.create(EntityKind::Profile, json!({"id": "p", "name": "p", "lookups": [{"provider": "lp", "mode": "async", "include_bundles": ["cold"]}]})),
+        c.create(EntityKind::Profile, json!({"id": "p", "name": "p", "lookup_providers": [{"provider": "lp", "mode": "async", "include_bundles": ["cold"]}]})),
         "scope_cold",
     );
     // A profile can't list scope (or warn) bundles in allow/block.

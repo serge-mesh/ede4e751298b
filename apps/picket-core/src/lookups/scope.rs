@@ -194,7 +194,7 @@ pub fn call_skip(
         let Some(att) = model
             .profiles
             .get(pid)
-            .and_then(|prof| prof.edge.lookups.iter().find(|a| a.provider == provider))
+            .and_then(|prof| prof.edge.lookup_providers.iter().find(|a| a.provider == provider))
         else {
             continue;
         };

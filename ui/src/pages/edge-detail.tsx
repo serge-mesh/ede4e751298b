@@ -381,7 +381,7 @@ function useVerdictTotal(): number | null {
   const providers = useEntities("lookup-providers");
   if (!profiles.data || !providers.data) return null;
   const ids = new Set<string>();
-  for (const p of profiles.data) for (const a of p.lookups ?? []) if ((a.mode ?? "sync") === "sync" && a.provider) ids.add(a.provider);
+  for (const p of profiles.data) for (const a of p.lookup_providers ?? []) if ((a.mode ?? "sync") === "sync" && a.provider) ids.add(a.provider);
   let total = 0;
   for (const lp of providers.data) if (ids.has(lp.id ?? "")) total += lp.cache?.max_mib ?? 2;
   return total;

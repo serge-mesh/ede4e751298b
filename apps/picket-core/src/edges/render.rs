@@ -114,7 +114,12 @@ pub fn edge_bundles(model: &Model) -> BTreeSet<String> {
     for p in model.profiles.values() {
         bundles.extend(p.edge.allow.iter().cloned());
         bundles.extend(p.edge.block.iter().cloned());
-        for a in p.edge.lookups.iter().filter(|a| a.mode == LookupMode::Sync) {
+        for a in p
+            .edge
+            .lookup_providers
+            .iter()
+            .filter(|a| a.mode == LookupMode::Sync)
+        {
             sync.insert(a.provider.clone());
             bundles.extend(a.include_bundles.iter().cloned());
             bundles.extend(a.exclude_bundles.iter().cloned());
@@ -204,7 +209,7 @@ pub fn render(model: &Model, edge_id: &str, state: &EdgeState) -> Result<Rendere
         zones.extend(ep.forward_zones.iter().cloned());
         bundles.extend(ep.allow.iter().cloned());
         bundles.extend(ep.block.iter().cloned());
-        for a in ep.lookups.iter().filter(|a| a.mode == LookupMode::Sync) {
+        for a in ep.lookup_providers.iter().filter(|a| a.mode == LookupMode::Sync) {
             sync.insert(a.provider.clone());
             bundles.extend(a.include_bundles.iter().cloned());
             bundles.extend(a.exclude_bundles.iter().cloned());
@@ -573,7 +578,7 @@ mod tests {
         adults.edge.allow = vec!["allow-common".into()];
         adults.edge.block = vec!["block-common".into()];
         adults.edge.forward_zones = vec!["localdomain".into()];
-        adults.edge.lookups = vec![
+        adults.edge.lookup_providers = vec![
             LookupAttachment {
                 provider: "am-rt".into(),
                 mode: LookupMode::Sync,

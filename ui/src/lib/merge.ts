@@ -54,14 +54,14 @@ export function merge3<T>(base: T, mine: T, theirs: T): T {
  * Enforce moving a bundle from `trial_bundles` to `block` while the draft edited `block` would
  * leave that bundle in neither list. Paths are dot-separated.
  * - profiles: a trial bundle may be neither in `block` nor in the scope of one of the profile's
- *   `sync` attachments (`lookups`);
+ *   `sync` attachments (`lookup_providers`);
  * - settings: none. `web.names` must be under `lanca.zones`, but no settings form edits or sends
  *   the zones: a zones change is a LAN CA rotation, made under Settings → LAN CA with the root it
  *   replaces (`lanca.rotate_from`, core.md §11), so a merged form never carries a stale value of
  *   them (core c58ba80 checks a form's `web.names` against the zones it has).
  */
 export const COUPLED_FIELDS: Record<string, string[][]> = {
-  profiles: [["block", "trial_bundles", "lookups"]],
+  profiles: [["block", "trial_bundles", "lookup_providers"]],
   settings: [],
 };
 

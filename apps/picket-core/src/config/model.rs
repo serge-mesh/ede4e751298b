@@ -3,7 +3,7 @@
 //! `schemars`).
 //!
 //! Shapes follow the edge's types where the edge consumes them (`picket_api::edge_config`), plus
-//! the core-only fields: a profile's `trial_bundles`, `alert_categories`, `alert_providers`,
+//! the core-only fields: a profile's `trial_bundles`, `alert_categories`, `alert_lookup_providers`,
 //! `browser_list`; an upstream's `operator`; a lookup provider's `category`, `cache_generation`,
 //! `preset`; an edge's budgets.
 
@@ -192,9 +192,9 @@ pub struct ProfileDef {
     pub trial_bundles: Vec<String>,
     /// Feed categories whose blocks alert (`security`, `privacy`, `mixed`); `[]` turns them off.
     pub alert_categories: Vec<String>,
-    /// Lookup provider ids whose Blocks alert; null = every provider whose category is
+    /// Lookup provider ids whose Blocks alert; null = every lookup provider whose category is
     /// `security`; `[]` turns them off.
-    pub alert_providers: Option<Vec<String>>,
+    pub alert_lookup_providers: Option<Vec<String>>,
     pub browser_list: BrowserList,
 }
 
@@ -207,7 +207,7 @@ impl Default for ProfileDef {
             edge: Profile::default(),
             trial_bundles: vec![],
             alert_categories: vec!["security".into()],
-            alert_providers: None,
+            alert_lookup_providers: None,
             browser_list: BrowserList::default(),
         }
     }

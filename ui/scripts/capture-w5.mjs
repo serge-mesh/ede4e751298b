@@ -549,7 +549,7 @@ if (lp.status < 300) {
   const f = await ui("POST", "/lookup-providers/q9/flush", {});
   keep("POST /lookup-providers/q9/flush", { status: f.status, body: f.json });
   await capture("/lookup-providers/q9/status", "/lookup-providers/q9/status (after)");
-  // A block by the sync lookup provider q9 (a security provider: p1 leaves alert_providers unset,
+  // A block by the sync lookup provider q9 (a security provider: p1 leaves alert_lookup_providers unset,
   // so it alerts on every security provider): category_blocked with the provider's verdict in
   // `details.providers` (core.md §9), where a feed's block names `feeds`.
   const gen = (await ok("GET", "/lookup-providers/q9/status")).cache_generation ?? "0000000000000001";

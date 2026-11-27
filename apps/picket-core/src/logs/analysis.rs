@@ -1577,9 +1577,10 @@ const MAX_ALERT_LOOKUPS: usize = 8;
 const MAX_ALERT_LOOKUP_DETAIL: usize = 4 * 1024;
 
 /// `category_blocked` for a block by a sync lookup (core.md §9 "Block alerts per profile": "a
-/// query in the profile blocked by a sync lookup whose provider is in `alert_providers`"): the
-/// record's `lookups[]` Blocks (api.md §5) from providers in the profile's effective
-/// `alert_providers` (unset: every provider whose category is `security`; `[]`: none). Warning
+/// query in the profile blocked by a sync lookup whose provider is in `alert_lookup_providers`"):
+/// the record's `lookups[]` Blocks (api.md §5) from providers in the profile's effective
+/// `alert_lookup_providers` (unset: every lookup provider whose category is `security`; `[]`:
+/// none). Warning
 /// when one of them is a `security` provider, info otherwise (core.md §9 table); keyed, grouped
 /// and given evidence as a feed's block is, with each provider's reason and detail. Attribution
 /// never replays these records (core.md §6 attributes rule decisions only), so this check reads
@@ -1603,7 +1604,7 @@ fn lookup_blocked_in(
     if matches!(profile.edge.log, picket_api::edge_config::LogLevel::Off) {
         return Ok(());
     }
-    let alerting = crate::lookups::alert_providers(model, profile);
+    let alerting = crate::lookups::alert_lookup_providers(model, profile);
     if alerting.is_empty() {
         return Ok(());
     }

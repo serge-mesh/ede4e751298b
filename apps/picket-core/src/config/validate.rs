@@ -721,7 +721,7 @@ fn edge_rules(m: &Model, o: &mut Out) {
 fn sync_providers(m: &Model) -> BTreeSet<&str> {
     m.profiles
         .values()
-        .flat_map(|p| p.edge.lookups.iter())
+        .flat_map(|p| p.edge.lookup_providers.iter())
         .filter(|a| a.mode == LookupMode::Sync)
         .map(|a| a.provider.as_str())
         .collect()
@@ -1175,12 +1175,12 @@ fn profile_rules(m: &Model, o: &mut Out) {
             }
         }
         let mut attached = HashSet::new();
-        for a in &ep.lookups {
+        for a in &ep.lookup_providers {
             if !attached.insert(&a.provider) {
                 o.err(
                     e,
                     id,
-                    Some("lookups"),
+                    Some("lookup_providers"),
                     "duplicate",
                     format!("provider {:?} is attached twice", a.provider),
                 );
@@ -1189,14 +1189,14 @@ fn profile_rules(m: &Model, o: &mut Out) {
                 o.err(
                     e,
                     id,
-                    Some("lookups"),
+                    Some("lookup_providers"),
                     "unknown_provider",
                     format!("no lookup provider {:?}", a.provider),
                 );
             }
             for (field, list) in [
-                ("lookups.include_bundles", &a.include_bundles),
-                ("lookups.exclude_bundles", &a.exclude_bundles),
+                ("lookup_providers.include_bundles", &a.include_bundles),
+                ("lookup_providers.exclude_bundles", &a.exclude_bundles),
             ] {
                 scope_bundles(m, o, e, id, field, list);
             }
@@ -1210,13 +1210,13 @@ fn profile_rules(m: &Model, o: &mut Out) {
                 format!("no upstream group {:?}", ep.upstream),
             );
         }
-        if !(1..=10_000).contains(&ep.lookup_budget_ms) {
+        if !(1..=10_000).contains(&ep.sync_lookup_budget_ms) {
             o.err(
                 e,
                 id,
-                Some("lookup_budget_ms"),
+                Some("sync_lookup_budget_ms"),
                 "range",
-                "lookup_budget_ms must be 1–10000".into(),
+                "sync_lookup_budget_ms must be 1–10000".into(),
             );
         }
         if ep.ttl.min > ep.ttl.max || ep.ttl.max > 7 * 86_400 {
@@ -1281,13 +1281,13 @@ fn profile_rules(m: &Model, o: &mut Out) {
                 );
             }
         }
-        if let Some(list) = &p.alert_providers {
+        if let Some(list) = &p.alert_lookup_providers {
             for lp in list {
                 if !m.lookup_providers.contains_key(lp) {
                     o.err(
                         e,
                         id,
-                        Some("alert_providers"),
+                        Some("alert_lookup_providers"),
                         "unknown_provider",
                         format!("no lookup provider {lp:?}"),
                     );
@@ -1312,7 +1312,7 @@ fn profile_rules(m: &Model, o: &mut Out) {
         if id == system::DNSSEC_PROFILE {
             if !ep.allow.is_empty()
                 || !ep.block.is_empty()
-                || !ep.lookups.is_empty()
+                || !ep.lookup_providers.is_empty()
                 || !ep.forward_zones.is_empty()
                 || !p.trial_bundles.is_empty()
             {
@@ -1321,7 +1321,7 @@ fn profile_rules(m: &Model, o: &mut Out) {
                     id,
                     None,
                     "validator_filtered",
-                    "the dnssec-validator profile has no bundles, lookups or forward zones".into(),
+                    "the dnssec-validator profile has no bundles, lookup providers or forward zones".into(),
                 );
             }
             if ep.firewall.add_entries || ep.log != picket_api::edge_config::LogLevel::Off {
@@ -1357,7 +1357,12 @@ fn scope_bundles(m: &Model, o: &mut Out, entity: &str, id: &str, field: &str, li
 /// providers (core.md §2), whichever change comes second.
 fn trial_scope_rules(m: &Model, o: &mut Out) {
     for (id, p) in &m.profiles {
-        for a in p.edge.lookups.iter().filter(|a| a.mode == LookupMode::Sync) {
+        for a in p
+            .edge
+            .lookup_providers
+            .iter()
+            .filter(|a| a.mode == LookupMode::Sync)
+        {
             let provider = m.lookup_providers.get(&a.provider);
             for t in &p.trial_bundles {
                 let in_attachment = a.include_bundles.contains(t) || a.exclude_bundles.contains(t);

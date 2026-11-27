@@ -382,7 +382,7 @@ pub fn sync_providers(model: &Model) -> Vec<String> {
     let mut v: Vec<String> = model
         .profiles
         .values()
-        .flat_map(|p| p.edge.lookups.iter())
+        .flat_map(|p| p.edge.lookup_providers.iter())
         .filter(|a| a.mode == picket_api::edge_config::LookupMode::Sync)
         .map(|a| a.provider.clone())
         .filter(|p| model.lookup_providers.contains_key(p))
@@ -392,10 +392,10 @@ pub fn sync_providers(model: &Model) -> Vec<String> {
     v
 }
 
-/// A profile's `alert_providers`, resolved: unset means every provider whose category is
-/// `security` (core.md §9).
-pub fn alert_providers(model: &Model, profile: &crate::config::model::ProfileDef) -> Vec<String> {
-    match &profile.alert_providers {
+/// A profile's `alert_lookup_providers`, resolved: unset means every lookup provider whose category
+/// is `security` (core.md §9).
+pub fn alert_lookup_providers(model: &Model, profile: &crate::config::model::ProfileDef) -> Vec<String> {
+    match &profile.alert_lookup_providers {
         Some(v) => v.clone(),
         None => model
             .lookup_providers

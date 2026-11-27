@@ -203,7 +203,7 @@ impl Setup {
 async fn async_attachments_queue_and_live_entries_settle() {
     let s = Setup::new(
         http_json(json!({})),
-        json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "async"}]}),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "async"}]}),
         by_name(),
     )
     .await;
@@ -263,7 +263,7 @@ async fn async_attachments_queue_and_live_entries_settle() {
 async fn retries_wait_for_late_answers() {
     let s = Setup::new(
         http_json(json!({"async_timeout_ms": 100})),
-        json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "sync"}]}),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "sync"}]}),
         by_name(),
     )
     .await;
@@ -337,7 +337,7 @@ async fn retries_wait_for_late_answers() {
 /// Re-checks (core.md §7): a due re-check calls although the name has a live entry (skipping the
 /// cache) and its result replaces the entry; a later answer adds no deadline while one is
 /// pending; a name in an allow bundle, in `lookup-exclude` (out of scope) or blocked since is
-/// skipped; past `max_per_day` dropped; a provider only in `alert_providers` is never re-checked.
+/// skipped; past `max_per_day` dropped; a provider only in `alert_lookup_providers` is never re-checked.
 /// Counted in `rechecks{provider, result}` and `recheck_blocks`.
 ///
 /// A deadline is met by any provider call made at or after it, so a re-check that runs late (a
@@ -363,14 +363,14 @@ async fn rechecks_run_skip_and_drop() {
             })
         })
     });
-    // q2 is only in alert_providers: never re-checked.
+    // q2 is only in alert_lookup_providers: never re-checked.
     let s = Setup::with(
         vec![
             http_json(json!({"recheck": {"enabled": true, "after": ["1s", "2s"], "jitter": "0s", "max_per_day": 3}})),
             http_json(json!({"id": "q2", "name": "Q2", "recheck": {"enabled": true, "after": ["1s"], "jitter": "0s"}})),
         ],
-        json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "sync"}],
-               "alert_providers": ["q9", "q2"]}),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "sync"}],
+               "alert_lookup_providers": ["q9", "q2"]}),
         module.clone(),
     )
     .await;
@@ -409,7 +409,7 @@ async fn rechecks_run_skip_and_drop() {
     assert_eq!(
         q::<i64>(&s.c, "SELECT count(*) FROM lookup_queue WHERE provider_id = 'q2'").await,
         0,
-        "alert_providers never adds a provider to a re-check"
+        "alert_lookup_providers never adds a provider to a re-check"
     );
     // The first re-check calls despite the live entry and finds a Block, which replaces the
     // entry; a deadline left after it is skipped: the name has been blocked since.
@@ -510,7 +510,7 @@ async fn rechecks_run_skip_and_drop() {
 async fn a_call_between_two_deadlines_meets_only_the_first() {
     let s = Setup::new(
         http_json(json!({"recheck": {"enabled": true, "after": ["1s", "1h"], "jitter": "0s"}})),
-        json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "sync"}]}),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "sync"}]}),
         by_name(),
     )
     .await;
@@ -552,13 +552,13 @@ async fn a_call_between_two_deadlines_meets_only_the_first() {
 }
 
 /// `category_answered` from provider Blocks (core.md §7, §9): Block before the answer and after
-/// it, a TTL-0 Block, a profile whose `alert_providers` is `[]`, a cache hit of a known Block
+/// it, a TTL-0 Block, a profile whose `alert_lookup_providers` is `[]`, a cache hit of a known Block
 /// checked once, and a name without a registrable domain.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn category_answered_fires_in_either_order() {
     let s = Setup::new(
         http_json(json!({"cache": {"block_ttl_s": 0}})),
-        json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "sync"}]}),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "sync"}]}),
         by_name(),
     )
     .await;
@@ -566,7 +566,7 @@ async fn category_answered_fires_in_either_order() {
         .config
         .apply(
             EntityKind::Profile,
-            Op::Create(json!({"id": "quiet", "name": "Quiet", "alert_providers": []})),
+            Op::Create(json!({"id": "quiet", "name": "Quiet", "alert_lookup_providers": []})),
             Actor::cli(),
             None,
         )
@@ -733,7 +733,7 @@ fn assert_same(
 async fn verdict_sets_round_trip_through_the_edge_reader() {
     let s = Setup::new(
         http_json(json!({"cache": {"clean_ttl_s": 86400}})),
-        json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "sync"}]}),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "sync"}]}),
         by_name(),
     )
     .await;
@@ -868,7 +868,7 @@ async fn retention_collects_old_versions_and_tombstones() {
     use picket_core::retention::RetentionHook as _;
     let s = Setup::new(
         http_json(json!({})),
-        json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "sync"}]}),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "sync"}]}),
         by_name(),
     )
     .await;
@@ -1047,7 +1047,7 @@ async fn self_tests_raise_on_two_wrong_verdicts_and_resolve() {
 async fn ui_endpoints() {
     let s = Setup::new(
         http_json(json!({})),
-        json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "async"}]}),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "async"}]}),
         by_name(),
     )
     .await;
@@ -1159,7 +1159,7 @@ async fn persisted_work_resumes_after_a_restart() {
             &tx,
             EntityKind::Profile,
             Op::Create(
-                json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "async"}]}),
+                json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "async"}]}),
             ),
             &Actor::cli(),
             None,
@@ -1237,7 +1237,7 @@ async fn two_providers_from_one_module_keep_their_own_caches() {
             http_json(json!({"id": "am", "name": "AM",
                 "config": {"url": "https://other.example/v1/{domain}", "verdict": {"pointer": "/score", "block_if": ">= 9"}}})),
         ],
-        json!({"id": "kids", "name": "Kids", "lookups": [
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [
             {"provider": "q9", "mode": "async"}, {"provider": "am", "mode": "async"}]}),
         by_name(),
     )
@@ -1360,7 +1360,7 @@ async fn two_providers_from_one_module_keep_their_own_caches() {
 async fn category_answered_from_sync_and_async_blocks() {
     let s = Setup::new(
         http_json(json!({})),
-        json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "async"}]}),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "async"}]}),
         by_name(),
     )
     .await;
@@ -1470,7 +1470,7 @@ async fn async_attachments_call_only_within_their_scope() {
             named_provider("q2", json!({"scope": {"exclude_bundles": []}})),
             named_provider("q3", json!({"scope": {"exclude_bundles": []}})),
         ],
-        json!({"id": "kids", "name": "Kids", "lookups": [
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [
             {"provider": "q9", "mode": "async"},
             {"provider": "q2", "mode": "async", "include_bundles": ["lookup-exclude"]},
             {"provider": "q3", "mode": "async", "exclude_bundles": ["lookup-exclude"]}]}),
@@ -1508,7 +1508,7 @@ async fn async_attachments_call_only_within_their_scope() {
             EntityKind::Profile,
             Op::Update(
                 "kids".into(),
-                json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "async"}]}),
+                json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "async"}]}),
             ),
             Actor::cli(),
             None,
@@ -1516,7 +1516,11 @@ async fn async_attachments_call_only_within_their_scope() {
         .await
         .unwrap();
     wait_for("the runtime to see the change", 10, || async {
-        s.c.state.lookups.model().profiles["kids"].edge.lookups.len() == 1
+        s.c.state.lookups.model().profiles["kids"]
+            .edge
+            .lookup_providers
+            .len()
+            == 1
     })
     .await;
     let ctx = json!({"need": {"kind": "async", "due_at": now_ts()}, "profiles": ["kids"]});
@@ -1549,7 +1553,7 @@ async fn verdict_set_change_numbers_survive_retention() {
     use picket_core::retention::RetentionHook as _;
     let s = Setup::new(
         http_json(json!({})),
-        json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "sync"}]}),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "sync"}]}),
         by_name(),
     )
     .await;
@@ -1679,7 +1683,7 @@ async fn one_busy_name_hides_no_other_answer() {
 async fn a_flush_drops_verdicts_of_the_old_generation_at_once() {
     let s = Setup::new(
         http_json(json!({})),
-        json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "async"}]}),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "async"}]}),
         by_name(),
     )
     .await;
@@ -1793,7 +1797,7 @@ async fn a_call_spanning_a_flush_is_dropped_and_made_again() {
     });
     let s = Setup::new(
         http_json(json!({})),
-        json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "async"}]}),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "async"}]}),
         module.clone(),
     )
     .await;
@@ -1846,7 +1850,7 @@ async fn a_call_spanning_a_flush_is_dropped_and_made_again() {
 async fn lookup_effects_survive_a_failure_after_the_partitions_commit() {
     let s = Setup::new(
         http_json(json!({"recheck": {"enabled": true, "after": ["1h"], "jitter": "0s"}})),
-        json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "sync"}]}),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "sync"}]}),
         by_name(),
     )
     .await;
@@ -1923,7 +1927,7 @@ async fn max_per_day_holds_for_concurrent_rechecks() {
     });
     let s = Setup::new(
         http_json(json!({"recheck": {"enabled": true, "after": ["1s"], "jitter": "0s", "max_per_day": 1}})),
-        json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "sync"}]}),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "sync"}]}),
         module.clone(),
     )
     .await;
@@ -1960,7 +1964,7 @@ async fn max_per_day_holds_for_concurrent_rechecks() {
 async fn lookups_wait_for_a_synchronised_clock_before_discarding() {
     let s = Setup::new(
         http_json(json!({})),
-        json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "sync"}]}),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "sync"}]}),
         by_name(),
     )
     .await;
@@ -2058,7 +2062,7 @@ async fn lookups_wait_for_a_synchronised_clock_before_discarding() {
 async fn a_new_resolver_reaches_existing_lookup_clients() {
     let s = Setup::new(
         http_json(json!({})),
-        json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "async"}]}),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "async"}]}),
         by_name(),
     )
     .await;
@@ -2151,7 +2155,7 @@ async fn status_counts_a_timeout_once() {
     });
     let s = Setup::new(
         http_json(json!({"async_timeout_ms": 5, "async_max_attempts": 1})),
-        json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "async"}]}),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "async"}]}),
         module,
     )
     .await;
@@ -2179,7 +2183,7 @@ async fn lookup_beat(ws: &mut common::edge::Ws, paused: u64, rejected: u64, up: 
 async fn provider_down_counts_edge_pauses_and_keeps_its_timer_across_gaps() {
     let s = Setup::new(
         http_json(json!({})),
-        json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "sync"}]}),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "sync"}]}),
         by_name(),
     )
     .await;
@@ -2299,7 +2303,7 @@ async fn a_settings_only_save_runs_the_self_test() {
 async fn core_call_durations_are_charted() {
     let s = Setup::new(
         http_json(json!({})),
-        json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "async"}]}),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "async"}]}),
         by_name(),
     )
     .await;
@@ -2343,7 +2347,7 @@ async fn alert_count(c: &Core, key: &str) -> i64 {
 async fn a_boot_clock_ahead_leaves_no_verdict_after_the_correction() {
     let s = Setup::new(
         http_json(json!({})),
-        json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "async"}]}),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "async"}]}),
         by_name(),
     )
     .await;
@@ -2607,7 +2611,7 @@ async fn max_per_day_gives_back_a_rejected_call() {
     });
     let s = Setup::new(
         http_json(json!({"recheck": {"enabled": true, "after": ["1s"], "jitter": "0s", "max_per_day": 1}})),
-        json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "sync"}]}),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "sync"}]}),
         module.clone(),
     )
     .await;
@@ -2659,7 +2663,7 @@ async fn every_recheck_call_is_reserved_and_counted() {
     });
     let s = Setup::new(
         http_json(json!({"recheck": {"enabled": true, "after": ["1s"], "jitter": "0s", "max_per_day": 1}})),
-        json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "sync"}]}),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "sync"}]}),
         module.clone(),
     )
     .await;
@@ -2937,7 +2941,7 @@ async fn a_failure_after_sync_is_lost_parks_nothing_on_the_wrong_clock() {
     });
     let s = Setup::new(
         http_json(json!({"async_max_attempts": 3, "async_timeout_ms": 20000})),
-        json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "async"}]}),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "async"}]}),
         module.clone(),
     )
     .await;
@@ -2977,7 +2981,7 @@ async fn a_failure_after_sync_is_lost_parks_nothing_on_the_wrong_clock() {
 async fn a_lookup_waiting_for_a_token_makes_no_call_once_sync_is_lost() {
     let s = Setup::new(
         http_json(json!({"limits": {"max_inflight": 4, "rps": 1, "burst": 1}})),
-        json!({"id": "kids", "name": "Kids", "lookups": [{"provider": "q9", "mode": "async"}]}),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "async"}]}),
         by_name(),
     )
     .await;

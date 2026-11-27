@@ -33,7 +33,7 @@ pub mod bounds {
     pub const STALE_TTL_S: (u32, u32) = (1, 3_600);
     pub const STALE_MAX_S: u32 = 7 * 86_400;
     pub const PREFETCH_HITS: (u32, u32) = (1, 1_000_000);
-    pub const LOOKUP_BUDGET_MS: u32 = 60_000;
+    pub const SYNC_LOOKUP_BUDGET_MS: u32 = 60_000;
     pub const BLOCK_TTL_S: u32 = 86_400;
     pub const CLIENT_QPS: (u32, u32) = (1, 100_000);
     pub const CLIENT_INFLIGHT: (u32, u32) = (1, 4_096);
@@ -142,7 +142,7 @@ pub fn sane_cache(c: &CacheSettings) -> CacheSettings {
 
 fn sane_profile(p: &Profile) -> Profile {
     let mut p = p.clone();
-    p.lookup_budget_ms = p.lookup_budget_ms.min(bounds::LOOKUP_BUDGET_MS);
+    p.sync_lookup_budget_ms = p.sync_lookup_budget_ms.min(bounds::SYNC_LOOKUP_BUDGET_MS);
     p.block_response.ttl = p.block_response.ttl.min(bounds::BLOCK_TTL_S);
     p.ttl.max = p.ttl.max.min(bounds::STALE_MAX_S);
     p.ttl.min = p.ttl.min.min(p.ttl.max);
@@ -205,7 +205,7 @@ impl DnsRuntime {
                 );
             }
             let sync = p
-                .lookups
+                .lookup_providers
                 .iter()
                 .filter(|a| a.mode == LookupMode::Sync)
                 .take(bounds::MAX_ATTACHMENTS)
