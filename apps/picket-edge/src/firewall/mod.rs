@@ -659,8 +659,11 @@ impl FwClient {
                 // would charge the key again without a room check.
                 let acct = flight.as_ref().map_or(r.owner, |f| f.owner);
                 let no_room = !reserved
-                    && sh.get(&op.key).is_none_or(|e| e.exp() <= now && e.owner != acct)
-                    && !sh.room(acct, op.key.set, 1);
+                    && match sh.get(&op.key) {
+                        None => !sh.room(acct, op.key.set, 1),
+                        // The lapsed entry keeps its slot; only the charge moves.
+                        Some(e) => e.exp() <= now && e.owner != acct && !sh.share_room(acct, op.key.set, 1),
+                    };
                 if stale {
                     confirmed = false;
                     result = OpResult::Failed("address_changed".into());
@@ -699,7 +702,9 @@ impl FwClient {
                     );
                     let exp = sh.get(&op.key).map_or(want, |e| e.exp());
                     let secs = exp.saturating_sub(now).max(1);
-                    if let Some(mut f) = flight.take_if(|f| f.correct) {
+                    // Only a takeover (a new generation) follows a move's delete; a first-discovery
+                    // adoption needs no more than the plain follow-up below.
+                    if let Some(mut f) = flight.take_if(|f| f.correct && f.generation != 0) {
                         // A move queued a delete while this op awaited its ack, and a fresh
                         // current-owner request replaced the revoked flight: the correction
                         // follows the delete even if the expiry matches. The flight's waiters
@@ -721,7 +726,10 @@ impl FwClient {
                         self.inflight().insert(op.key, f);
                         follow.push(fix);
                         confirmed = false;
-                    } else if exp != r.sent_exp || r.dns_owner != dns_owner {
+                    } else if exp != r.sent_exp
+                        || r.dns_owner != dns_owner
+                        || flight.as_ref().is_some_and(|f| f.correct)
+                    {
                         follow.ensure(op.key, secs);
                         if !follow.failed.is_empty() {
                             confirmed = false;

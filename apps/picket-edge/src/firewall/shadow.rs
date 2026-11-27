@@ -205,6 +205,15 @@ impl Shadow {
         share.saturating_add(n) <= super::SHARE && fill.saturating_add(n) <= sets::MAXELEM
     }
 
+    /// Whether `owner`'s share has room for `n` more keys that already hold set slots (a charge
+    /// moving to it, which doesn't change the set's fill).
+    pub fn share_room(&self, owner: u64, set: SetId, n: u32) -> bool {
+        self.share_of(owner, set)
+            .saturating_add(self.pending.get(&(owner, set)).copied().unwrap_or(0))
+            .saturating_add(n)
+            <= super::SHARE
+    }
+
     /// Counts a key whose `ensure` is going out against `owner`'s share and the set's room.
     pub fn reserve(&mut self, owner: u64, set: SetId) {
         *self.pending.entry((owner, set)).or_default() += 1;
