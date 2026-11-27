@@ -1149,19 +1149,17 @@ impl FwClient {
                         out.delete(k);
                     }
                 }
-                for a in &moved_allows {
-                    let Ok(dst) = a.target.parse::<IpAddr>() else {
-                        continue;
-                    };
-                    let dst = dst.to_canonical();
-                    if dst.is_ipv4() != v4 {
-                        continue;
-                    }
-                    let k = FwKey {
-                        set: SetId::pair(v4),
-                        src: Some(ip),
-                        dst,
-                    };
+                // A bypass re-check may already have removed this address from the
+                // stored allow. The shadow still owns its kernel entries, so revoke from
+                // that map rather than depending on which subscriber ran first.
+                let old_owner = owner_of(&crate::neighbours::format_mac(&old));
+                let moved_keys: Vec<FwKey> = sh
+                    .map
+                    .iter()
+                    .filter(|(k, e)| k.src == Some(ip) && e.owner == old_owner && e.allow_exp > 0)
+                    .map(|(k, _)| *k)
+                    .collect();
+                for k in moved_keys {
                     let Some(e) = sh.get(&k).copied() else {
                         continue;
                     };
@@ -2644,6 +2642,48 @@ mod tests {
         stored.addresses = vec![x.to_string()];
         c.allows.upsert(stored).unwrap();
         assert!(c.live_exp(&keys[0]).is_some());
+        // The address now belongs to device `b`.
+        c.neighbours.replace(&[(x, b)]);
+        c.neighbour_event(NeighbourEvent::Gained { mac: b, ip: x });
+        assert!(c.live_exp(&keys[0]).is_none(), "b doesn't inherit a's allow");
+        assert!(
+            until(Duration::from_secs(3), || f
+                .st()
+                .deleted
+                .iter()
+                .any(|e| e.src == Some(x)))
+            .await,
+            "the kernel entry is deleted"
+        );
+        let a1 = c.allows.list().into_iter().find(|s| s.allow_id == "a-1").unwrap();
+        assert!(!a1.addresses.contains(&x.to_string()), "{:?}", a1.addresses);
+    }
+
+    #[tokio::test]
+    async fn a_move_revokes_kernel_entries_after_a_bypass_recheck_removed_the_address() {
+        let f = fake(Duration::ZERO);
+        let c = client(&f.path);
+        ready(&c).await;
+        let (a, b) = ([0xaa, 0, 0, 0, 0, 1], [0xbb, 0, 0, 0, 0, 2]);
+        let x: IpAddr = "192.168.1.50".parse().unwrap();
+        c.neighbours.replace(&[(x, a)]);
+        c.neighbour_event(NeighbourEvent::Gained { mac: a, ip: x });
+        let a_text = crate::neighbours::format_mac(&a);
+        let keys = c
+            .grant_allow(&a_text, &[x], "100.100.100.100".parse().unwrap(), 600)
+            .await
+            .unwrap();
+        let mut stored = crate::allows::tests::allow("a-1", picket_api::logs::AllowKind::Ip, 600);
+        stored.device = a_text.clone();
+        stored.client = x.to_string();
+        stored.addresses = vec![x.to_string()];
+        c.allows.upsert(stored).unwrap();
+        assert!(c.live_exp(&keys[0]).is_some());
+        // The bypass subscriber catches up first and forgets the moved address.
+        // Firewall maintenance must still remove the kernel entry it owns.
+        let mut rechecked = c.allows.list().into_iter().find(|s| s.allow_id == "a-1").unwrap();
+        rechecked.addresses.clear();
+        c.allows.change_held(vec![rechecked]).unwrap();
         // The address now belongs to device `b`.
         c.neighbours.replace(&[(x, b)]);
         c.neighbour_event(NeighbourEvent::Gained { mac: b, ip: x });

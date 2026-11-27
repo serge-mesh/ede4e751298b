@@ -95,7 +95,7 @@ export async function setUp(ext: Session, edge: FakeEdge, opts: { coreUrl?: stri
   const page = options.surface();
   // Initial getState populates these inputs asynchronously after navigation completes.
   // Wait for it before typing so it cannot replace the URL before Save.
-  await page.waitFor(() => document.querySelector('#settings-status')?.textContent || false, null);
+  await page.waitFor(() => document.querySelector('#settings-status')?.textContent ?? '', null);
   await page.fill('#edge-url', edge.origin);
   await page.fill('#core-url', opts.coreUrl ?? '');
   await page.click('#save');
