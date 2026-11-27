@@ -18,7 +18,7 @@
 // An "observer" extension page (the block page without a query, which does nothing) records the
 // webNavigation events the browser reports and runs extension API calls for the tests.
 
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -325,6 +325,11 @@ class ChromiumSession implements Session {
 
   /** Starts Chromium on `profile` with the unpacked extension (`--load-extension`). */
   private static async open(profile: string, opts: LaunchOptions): Promise<{ ctx: BrowserContext; id: string; version: string }> {
+    // Invalid unpacked extensions never start a service worker. Report the input error
+    // immediately instead of spending WAIT_MS waiting for an event that cannot happen.
+    if (!existsSync(path.join(opts.extensionDir, 'manifest.json'))) {
+      throw new Error(`missing extension manifest: ${opts.extensionDir}`);
+    }
     const ctx = await chromium.launchPersistentContext(profile, {
       channel: 'chromium',
       headless: HEADLESS,

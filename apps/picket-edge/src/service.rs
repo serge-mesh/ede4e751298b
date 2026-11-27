@@ -62,6 +62,8 @@ pub struct Tuning {
     pub platform: Option<HostPlatform>,
     pub mounts: MountTables,
     pub clock: Option<Arc<Clock>>,
+    /// A controlled neighbour table for tests; `None` starts the live netlink watcher.
+    pub neighbours: Option<Arc<Neighbours>>,
     pub firmware_file: PathBuf,
     /// `bin/update-result.json`; `None` derives it from the installed layout.
     pub update_result: Option<PathBuf>,
@@ -94,6 +96,7 @@ impl Default for Tuning {
             platform: None,
             mounts: MountTables::default(),
             clock: None,
+            neighbours: None,
             firmware_file: PathBuf::from(firmware::VERSION_FILE),
             update_result: None,
             service: None,
@@ -235,7 +238,8 @@ pub async fn start(opts: Options, tuning: Tuning, install: impl FnOnce(&Hooks)) 
         tuning.dns.clone(),
         tuning.lookup_registry.clone(),
     );
-    let neighbours = Neighbours::new();
+    let watch_neighbours = tuning.neighbours.is_none();
+    let neighbours = tuning.neighbours.unwrap_or_else(Neighbours::new);
     let fw = crate::firewall::FwClient::new(
         tuning.firewall.clone(),
         Arc::clone(&neighbours),
@@ -410,8 +414,10 @@ pub async fn start(opts: Options, tuning: Tuning, install: impl FnOnce(&Hooks)) 
         sup.spawn("storage", Kind::Background, move || Arc::clone(&s).run());
         let c = Arc::clone(&clock);
         sup.spawn("clock", Kind::Background, move || Arc::clone(&c).run());
-        let n = Arc::clone(&edge.neighbours);
-        sup.spawn("neighbours", Kind::Background, move || Arc::clone(&n).run());
+        if watch_neighbours {
+            let n = Arc::clone(&edge.neighbours);
+            sup.spawn("neighbours", Kind::Background, move || Arc::clone(&n).run());
+        }
         let w = Arc::clone(&edge.watchdog);
         sup.spawn("watchdog", Kind::Background, move || Arc::clone(&w).run());
         let e = Arc::clone(&edge);

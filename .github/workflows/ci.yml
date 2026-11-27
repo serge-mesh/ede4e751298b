@@ -1,56 +1,80 @@
-# Lean CI on GitHub-hosted Ubuntu runners (pipelines.md §3 describes the full design; the VM,
-# kvm, binfmt, release and signing jobs are not wired up here yet).
 name: ci
-
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
-
 permissions:
   contents: read
-
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
-
 env:
   CARGO_TERM_COLOR: never
-  CARGO_INCREMENTAL: "0"
-  CARGO_NET_RETRY: "5"
-  RUST_BACKTRACE: "1"
-
+  CARGO_INCREMENTAL: '0'
+  CARGO_NET_RETRY: '5'
+  RUST_BACKTRACE: '1'
 jobs:
-  rust:
+  changes:
+    name: CI changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.select.outputs.rust }}
+      edge: ${{ steps.select.outputs.edge }}
+      deny: ${{ steps.select.outputs.deny }}
+      ui: ${{ steps.select.outputs.ui }}
+      extension: ${{ steps.select.outputs.extension }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Test change routing
+        run: python3 -m unittest discover -s scripts -p test_ci_changes.py
+
+      - name: Select components and languages
+        id: select
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci_changes.py
+
+  rust-checks:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
-      - name: Cache cargo and toolchain
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.rustup/toolchains
-            ~/.rustup/update-hashes
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: rust-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            rust-${{ hashFiles('rust-toolchain.toml') }}-
-
-      - name: Install rustup and the pinned toolchain
+      - name: Install the pinned Rust toolchain
         run: |
-          if ! command -v rustup >/dev/null 2>&1 && [ ! -x "$HOME/.cargo/bin/rustup" ]; then
-            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none --no-modify-path
-          fi
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.cargo/bin:$PATH"
-          rustup show active-toolchain || rustup toolchain install
+          command -v rustup >/dev/null || { echo "GitHub-hosted Ubuntu must provide rustup" >&2; exit 1; }
+          rustup show active-toolchain || rustup toolchain install --no-self-update
+
+      - name: Shared compiler cache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.20.1
+
+      - name: Shared Cargo downloads (no targets or toolchains)
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: cargo-downloads
+          cache-targets: false
+          cache-bin: false
+          env-vars: CARGO_NET_RETRY CARGO_INCREMENTAL
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' && github.job == 'rust-checks' }}
 
       - name: cargo fmt
         run: cargo fmt --all --check
@@ -64,20 +88,90 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      - name: cargo test
-        run: cargo test --workspace --locked --no-fail-fast
+  rust-tests:
+    name: Rust tests (${{ matrix.suite }})
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - core-unit
+          - core-integration-1
+          - core-integration-2
+          - workspace
+      max-parallel: ${{ github.event.pull_request.user.login == 'dependabot[bot]' && 2 || 4 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
-  # The edge binaries for the gateway, aarch64 against glibc 2.41, and the glibc symbol check
-  # (build-and-test.md §3–§4, edge-unifi.md §1).
+      - name: Install the pinned Rust toolchain
+        run: |
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          command -v rustup >/dev/null || { echo "GitHub-hosted Ubuntu must provide rustup" >&2; exit 1; }
+          rustup show active-toolchain || rustup toolchain install --no-self-update
+
+      - name: Shared compiler cache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.20.1
+
+      - name: Shared Cargo downloads (no targets or toolchains)
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: cargo-downloads
+          cache-targets: false
+          cache-bin: false
+          env-vars: CARGO_NET_RETRY CARGO_INCREMENTAL
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' && github.job == 'rust-checks' }}
+
+      - name: Run the test suite
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: python3 scripts/ci-rust-tests.py "$SUITE"
+
+      - name: Core doctests
+        if: ${{ !cancelled() && matrix.suite == 'core-unit' }}
+        run: cargo test --profile ci --package picket-core --doc --locked --no-fail-fast
+
+  rust:
+    needs:
+      - changes
+      - rust-checks
+      - rust-tests
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+
+      - name: Require selected Rust checks
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          WANTED: ${{ needs.changes.outputs.rust }}
+          CHECKS: ${{ needs.rust-checks.result }}
+          TESTS: ${{ needs.rust-tests.result }}
+        run: |
+          test "$CHANGES" = success
+          if [ "$WANTED" = false ]; then exit 0; fi
+          test "$WANTED" = true && test "$CHECKS" = success && test "$TESTS" = success
+
   edge-aarch64:
+    needs: changes
+    if: needs.changes.outputs.edge == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      ZIG_VERSION: "0.16.0"
-      # zig-x86_64-linux-0.16.0.tar.xz, from https://ziglang.org/download/index.json
-      ZIG_SHA256: "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
-      CARGO_ZIGBUILD_VERSION: "0.24.1"
-      # Optional in CI (empty on forks); release workflows also set PICKET_REQUIRE_RELEASE_KEYS=1.
+      ZIG_VERSION: 0.16.0
+      ZIG_SHA256: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+      CARGO_ZIGBUILD_VERSION: 0.24.1
       PICKET_RELEASE_PUB: ${{ vars.RELEASE_PUB }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -90,32 +184,24 @@ jobs:
           path: |
             ~/.local/zig-${{ env.ZIG_VERSION }}
             ~/.local/cargo-zigbuild-${{ env.CARGO_ZIGBUILD_VERSION }}
-          key: zig-${{ env.ZIG_VERSION }}-${{ env.ZIG_SHA256 }}-cargo-zigbuild-${{ env.CARGO_ZIGBUILD_VERSION }}
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ env.ZIG_VERSION }}-${{ env.ZIG_SHA256 }}-cargo-zigbuild-${{ env.CARGO_ZIGBUILD_VERSION }}-${{ hashFiles('scripts/install-ci-tool.sh') }}
 
-      - name: Cache cargo and toolchain
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.rustup/toolchains
-            ~/.rustup/update-hashes
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            ~/.cache/zig
-          key: edge-aarch64-${{ hashFiles('rust-toolchain.toml') }}-${{ env.ZIG_VERSION }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            edge-aarch64-${{ hashFiles('rust-toolchain.toml') }}-${{ env.ZIG_VERSION }}-
-
-      - name: Install rustup, the pinned toolchain, the aarch64 target and llvm-objdump
+      - name: Install pinned Rust, aarch64 and llvm-objdump
         run: |
-          if ! command -v rustup >/dev/null 2>&1 && [ ! -x "$HOME/.cargo/bin/rustup" ]; then
-            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none --no-modify-path
-          fi
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.cargo/bin:$PATH"
-          rustup show active-toolchain || rustup toolchain install
+          command -v rustup >/dev/null || { echo "GitHub-hosted Ubuntu must provide rustup" >&2; exit 1; }
+          rustup show active-toolchain || rustup toolchain install --no-self-update
           rustup target add aarch64-unknown-linux-gnu
           rustup component add llvm-tools
+
+      - name: Pruned ARM dependency cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: edge-aarch64-zig-${{ env.ZIG_VERSION }}-zigbuild-${{ env.CARGO_ZIGBUILD_VERSION }}-${{ hashFiles('scripts/check-edge-aarch64.sh') }}
+          cache-bin: false
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install zig (pinned, SHA-256 checked)
         run: |
@@ -130,7 +216,7 @@ jobs:
               "https://pkg.hexops.org/zig/$tarball" \
               "https://zig.linus.dev/zig/$tarball" \
               "https://ziglang.org/download/$ZIG_VERSION/$tarball"; do
-              if curl -sSfL --connect-timeout 20 --retry 2 -o "$tmp/$tarball" "$url" \
+              if curl --proto '=https' --proto-redir '=https' -sSfL --connect-timeout 20 --retry 2 -o "$tmp/$tarball" "$url" \
                 && echo "$ZIG_SHA256  $tmp/$tarball" | sha256sum -c --quiet -; then
                 break
               fi
@@ -146,23 +232,19 @@ jobs:
           fi
           echo "$dir" >> "$GITHUB_PATH"
 
-      - name: Install cargo-zigbuild (pinned)
-        run: |
-          root="$HOME/.local/cargo-zigbuild-$CARGO_ZIGBUILD_VERSION"
-          if [ ! -x "$root/bin/cargo-zigbuild" ]; then
-            cargo install cargo-zigbuild --version "$CARGO_ZIGBUILD_VERSION" --locked --root "$root"
-          fi
-          echo "$root/bin" >> "$GITHUB_PATH"
+      - name: Install cargo-zigbuild (pinned prebuilt)
+        run: scripts/install-ci-tool.sh cargo-zigbuild
 
       - name: Edge binaries for aarch64, glibc floor 2.41 (build-and-test.md §3)
         run: scripts/check-edge-aarch64.sh
 
-  # cargo deny: advisories, licences, bans and sources (security.md §6, build-and-test.md §4).
   deny:
+    needs: changes
+    if: needs.changes.outputs.deny == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      CARGO_DENY_VERSION: "0.22.1"
+      CARGO_DENY_VERSION: 0.22.1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -172,89 +254,69 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.local/cargo-deny-${{ env.CARGO_DENY_VERSION }}
-          key: cargo-deny-${{ env.CARGO_DENY_VERSION }}
+          key: cargo-deny-${{ runner.os }}-${{ runner.arch }}-${{ env.CARGO_DENY_VERSION }}-${{ hashFiles('scripts/install-ci-tool.sh') }}
 
-      - name: Cache cargo and toolchain
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.rustup/toolchains
-            ~/.rustup/update-hashes
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: deny-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            deny-${{ hashFiles('rust-toolchain.toml') }}-
-
-      - name: Install rustup and the pinned toolchain
+      - name: Install the pinned Rust toolchain
         run: |
-          if ! command -v rustup >/dev/null 2>&1 && [ ! -x "$HOME/.cargo/bin/rustup" ]; then
-            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none --no-modify-path
-          fi
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.cargo/bin:$PATH"
-          rustup show active-toolchain || rustup toolchain install
+          command -v rustup >/dev/null || { echo "GitHub-hosted Ubuntu must provide rustup" >&2; exit 1; }
+          rustup show active-toolchain || rustup toolchain install --no-self-update
 
-      - name: Install cargo-deny (pinned)
-        run: |
-          root="$HOME/.local/cargo-deny-$CARGO_DENY_VERSION"
-          if [ ! -x "$root/bin/cargo-deny" ]; then
-            cargo install cargo-deny --version "$CARGO_DENY_VERSION" --locked --root "$root"
-          fi
-          echo "$root/bin" >> "$GITHUB_PATH"
+      - name: Shared Cargo downloads (no targets or toolchains)
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: cargo-downloads
+          cache-targets: false
+          cache-bin: false
+          env-vars: CARGO_NET_RETRY CARGO_INCREMENTAL
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' && github.job == 'rust-checks' }}
+
+      - name: Install cargo-deny (pinned prebuilt)
+        run: scripts/install-ci-tool.sh cargo-deny
 
       - name: cargo deny
         run: scripts/check-deny.sh
 
   ui:
+    needs:
+      - changes
+      - ui-build
+      - ui-tests
+      - extension
+    if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
 
-      # Exact Node: the extension's archives use Node's bundled zlib, so their bytes (and the
-      # published SHA-256 sums) are reproducible only on the same Node (security.md §6).
-      - name: Pinned Node
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .node-version
-
-      - name: UI lint, build and test
-        if: hashFiles('ui/package.json') != ''
-        working-directory: ui
+      - name: Require selected UI and extension checks
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          UI: ${{ needs.changes.outputs.ui }}
+          EXTENSION: ${{ needs.changes.outputs.extension }}
+          BUILD: ${{ needs.ui-build.result }}
+          TESTS: ${{ needs.ui-tests.result }}
+          PACKAGE: ${{ needs.extension.result }}
         run: |
-          npm ci --no-audit --no-fund
-          npm run lint
-          npm run build
-          npm test
+          test "$CHANGES" = success
+          test "$UI" = true || test "$UI" = false
+          test "$EXTENSION" = true || test "$EXTENSION" = false
+          if [ "$UI" = true ]; then test "$BUILD" = success && test "$TESTS" = success || exit 1; fi
+          if [ "$EXTENSION" = true ]; then test "$PACKAGE" = success || exit 1; fi
 
-      - name: Extension build, lint, test and package (twice, compared)
-        if: hashFiles('extension/package.json') != ''
-        working-directory: extension
-        run: |
-          npm ci --no-audit --no-fund
-          npm run build
-          npm run lint
-          npm test
-          npm run package
-          first="$(mktemp -d)"
-          cp dist/*.sha256 "$first/"
-          rm -rf dist
-          npm run package
-          for f in "$first"/*.sha256; do cmp "$f" "dist/$(basename "$f")"; done
-
-  # The extension in real browsers (browser-extension.md §5): Playwright's Chromium and Firefox
-  # against a fake edge, in Playwright's image for the pinned @playwright/test (its browsers and
-  # their system libraries; the tag must follow extension/package.json, the digest pins it).
-  extension-browsers:
+  extension-browser-tests:
+    name: Extension browser (${{ matrix.browser }})
+    needs: changes
+    if: needs.changes.outputs.extension == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    container:
-      image: mcr.microsoft.com/playwright:v1.65.1-noble@sha256:1507cbfc550a63a6b7396791ca4f00df17beb56342d2447b3f106c306f525579
-      options: --ipc=host
+    strategy:
+      fail-fast: false
+      matrix:
+        browser:
+          - chromium
+          - firefox
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -269,25 +331,136 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.npm
-          key: extension-npm-${{ hashFiles('extension/package-lock.json') }}
+          key: extension-npm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.node-version') }}-${{ hashFiles('extension/package-lock.json') }}
 
-      - name: Real-browser tests (Chromium, Firefox)
+      - name: Real-browser tests (${{ matrix.browser }})
         working-directory: extension
+        env:
+          BROWSER: ${{ matrix.browser }}
         run: |
           # The tests make their certificates with the openssl CLI.
           command -v openssl >/dev/null || { apt-get update && apt-get install -y --no-install-recommends openssl; }
-          npm ci --no-audit --no-fund
+          npm ci --ignore-scripts --no-audit --no-fund
           # The image must hold the browsers this @playwright/test expects (its tag follows the
           # version; test/ci.test.ts checks the two match).
           node -e "const { chromium, firefox } = require('@playwright/test'); const fs = require('node:fs'); for (const b of [chromium, firefox]) { if (!fs.existsSync(b.executablePath())) { console.error('the image has no ' + b.executablePath() + ': its tag does not match @playwright/test'); process.exit(1); } }"
           # GitHub Actions container jobs run as root with HOME=/github/home (owned by pwuser),
           # which Firefox refuses unless HOME is owned by the current user.
-          HOME=/root npm run test:browser
+          HOME=/root npm run test:browser -- --project="$BROWSER"
 
       - name: Keep the test results of a failed run
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: extension-browser-test-results
+          name: extension-browser-test-results-${{ matrix.browser }}
           path: extension/test-results/
           retention-days: 7
+    container:
+      image: mcr.microsoft.com/playwright:v1.65.1-noble@sha256:1507cbfc550a63a6b7396791ca4f00df17beb56342d2447b3f106c306f525579
+      options: --ipc=host
+
+  extension-browsers:
+    needs:
+      - changes
+      - extension-browser-tests
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+
+      - name: Require selected browser checks
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          WANTED: ${{ needs.changes.outputs.extension }}
+          RESULT: ${{ needs.extension-browser-tests.result }}
+        run: |
+          test "$CHANGES" = success
+          if [ "$WANTED" = false ]; then exit 0; fi
+          test "$WANTED" = true && test "$RESULT" = success
+
+  ui-build:
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Pinned Node and npm cache
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: UI lint, typecheck and build
+        working-directory: ui
+        run: |
+          npm ci --ignore-scripts --prefer-offline --no-audit --no-fund
+          npm run lint
+          npm run build
+
+  ui-tests:
+    name: UI tests (${{ matrix.shard }}/2)
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - 1
+          - 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Pinned Node and npm cache
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: UI test shard
+        working-directory: ui
+        run: |
+          npm ci --ignore-scripts --prefer-offline --no-audit --no-fund
+          npm test -- --shard="$SHARD/2"
+        env:
+          SHARD: ${{ matrix.shard }}
+
+  extension:
+    needs: changes
+    if: needs.changes.outputs.extension == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Pinned Node and npm cache
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+
+      - name: Extension build, lint, test and reproducible packages
+        working-directory: extension
+        run: |
+          npm ci --ignore-scripts --prefer-offline --no-audit --no-fund
+          npm run build
+          npm run lint
+          npm test
+          npm run package
+          first="$(mktemp -d)"
+          cp dist/*.sha256 "$first/"
+          rm -rf dist
+          npm run package
+          for f in "$first"/*.sha256; do cmp "$f" "dist/$(basename "$f")"; done
