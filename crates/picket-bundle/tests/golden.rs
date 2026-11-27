@@ -8,7 +8,7 @@
 //! matcher then). The read test loads the files from disk, reading cold and verdict pages with
 //! `pread` as the edge does, and requires the same decisions; nothing in the formats depends on
 //! the host's endianness or pointer width, so the files read identically on aarch64 (the QEMU run
-//! is deferred infrastructure, docs/status.md). A second test rebuilds every file in memory and
+//! is deferred infrastructure). A second test rebuilds every file in memory and
 //! requires byte-identical output (bundles.md §2 "Determinism").
 //!
 //! Regenerate with `PICKET_WRITE_GOLDEN_BUNDLES=1 cargo test -p picket-bundle --test golden`.
