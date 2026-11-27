@@ -1583,6 +1583,25 @@ mod tests {
         assert_eq!(retry_after(&ip, now), 0);
     }
 
+    /// The edge's longest block TTL fits a 15 min allow made right after the block: the hold
+    /// ends before the reload deadline, so the reload finds the cached block answer expired.
+    #[test]
+    fn longest_block_ttl_fits_a_15_min_allow() {
+        let ttl = crate::dns::runtime::bounds::BLOCK_TTL_S;
+        let hold = i64::try_from(ring::hold_s(ttl)).unwrap();
+        assert!(hold + RETRY_BEFORE_EXPIRY_S <= 15 * 60, "hold {hold}");
+        let now = Timestamp::now();
+        let mut a = crate::allows::tests::allow("a", AllowKind::Dns, 900);
+        a.block_time = Some(now);
+        a.block_ttl = Some(ttl);
+        a.expires_at = now + SignedDuration::from_secs(900);
+        assert_eq!(
+            retry_after(&a, now),
+            ring::hold_s(ttl),
+            "not cut short by expires_at"
+        );
+    }
+
     /// An allow's end and a block's hold stop at the end of the timestamp range
     /// (9999-12-30T22:00:00.999999999Z), where `+` would panic.
     #[test]

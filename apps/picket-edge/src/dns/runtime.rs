@@ -34,7 +34,12 @@ pub mod bounds {
     pub const STALE_MAX_S: u32 = 7 * 86_400;
     pub const PREFETCH_HITS: (u32, u32) = (1, 1_000_000);
     pub const SYNC_LOOKUP_BUDGET_MS: u32 = 60_000;
-    pub const BLOCK_TTL_S: u32 = 86_400;
+    /// The longest block TTL the edge serves: just under the shortest allow (15 min), so a
+    /// browser's cached block answer always expires inside an allow and the reload after it gets
+    /// the fresh answer. 900 s − 5 s hold slack (`bypass::ring::HOLD_SLACK_S`) − 5 s reload margin
+    /// (`bypass::RETRY_BEFORE_EXPIRY_S`): an allow made right after the block still reloads after
+    /// the cached answer expired. Longer configured TTLs are lowered to this (#15, #34).
+    pub const BLOCK_TTL_S: u32 = 890;
     pub const CLIENT_QPS: (u32, u32) = (1, 100_000);
     pub const CLIENT_INFLIGHT: (u32, u32) = (1, 4_096);
     /// The longest `bypass.max_duration`: the longest timeout a firewall entry can hold
