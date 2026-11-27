@@ -2955,9 +2955,9 @@ mod tests {
                 c.neighbours.replace(&[(x, replacement)]);
                 f.st().fail_src = vec![other];
                 f.st().delay = Duration::from_millis(150);
-                let (result, ()) = tokio::join!(
-                    c.grant_allow(&replacement_text, &[x, other], k.dst, 1200),
-                    async {
+                let addresses = [x, other];
+                let (result, ()) =
+                    tokio::join!(c.grant_allow(&replacement_text, &addresses, k.dst, 1200), async {
                         assert!(
                             until(Duration::from_secs(3), || c
                                 .shadow()
@@ -2968,8 +2968,7 @@ mod tests {
                         // The grant is waiting for acks when maintenance revokes A's access.
                         c.neighbours.replace(&[(x, b)]);
                         c.neighbour_event(NeighbourEvent::Gained { mac: b, ip: x });
-                    }
-                );
+                    });
                 assert!(result.is_err());
                 assert!(
                     c.shadow()
