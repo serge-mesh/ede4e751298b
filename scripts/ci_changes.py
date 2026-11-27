@@ -41,6 +41,9 @@ def classify(paths):
             selected.update(edge=True, deny=True)
         if path.startswith("ui/"):
             selected["ui"] = True
+        # picket-core's openapi.rs unit test reads the UI's copy of the API document.
+        if path == "ui/src/api/openapi.json":
+            selected["rust"] = True
         if path.startswith("extension/"):
             selected["extension"] = True
         if path == ".node-version":

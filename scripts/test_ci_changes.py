@@ -12,6 +12,10 @@ class ChangeSelection(unittest.TestCase):
         selection = classify(["ui/src/app.tsx", "ui/package-lock.json"])
         self.assertEqual({k for k, v in selection.items() if v}, {"ui", "codeql_js"})
 
+    def test_uis_openapi_copy_runs_core_tests(self):
+        selection = classify(["ui/src/api/openapi.json"])
+        self.assertEqual({k for k, v in selection.items() if v}, {"ui", "rust"})
+
     def test_extension_needs_browser_and_javascript_checks(self):
         selection = classify(["extension/test/browser/blocks.spec.ts"])
         self.assertEqual({k for k, v in selection.items() if v}, {"extension", "codeql_js"})
