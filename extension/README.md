@@ -4,7 +4,10 @@ Picket's block page and temporary allows for Brave and Firefox. The spec's `brow
 
 ## Commands
 
-Node ≥ 20.19.
+Node ≥ 26.13.1. Use the exact version in the repository’s `.node-version` for reproducible archives.
+
+The type-check script uses the TypeScript 7 compiler installed as `typescript-native`.
+`typescript` stays on 6.0.3 to supply the compiler API required by ESLint.
 
 | Command | Does |
 |---|---|

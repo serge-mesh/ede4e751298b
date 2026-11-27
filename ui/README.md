@@ -7,6 +7,12 @@ embeds with rust-embed (debug builds read it from disk).
 
 ## Commands
 
+Use Node ≥ 26.13.1 (the exact version in the repository’s `.node-version` in CI).
+
+The `typescript-native` alias supplies the TypeScript 7 compiler used by the build and lint
+scripts. `typescript` stays on 5.9.3 for the compiler API required by ESLint and
+`openapi-typescript`; invoke the compiler through the npm scripts to select it explicitly.
+
 ```sh
 export PATH=$HOME/.local/opt/node/bin:$PATH
 npm ci            # install the pinned dependencies (package-lock.json)

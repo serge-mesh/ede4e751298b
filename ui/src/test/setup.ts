@@ -1,14 +1,20 @@
 import "@testing-library/jest-dom/vitest";
-import { Blob as NodeBlob, File as NodeFile } from "node:buffer";
 import { afterEach, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 import { noteViolations, takeViolations } from "./mock-api";
 import { eventViolations } from "./contract";
 
-// jsdom's Blob and File lack text(), slice().text() and stream(), and Node's fetch can't send them
-// as a request body; browsers have all of these, and so do Node's own Blob and File.
-globalThis.Blob = NodeBlob as unknown as typeof Blob;
-globalThis.File = NodeFile as unknown as typeof File;
+// jsdom 31 supplies Blob/File reading APIs; Vitest 5 adapts them for Node's Request.
+// Keep those constructors intact so Vitest can recognize their underlying bytes.
+// jsdom still lacks stream(), which the import reader uses.
+Blob.prototype.stream ??= function () {
+  return new ReadableStream<Uint8Array<ArrayBuffer>>({
+    start: async (controller) => {
+      controller.enqueue(new Uint8Array(await this.arrayBuffer()));
+      controller.close();
+    },
+  });
+};
 
 afterEach(() => {
   cleanup();
