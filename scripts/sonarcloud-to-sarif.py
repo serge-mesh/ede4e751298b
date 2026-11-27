@@ -484,6 +484,19 @@ def build_sarif_rule(
     }
 
 
+def escape_sarif_link_text(text: str) -> str:
+    """Escape text for the label of a SARIF embedded link (SARIF 2.1.0 §3.11.6)."""
+    return text.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+
+
+def related_locations_line(related: list[dict[str, Any]]) -> str:
+    """Link each related location from the message: Code Scanning shows only linked ones."""
+    links = ", ".join(
+        f"[{escape_sarif_link_text(loc['message']['text'])}]({loc['id']})" for loc in related
+    )
+    return f"Related locations: {links}"
+
+
 def build_related_locations(
     issue: dict[str, Any],
     project_key: str,
@@ -548,10 +561,13 @@ def build_sarif(
         severity = str(issue.get("severity") or "MAJOR")
         message_text = str(issue.get("message") or rule_id)
         issue_key = str(issue.get("key") or "")
+        related = build_related_locations(issue, target.project_key)
+        message_parts = [message_text]
+        if related:
+            message_parts.append(related_locations_line(related))
         if issue_key:
-            full_message = f"{message_text}\n\nSonarQube Cloud issue: {build_issue_url(target, issue_key)}"
-        else:
-            full_message = message_text
+            message_parts.append(f"SonarQube Cloud issue: {build_issue_url(target, issue_key)}")
+        full_message = "\n\n".join(message_parts)
 
         base_hash = str(issue.get("hash") or "")
         # Pair Sonar's line hash with its immutable issue key so identical lines
@@ -585,7 +601,6 @@ def build_sarif(
                 "primaryLocationLineHash": fingerprint,
             },
         }
-        related = build_related_locations(issue, target.project_key)
         if related:
             result["relatedLocations"] = related
         results.append(result)

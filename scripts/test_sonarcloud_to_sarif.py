@@ -385,6 +385,10 @@ class BuildSarifTests(unittest.TestCase):
         self.assertEqual(
             bug_result["relatedLocations"][0]["physicalLocation"]["region"]["startLine"], 127
         )
+        self.assertIn(
+            "Related locations: [this is an asynchronous context](1)",
+            bug_result["message"]["text"],
+        )
 
         smell_result = results[3]
         self.assertEqual(smell_result["level"], "note")
@@ -455,6 +459,56 @@ class BuildSarifTests(unittest.TestCase):
             res["relatedLocations"][0]["physicalLocation"]["artifactLocation"]["uri"],
             "ui/src/rel%3Fx%3D1.tsx",
         )
+
+
+    def test_links_related_locations_from_the_message_with_escaped_labels(self) -> None:
+        target = mod.SyncTarget(
+            project_key=PROJECT_KEY,
+            kind="branch",
+            value="main",
+            ref="refs/heads/main",
+            sha=SAMPLE_SHA,
+        )
+        flow_issue = {
+            "key": "linked",
+            "rule": "rust:S1000",
+            "severity": "MAJOR",
+            "type": "BUG",
+            "component": f"{PROJECT_KEY}:src/lib.rs",
+            "line": 9,
+            "hash": "h1",
+            "message": "Check this.",
+            "organization": "serge-mesh",
+            "flows": [
+                {
+                    "locations": [
+                        {
+                            "component": f"{PROJECT_KEY}:src/lib.rs",
+                            "textRange": {"startLine": 2, "endLine": 2},
+                            "msg": "a[0]",
+                        },
+                        {
+                            "component": f"{PROJECT_KEY}:src/lib.rs",
+                            "textRange": {"startLine": 3, "endLine": 3},
+                            "msg": "x\\y",
+                        },
+                    ]
+                }
+            ],
+        }
+        plain_issue = {**flow_issue, "key": "plain", "hash": "h2", "flows": []}
+        sarif = mod.build_sarif(target, [flow_issue, plain_issue], {})
+        by_key = {
+            r["partialFingerprints"]["primaryLocationLineHash"].split(":")[1]: r
+            for r in sarif["runs"][0]["results"]
+        }
+        text = by_key["linked"]["message"]["text"]
+        self.assertTrue(text.startswith("Check this.\n\n"))
+        self.assertIn("Related locations: [a\\[0\\]](1), [x\\\\y](2)", text)
+        for loc in by_key["linked"]["relatedLocations"]:
+            self.assertIn(f"]({loc['id']})", text)
+        self.assertTrue(text.endswith(mod.build_issue_url(target, "linked")))
+        self.assertNotIn("Related locations", by_key["plain"]["message"]["text"])
 
 
 class MainFlowTests(unittest.TestCase):
