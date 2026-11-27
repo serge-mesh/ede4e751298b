@@ -645,8 +645,6 @@ export interface ObjectArrayItemsProps {
   root: SchemaRoot;
   emptyText?: string;
   addLabel?: string;
-  /** Gives the add button the field's id, so the field's label points at it. */
-  labelsAddButton?: boolean;
   /** The heading of an item's card; "#n" when not given. */
   heading?: (item: unknown, i: number) => React.ReactNode;
   removeLabel?: (i: number) => string;
@@ -668,7 +666,6 @@ export function ObjectArrayItems({
   root,
   emptyText = "None.",
   addLabel = "Add",
-  labelsAddButton = false,
   heading = (_item, i) => <span className="tabular-nums">#{i + 1}</span>,
   removeLabel = (i) => `Remove item ${i + 1}`,
 }: ObjectArrayItemsProps) {
@@ -690,7 +687,9 @@ export function ObjectArrayItems({
     onChange(next);
   };
   return (
-    <div className="space-y-2" role="group" aria-labelledby={`${id}-label`}>
+    // The group carries the field's id: a field label pointing here names the list without
+    // activating any of its buttons.
+    <div id={id} className="space-y-2" role="group" aria-labelledby={`${id}-label`}>
       {items.length === 0 && <p className="text-xs text-muted-foreground">{emptyText}</p>}
       {items.map((item, i) => (
         <div key={i} className="rounded-md border p-3">
@@ -723,7 +722,6 @@ export function ObjectArrayItems({
       ))}
       {!disabled && (
         <Button
-          id={labelsAddButton ? id : undefined}
           aria-labelledby={`${id}-add`}
           variant="outline"
           size="sm"

@@ -185,7 +185,6 @@ export function useProfileFormProps() {
             root={openapiRoot}
             emptyText="No lookup providers attached."
             addLabel="Add a lookup provider"
-            labelsAddButton
             removeLabel={(i) => `Remove lookup provider ${i + 1}`}
             heading={(item, i) => {
               const provider = (item as { provider?: unknown } | null)?.provider;

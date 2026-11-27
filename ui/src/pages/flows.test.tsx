@@ -158,7 +158,9 @@ describe("profiles", () => {
     ]);
     renderApp("/profiles/new");
     const addBtn = await screen.findByRole("button", { name: "Add a lookup provider" }, T);
-    expect(screen.getByText("Lookup providers", { selector: "label" })).toBeInTheDocument();
+    // Clicking the field's label names the list; it doesn't add a row.
+    await user.click(screen.getByText("Lookup providers", { selector: "label" }));
+    expect(screen.getByText("No lookup providers attached.")).toBeInTheDocument();
     expect(screen.queryByText("Lookups", { selector: "label, span" })).toBeNull();
     expect(screen.getByLabelText("Sync lookup budget (ms)")).toBeInTheDocument();
     expect(screen.getByText("Alert lookup providers", { selector: "label" })).toBeInTheDocument();
