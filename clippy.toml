@@ -1,0 +1,4 @@
+# clippy settings for the workspace (lints themselves: [workspace.lints.clippy] in Cargo.toml).
+# Tests may unwrap and expect: a failed test is the report.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

@@ -1,0 +1,13 @@
+# Written by picket-edge-update (edge-unifi.md §2); `picket-edge-update units` prints this text.
+# picket-edge writes pending.json after verifying a release; this starts the root updater
+# (edge.md §14).
+[Unit]
+Description=Picket edge update trigger
+RequiresMountsFor={{INSTALL_DIR}} {{DATA_DIR}}
+
+[Path]
+PathExists={{DATA_DIR}}/releases/pending.json
+Unit=picket-edge-update.service
+
+[Install]
+WantedBy=multi-user.target

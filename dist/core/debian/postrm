@@ -1,0 +1,8 @@
+#!/bin/sh
+# picket-core postrm. The data directory (identity, LAN CA, databases) is never deleted: it
+# survives purge, since removing it would cut every edge and device off from this core.
+set -e
+
+#DEBHELPER#
+
+exit 0

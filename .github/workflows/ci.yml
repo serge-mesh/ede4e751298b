@@ -1,0 +1,283 @@
+# Lean CI on GitHub-hosted Ubuntu runners (pipelines.md §3 describes the full design; the VM,
+# kvm, binfmt, release and signing jobs are not wired up here yet).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "5"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache cargo and toolchain
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: rust-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            rust-${{ hashFiles('rust-toolchain.toml') }}-
+
+      - name: Install rustup and the pinned toolchain
+        run: |
+          if ! command -v rustup >/dev/null 2>&1 && [ ! -x "$HOME/.cargo/bin/rustup" ]; then
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none --no-modify-path
+          fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup show active-toolchain || rustup toolchain install
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+      - name: rustfmt on lookup modules (cargo fmt doesn't reach them)
+        run: find crates/picket-lookup/src/modules -name '*.rs' -exec rustfmt --edition 2024 --check {} +
+
+      - name: Updater dependency allowlist (build-and-test.md §4)
+        run: scripts/check-updater-deps.sh
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace --locked --no-fail-fast
+
+  # The edge binaries for the gateway, aarch64 against glibc 2.41, and the glibc symbol check
+  # (build-and-test.md §3–§4, edge-unifi.md §1).
+  edge-aarch64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      ZIG_VERSION: "0.16.0"
+      # zig-x86_64-linux-0.16.0.tar.xz, from https://ziglang.org/download/index.json
+      ZIG_SHA256: "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
+      CARGO_ZIGBUILD_VERSION: "0.24.1"
+      # Optional in CI (empty on forks); release workflows also set PICKET_REQUIRE_RELEASE_KEYS=1.
+      PICKET_RELEASE_PUB: ${{ vars.RELEASE_PUB }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache zig and cargo-zigbuild
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.local/zig-${{ env.ZIG_VERSION }}
+            ~/.local/cargo-zigbuild-${{ env.CARGO_ZIGBUILD_VERSION }}
+          key: zig-${{ env.ZIG_VERSION }}-${{ env.ZIG_SHA256 }}-cargo-zigbuild-${{ env.CARGO_ZIGBUILD_VERSION }}
+
+      - name: Cache cargo and toolchain
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ~/.cache/zig
+          key: edge-aarch64-${{ hashFiles('rust-toolchain.toml') }}-${{ env.ZIG_VERSION }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            edge-aarch64-${{ hashFiles('rust-toolchain.toml') }}-${{ env.ZIG_VERSION }}-
+
+      - name: Install rustup, the pinned toolchain, the aarch64 target and llvm-objdump
+        run: |
+          if ! command -v rustup >/dev/null 2>&1 && [ ! -x "$HOME/.cargo/bin/rustup" ]; then
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none --no-modify-path
+          fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add aarch64-unknown-linux-gnu
+          rustup component add llvm-tools
+
+      - name: Install zig (pinned, SHA-256 checked)
+        run: |
+          dir="$HOME/.local/zig-$ZIG_VERSION"
+          if [ ! -x "$dir/zig" ]; then
+            tarball="zig-x86_64-linux-$ZIG_VERSION.tar.xz"
+            tmp="$(mktemp -d)"
+            # Zig's community mirrors first (ziglang.org itself is slow from here); the pinned
+            # SHA-256 checks whichever source answers.
+            for url in \
+              "https://pkg.alexrp.com/zig/$tarball" \
+              "https://pkg.hexops.org/zig/$tarball" \
+              "https://zig.linus.dev/zig/$tarball" \
+              "https://ziglang.org/download/$ZIG_VERSION/$tarball"; do
+              if curl -sSfL --connect-timeout 20 --retry 2 -o "$tmp/$tarball" "$url" \
+                && echo "$ZIG_SHA256  $tmp/$tarball" | sha256sum -c --quiet -; then
+                break
+              fi
+              rm -f "$tmp/$tarball"
+            done
+            if [ ! -f "$tmp/$tarball" ]; then
+              echo "no source gave a zig $ZIG_VERSION tarball matching ZIG_SHA256" >&2
+              exit 1
+            fi
+            mkdir -p "$dir"
+            tar -xJf "$tmp/$tarball" -C "$dir" --strip-components=1
+            rm -rf "$tmp"
+          fi
+          echo "$dir" >> "$GITHUB_PATH"
+
+      - name: Install cargo-zigbuild (pinned)
+        run: |
+          root="$HOME/.local/cargo-zigbuild-$CARGO_ZIGBUILD_VERSION"
+          if [ ! -x "$root/bin/cargo-zigbuild" ]; then
+            cargo install cargo-zigbuild --version "$CARGO_ZIGBUILD_VERSION" --locked --root "$root"
+          fi
+          echo "$root/bin" >> "$GITHUB_PATH"
+
+      - name: Edge binaries for aarch64, glibc floor 2.41 (build-and-test.md §3)
+        run: scripts/check-edge-aarch64.sh
+
+  # cargo deny: advisories, licences, bans and sources (security.md §6, build-and-test.md §4).
+  deny:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_DENY_VERSION: "0.22.1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache cargo-deny
+        uses: actions/cache@v6
+        with:
+          path: ~/.local/cargo-deny-${{ env.CARGO_DENY_VERSION }}
+          key: cargo-deny-${{ env.CARGO_DENY_VERSION }}
+
+      - name: Cache cargo and toolchain
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: deny-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            deny-${{ hashFiles('rust-toolchain.toml') }}-
+
+      - name: Install rustup and the pinned toolchain
+        run: |
+          if ! command -v rustup >/dev/null 2>&1 && [ ! -x "$HOME/.cargo/bin/rustup" ]; then
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none --no-modify-path
+          fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup show active-toolchain || rustup toolchain install
+
+      - name: Install cargo-deny (pinned)
+        run: |
+          root="$HOME/.local/cargo-deny-$CARGO_DENY_VERSION"
+          if [ ! -x "$root/bin/cargo-deny" ]; then
+            cargo install cargo-deny --version "$CARGO_DENY_VERSION" --locked --root "$root"
+          fi
+          echo "$root/bin" >> "$GITHUB_PATH"
+
+      - name: cargo deny
+        run: scripts/check-deny.sh
+
+  ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      # Exact Node: the extension's archives use Node's bundled zlib, so their bytes (and the
+      # published SHA-256 sums) are reproducible only on the same Node (security.md §6).
+      - name: Pinned Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: UI lint, build and test
+        if: hashFiles('ui/package.json') != ''
+        working-directory: ui
+        run: |
+          npm ci --no-audit --no-fund
+          npm run lint
+          npm run build
+          npm test
+
+      - name: Extension build, lint, test and package (twice, compared)
+        if: hashFiles('extension/package.json') != ''
+        working-directory: extension
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+          npm run lint
+          npm test
+          npm run package
+          first="$(mktemp -d)"
+          cp dist/*.sha256 "$first/"
+          rm -rf dist
+          npm run package
+          for f in "$first"/*.sha256; do cmp "$f" "dist/$(basename "$f")"; done
+
+  # The extension in real browsers (browser-extension.md §5): Playwright's Chromium and Firefox
+  # against a fake edge, in Playwright's image for the pinned @playwright/test (its browsers and
+  # their system libraries; the tag must follow extension/package.json, the digest pins it).
+  extension-browsers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: mcr.microsoft.com/playwright:v1.65.1-noble@sha256:1507cbfc550a63a6b7396791ca4f00df17beb56342d2447b3f106c306f525579
+      options: --ipc=host
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Pinned Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Cache npm
+        uses: actions/cache@v6
+        with:
+          path: ~/.npm
+          key: extension-npm-${{ hashFiles('extension/package-lock.json') }}
+
+      - name: Real-browser tests (Chromium, Firefox)
+        working-directory: extension
+        run: |
+          # The tests make their certificates with the openssl CLI.
+          command -v openssl >/dev/null || { apt-get update && apt-get install -y --no-install-recommends openssl; }
+          npm ci --no-audit --no-fund
+          # The image must hold the browsers this @playwright/test expects (its tag follows the
+          # version; test/ci.test.ts checks the two match).
+          node -e "const { chromium, firefox } = require('@playwright/test'); const fs = require('node:fs'); for (const b of [chromium, firefox]) { if (!fs.existsSync(b.executablePath())) { console.error('the image has no ' + b.executablePath() + ': its tag does not match @playwright/test'); process.exit(1); } }"
+          # GitHub Actions container jobs run as root with HOME=/github/home (owned by pwuser),
+          # which Firefox refuses unless HOME is owned by the current user.
+          HOME=/root npm run test:browser
+
+      - name: Keep the test results of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: extension-browser-test-results
+          path: extension/test-results/
+          retention-days: 7

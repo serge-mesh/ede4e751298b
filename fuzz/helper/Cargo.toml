@@ -1,0 +1,56 @@
+# cargo-fuzz targets for picket-edge-helper: every decoder of untrusted input (README "Untrusted
+# input"; build-and-test.md §4 "Fuzzing"). Run with `cargo +nightly fuzz run <target>` from here.
+[package]
+name = "picket-edge-helper-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Its own workspace: fuzz/ is not part of the main one.
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+picket-edge-helper = { path = "../../apps/picket-edge-helper", features = ["testkit"] }
+picket-api = { path = "../../crates/picket-api" }
+bytes = "1.12"
+tokio-util = { version = "0.7.20", features = ["codec"] }
+
+[[bin]]
+name = "frames"
+path = "fuzz_targets/frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "iptables_save"
+path = "fuzz_targets/iptables_save.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "netlink_replies"
+path = "fuzz_targets/netlink_replies.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "snapshot"
+path = "fuzz_targets/snapshot.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ip_addr_json"
+path = "fuzz_targets/ip_addr_json.rs"
+test = false
+doc = false
+bench = false

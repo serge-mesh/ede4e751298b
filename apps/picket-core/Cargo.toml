@@ -1,0 +1,147 @@
+[package]
+name = "picket-core"
+description = "Picket's management app: web UI and API, feeds, bundle compiler, logs, alerts and edge releases"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# The download modules' test server (`modules::download::testkit`) for the integration tests:
+# compiled only with this feature (the tests turn it on through the dev-dependency on this
+# crate), so the shipped binary doesn't carry it.
+testkit = []
+
+[[bin]]
+name = "picket-core"
+path = "src/main.rs"
+
+[dependencies]
+picket-api.workspace = true
+# feed parsing, classification, rule_policy (feeds.md §3–§8), the compiler's rule semantics
+picket-rules.workspace = true
+# the bundle file format the compiler writes (bundles.md §4–§5)
+picket-bundle.workspace = true
+# `${secret:name}` resolution and redaction, shared with lookup providers (providers.md §2, §4)
+picket-lookup.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tokio-util = { workspace = true, features = ["io-util"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+jiff.workspace = true
+rand.workspace = true
+base64.workspace = true
+hex.workspace = true
+blake3.workspace = true
+sha2.workspace = true
+ipnet.workspace = true
+publicsuffix.workspace = true
+futures-util.workspace = true
+bytes.workspace = true
+socket2.workspace = true
+arc-swap.workspace = true
+# the `sqs` feed trigger's SigV4 signing (feed-scheduling.md §7)
+aws-sigv4.workspace = true
+aws-credential-types.workspace = true
+# storage
+rusqlite.workspace = true
+# web
+axum.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+tower.workspace = true
+utoipa.workspace = true
+schemars.workspace = true
+rust-embed.workspace = true
+# TLS and crypto
+rustls.workspace = true
+rustls-pki-types.workspace = true
+tokio-rustls.workspace = true
+rcgen.workspace = true
+x509-parser.workspace = true
+argon2.workspace = true
+chacha20poly1305.workspace = true
+minisign-verify.workspace = true
+flate2.workspace = true
+# download modules (providers.md §2–§3): HTTPS client with gzip/brotli, the trait, git blob
+# hashes, URLs, core's own resolver (`resolver`, core.md §11)
+reqwest.workspace = true
+async-trait.workspace = true
+sha1.workspace = true
+url.workspace = true
+percent-encoding.workspace = true
+hickory-resolver.workspace = true
+# DNSSEC validation (core.md §8; build-and-test.md §2: hickory-net's `DnssecDnsHandle` with
+# `dnssec-aws-lc-rs`, core only) and the messages its adapter reads and writes
+hickory-net.workspace = true
+hickory-proto.workspace = true
+# the Mozilla roots for feed downloads and core's resolver (core.md §11 `resolver`)
+webpki-roots.workspace = true
+# `date_line_regex` (providers.md §3 `http`)
+regex.workspace = true
+rustix = { workspace = true, features = ["termios", "param"] }
+# the wire check's independent decode of logged answers (core.md §6; build-and-test.md §2: core only)
+domain.workspace = true
+# the reply a client got, rebuilt from the logged answer as the edge served it (core.md §6)
+picket-wire.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+# `connect_async` for the UI WebSocket tests (the workspace has only `handshake`)
+tokio-tungstenite = { workspace = true, features = ["connect"] }
+reqwest.workspace = true
+futures-util.workspace = true
+# a signed test release (core.md §5)
+minisign.workspace = true
+# the end-to-end test runs the real edge foundation against this core (api.md §2–§5)
+picket-edge.workspace = true
+# scripted lookup modules for core's async-lookup tests (core.md §7)
+picket-lookup = { workspace = true, features = ["testkit"] }
+# `/metrics` read by a Prometheus text parser (build-and-test.md §5 Metrics; never in runtime code)
+prometheus-scraper.workspace = true
+# this crate's own test server for its integration tests (feature `testkit` above)
+picket-core = { path = ".", features = ["testkit"] }
+# the golden timestamp tables of the chrono → jiff compatibility tests (README §2)
+picket-api = { workspace = true, features = ["testkit"] }
+
+# cargo-deb (build-and-test.md §3, core.md §13): the binary, both units (enabled; the service is
+# started), the postinst that creates the user and /var/lib/picket-core, and /usr/share/picket-core/.
+# The release pipeline adds the bundled edge release under /usr/share/picket-core/edge/<version>/
+# (core.md §5, pipelines.md §4) after building the edge tarballs, and the browser extension builds
+# (`picket-browser-extension-<version>-brave.zip`, `-firefox.xpi`) under
+# /usr/share/picket-core/extension/, which core serves at /extension/ (core.md §12,
+# build-and-test.md §3).
+[package.metadata.deb]
+name = "picket-core"
+maintainer = "Picket <picket@localhost>"
+section = "net"
+priority = "optional"
+depends = "$auto, adduser"
+extended-description = """\
+picket-core is the management app of Picket, a self-hosted DNS filtering system: web UI and API, \
+feeds, bundle compiler, browser lists, query logs with attribution, async lookups, DNSSEC \
+validation, alerts, metrics and picket-edge releases."""
+maintainer-scripts = "../../dist/core/debian/"
+assets = [
+    ["target/release/picket-core", "usr/bin/", "755"],
+    ["../../dist/core/README.md", "usr/share/picket-core/README.md", "644"],
+    ["../../dist/firmware.json", "usr/share/picket-core/firmware.json", "644"],
+]
+systemd-units = [
+    { unit-name = "picket-core-init", unit-scripts = "../../dist/core/", enable = true, start = false },
+    { unit-name = "picket-core", unit-scripts = "../../dist/core/", enable = true, start = true, restart-after-upgrade = true },
+]

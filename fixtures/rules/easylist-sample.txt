@@ -1,0 +1,44 @@
+[Adblock Plus 2.0]
+! Version: 202611201530
+! Title: EasyList (sample for picket-rules tests)
+! Expires: 4 days (update frequency)
+! Homepage: https://easylist.to/
+!
+! *** easylist:easylist/easylist_general_block.txt ***
+-ad-banner.
+-728x90-
+.com/ads/$image,script
+/banner.
+/adsbanner.
+&ad_type=
+/ads/banner/*
+||ads.example-cdn.com^$third-party
+||adserver.example^
+||doubleclick.example^$popup
+||tracker.example^$script,domain=news.example|~blog.news.example
+|https://pagead.example/*
+@@||pagead.example/allowed.js$script
+@@||cdn.example^$generichide
+! *** easylist:easylist/easylist_general_hide.txt ***
+##.ad-banner
+##div[id^="ad_"]
+news.example##.sponsored
+news.example,~blog.news.example##.adbox
+example.*##.promo
+news.example#@#.ad-banner
+news.example#?#div:has(> .label:has-text(Sponsored))
+news.example##+js(set-constant, ads.enabled, false)
+news.example##^script:has-text(adblock)
+news.example#$#body { overflow: auto !important; }
+news.example#%#window.ads = [];
+news.example$$script[data-ad]
+||example.org^$replace=/ads//
+||video.example^$redirect=noopmp4-1s
+||video.example^$redirect-rule=noopjs
+||example.org^$removeparam=utm_source
+||example.org^$csp=script-src 'self'
+!#if env_mobile
+mobile.example##.app-banner
+||mobile-ads.example^
+!#endif
+||example.org^$bogusmodifier

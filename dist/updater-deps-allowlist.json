@@ -1,0 +1,27 @@
+{
+  "_comment": "picket-edge-update's normal dependencies (build-and-test.md §4, \"Updater dependencies\"): JSON, minisign verification and tar.gz unpacking only, so no DNS, network, TLS or async code reaches the root installer. scripts/check-updater-deps.sh fails on any crate in `cargo tree -p picket-edge-update -e normal` not listed here. Keep one \"crate\": \"why\" entry per line; versions come from Cargo.lock.",
+  "crates": {
+    "picket-edge-update": "the updater itself",
+    "serde": "JSON",
+    "serde_core": "JSON (serde's core traits)",
+    "serde_derive": "JSON (derive macros; compile time only)",
+    "proc-macro2": "serde_derive, compile time only",
+    "quote": "serde_derive, compile time only",
+    "syn": "serde_derive, compile time only",
+    "unicode-ident": "serde_derive, compile time only",
+    "serde_json": "JSON",
+    "itoa": "serde_json (integer formatting)",
+    "memchr": "serde_json (string scanning)",
+    "zmij": "serde_json (float formatting)",
+    "minisign-verify": "minisign verification (no dependencies of its own)",
+    "tar": "tar unpacking (default features off: no xattr)",
+    "filetime": "tar",
+    "libc": "tar and filetime (bindings only; the updater itself uses std)",
+    "cfg-if": "filetime, crc32fast",
+    "flate2": "gzip (pure-Rust miniz_oxide backend)",
+    "miniz_oxide": "flate2's pure-Rust inflate",
+    "adler2": "miniz_oxide (zlib checksums)",
+    "simd-adler32": "miniz_oxide (zlib checksums)",
+    "crc32fast": "flate2 (gzip checksums)"
+  }
+}

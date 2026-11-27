@@ -1,0 +1,25 @@
+[package]
+name = "picket-wire"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# edge.md §4, §7: hickory-proto decodes queries and upstream answers and encodes scrubbed answers
+hickory-proto.workspace = true
+# names in logs and the AdGuard text form (picket_api::names), TTL clamps, block responses
+picket-api.workspace = true
+# random upstream query IDs (edge.md §6, providers.md §5 `dns`)
+rand.workspace = true
+smallvec.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# build-and-test.md §4: `domain` is the independent decoder for differential tests
+domain.workspace = true
+# build-and-test.md §4: allocation budgets, counted by a global allocator in tests/alloc_budget.rs
+stats_alloc.workspace = true

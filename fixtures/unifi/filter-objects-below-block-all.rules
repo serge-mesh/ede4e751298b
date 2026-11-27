@@ -1,0 +1,39 @@
+-P INPUT ACCEPT
+-P FORWARD ACCEPT
+-P OUTPUT ACCEPT
+-N UBIOS_FORWARD_IN_USER
+-N UBIOS_FORWARD_JUMP
+-N UBIOS_FORWARD_USER_HOOK
+-N UBIOS_INPUT_JUMP
+-N UBIOS_INPUT_USER_HOOK
+-N UBIOS_LAN_IN_USER
+-N UBIOS_LAN_LAN_USER
+-N UBIOS_LAN_WAN_USER
+-N UBIOS_WAN_IN_USER
+-N UBIOS_WAN_LAN_USER
+-N UBIOS_WAN_WAN_USER
+-A INPUT -j UBIOS_INPUT_JUMP
+-A FORWARD -j UBIOS_FORWARD_JUMP
+-A UBIOS_FORWARD_IN_USER -i br0 -m comment --comment "UBIOS zone Internal" -j UBIOS_LAN_IN_USER
+-A UBIOS_FORWARD_IN_USER -i br10 -m comment --comment "UBIOS zone Internal" -j UBIOS_LAN_IN_USER
+-A UBIOS_FORWARD_IN_USER -i eth4 -m comment --comment "UBIOS zone External" -j UBIOS_WAN_IN_USER
+-A UBIOS_FORWARD_JUMP -j UBIOS_FORWARD_USER_HOOK
+-A UBIOS_FORWARD_JUMP -j UBIOS_FORWARD_IN_USER
+-A UBIOS_INPUT_JUMP -j UBIOS_INPUT_USER_HOOK
+-A UBIOS_LAN_IN_USER -m set --match-set UBIOS_ADDRv4_Internal dst -m comment --comment "UBIOS Internal-Internal" -j UBIOS_LAN_LAN_USER
+-A UBIOS_LAN_IN_USER -m set ! --match-set UBIOS_local_zoned_subnets dst -m comment --comment "UBIOS Internal-External" -j UBIOS_LAN_WAN_USER
+-A UBIOS_LAN_LAN_USER -m comment --comment "UBIOS default Internal-Internal allow" -j ACCEPT
+-A UBIOS_WAN_IN_USER -m set ! --match-set UBIOS_local_zoned_subnets dst -m comment --comment "UBIOS External-External" -j UBIOS_WAN_WAN_USER
+-A UBIOS_WAN_IN_USER -m comment --comment "UBIOS External-Internal" -j UBIOS_WAN_LAN_USER
+-A UBIOS_WAN_LAN_USER -m conntrack --ctstate RELATED,ESTABLISHED -m comment --comment "UBIOS return traffic" -j ACCEPT
+-A UBIOS_WAN_LAN_USER -m comment --comment "UBIOS default External-Internal block" -j DROP
+-A UBIOS_WAN_WAN_USER -m comment --comment "UBIOS default External-External block" -j DROP
+-A UBIOS_LAN_WAN_USER -p udp -m udp --dport 123 -m comment --comment "FIREWALL_POLICY 10000 Allow NTP" -j ACCEPT
+-A UBIOS_LAN_WAN_USER -m set --match-set UBIOS_GRP_iot src -m set --match-set UBIOS_GRP_telemetry dst -m conntrack --ctstate NEW -m limit --limit 50/sec --limit-burst 100 -m comment --comment "FIREWALL_POLICY 10001 Block IoT telemetry" -j NFLOG --nflog-prefix "[FIREWALL_POLICY-R-10001]" --nflog-group 1
+-A UBIOS_LAN_WAN_USER -m set --match-set UBIOS_GRP_iot src -m set --match-set UBIOS_GRP_telemetry dst -m comment --comment "FIREWALL_POLICY 10001 Block IoT telemetry" -j REJECT --reject-with icmp-port-unreachable
+-A UBIOS_LAN_WAN_USER -m conntrack --ctstate NEW -m limit --limit 50/sec --limit-burst 100 -m comment --comment "FIREWALL_POLICY 30000 Block All" -j NFLOG --nflog-prefix "[FIREWALL_POLICY-R-30000]" --nflog-group 1
+-A UBIOS_LAN_WAN_USER -m comment --comment "FIREWALL_POLICY 30000 Block All" -j REJECT --reject-with icmp-port-unreachable
+-A UBIOS_LAN_WAN_USER -m conntrack --ctstate INVALID -m comment --comment "UBIOS invalid state drop" -j DROP
+-A UBIOS_LAN_WAN_USER -m set --match-set GEN_BLK_FP_6741a2f0 src -m comment --comment "GEN_BLK_FP group a" -j DROP
+-A UBIOS_LAN_WAN_USER -m set --match-set GEN_ALW_FP_6741a2f1 src -m comment --comment "GEN_ALW_FP group b" -j ACCEPT
+-A UBIOS_LAN_WAN_USER -m comment --comment "UBIOS default Internal-External allow" -j ACCEPT

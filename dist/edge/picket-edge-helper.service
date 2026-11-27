@@ -1,0 +1,43 @@
+# Written by picket-edge-update (edge-unifi.md §2); `picket-edge-update units` prints this text.
+# The next install or update overwrites edits: use a drop-in instead.
+[Unit]
+Description=Picket edge firewall helper
+Wants=picket-accounts.service
+After=picket-accounts.service
+Before=picket-edge.service network-online.target
+RequiresMountsFor={{INSTALL_DIR}} {{DATA_DIR}} {{HELPER_DIR}}
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+ExecStartPre=+/usr/bin/touch /run/xtables.lock
+ExecStartPre=+/usr/bin/chgrp picket-helper /run/xtables.lock
+ExecStartPre=+/usr/bin/chmod 0640 /run/xtables.lock
+ExecStart={{INSTALL_DIR}}/bin/current/picket-edge-helper run --state-dir {{HELPER_DIR}}
+User=picket-helper
+Group=picket-helper
+SupplementaryGroups=picket
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ReadWritePaths={{HELPER_DIR}}
+RuntimeDirectory=picket-helper
+RuntimeDirectoryMode=0755
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+SystemCallFilter=@system-service
+MemoryMax=64M
+Environment=MALLOC_ARENA_MAX=2
+WatchdogSec=30
+Restart=always
+RestartSec=1
+{{HELPER_PLATFORM}}
+
+[Install]
+WantedBy=multi-user.target

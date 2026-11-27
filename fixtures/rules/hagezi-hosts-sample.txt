@@ -1,0 +1,16 @@
+# Title: HaGeZi's Threat Intelligence Feeds (hosts sample)
+# Description: Increases security significantly! (sample)
+# Homepage: https://github.com/hagezi/dns-blocklists
+# Expires: 6 hours
+# Number of entries: 8
+#
+# picket-first-seen: 2022-03-01
+0.0.0.0 malware-c2.example
+0.0.0.0 phish-login.example
+0.0.0.0 cryptojack.example # inline comment
+# picket-first-seen: none
+0.0.0.0 new-threat.example
+0.0.0.0 multi-a.example multi-b.example
+127.0.0.1 loopback-block.example
+:: v6-block.example
+192.0.2.80 mapped.example

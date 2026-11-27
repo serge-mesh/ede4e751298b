@@ -1,0 +1,52 @@
+[package]
+name = "picket-lookup"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[lints]
+workspace = true
+
+[features]
+# Mock HTTP and DNS server clients, a manual clock and a scripted module, for other crates' tests.
+testkit = []
+
+[dependencies]
+# providers.md §5 `dns`: the query writer and the upstream-answer checks the edge uses
+picket-wire.workspace = true
+# LookupSettings, log records, heartbeat metrics, the histogram layout, name text forms
+picket-api.workspace = true
+async-trait.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+tokio.workspace = true
+# the edge's RAM tier: S3-FIFO with a byte weigher (edge.md §10)
+quick_cache.workspace = true
+thiserror.workspace = true
+# the provider's settings snapshot, read on every lookup without a lock
+arc-swap.workspace = true
+# cancellation of a lookup provider's calls when its client is dropped
+tokio-util.workspace = true
+# catch_unwind around module code
+futures-util.workspace = true
+# the HTTP client trait's request and response types
+http.workspace = true
+url.workspace = true
+percent-encoding.workspace = true
+# `answers_in` IPs and CIDRs
+ipnet.workspace = true
+# obtained_at, Retry-After HTTP dates
+jiff.workspace = true
+# self-test schedules (providers.md §4)
+croner.workspace = true
+# rejection-pause jitter
+rand.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+# the golden timestamp tables of the chrono → jiff compatibility tests (README §2)
+picket-api = { workspace = true, features = ["testkit"] }

@@ -1,0 +1,46 @@
+[package]
+name = "picket-edge-helper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "picket_edge_helper"
+path = "src/lib.rs"
+
+[features]
+# The in-memory backend (`fake`) for tests: picket-edge-helper's and picket-edge's integration
+# tests and fuzz/helper turn it on; the shipped helper doesn't carry it.
+testkit = []
+
+[[bin]]
+name = "picket-edge-helper"
+path = "src/main.rs"
+
+[dependencies]
+picket-api.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+bytes.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ipnet.workspace = true
+netlink-sys.workspace = true
+netlink-packet-core.workspace = true
+notify.workspace = true
+sd-notify.workspace = true
+rustix.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+# the in-memory backend for this crate's integration tests (feature `testkit` above)
+picket-edge-helper = { path = ".", features = ["testkit"] }

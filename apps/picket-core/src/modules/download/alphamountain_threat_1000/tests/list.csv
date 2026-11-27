@@ -1,0 +1,9 @@
+hostname,risk_score,more_info
+malware-dropper.example,10.0,https://www.alphamountain.ai/threat/malware-dropper.example
+phish-login.example,9.12,https://www.alphamountain.ai/threat/phish-login.example
+"quoted-host.example",8.00,"Reported by ""several"" sources, see notes"
+borderline.example,7.0,
+low-risk.example,6.99,https://www.alphamountain.ai/threat/low-risk.example
+"split
+host.example",9.9,
+not a hostname,9.5,

@@ -1,0 +1,18 @@
+#!/bin/sh
+# picket-core postinst: the service user and the default data directory (core.md §13).
+set -e
+
+if [ "$1" = "configure" ]; then
+    if ! getent group picket-core >/dev/null; then
+        addgroup --system picket-core
+    fi
+    if ! getent passwd picket-core >/dev/null; then
+        adduser --system --ingroup picket-core --home /var/lib/picket-core --no-create-home \
+            --shell /usr/sbin/nologin --gecos "Picket core" picket-core
+    fi
+    install -d -o picket-core -g picket-core -m 0750 /var/lib/picket-core
+fi
+
+#DEBHELPER#
+
+exit 0

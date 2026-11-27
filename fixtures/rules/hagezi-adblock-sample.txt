@@ -1,0 +1,27 @@
+[Adblock Plus]
+! Title: HaGeZi's Threat Intelligence Feeds DNS Blocklist (sample)
+! Description: Increases security significantly! (sample)
+! Homepage: https://github.com/hagezi/dns-blocklists
+! License: https://github.com/hagezi/dns-blocklists/blob/main/LICENSE
+! Issues: https://github.com/hagezi/dns-blocklists/issues
+! Expires: 6 hours
+! Last modified: 20 Nov 2026 12:00 UTC
+! Version: 2026.1120.1200.00
+! Syntax: AdBlock
+! Number of entries: 12
+!
+! picket-first-seen: 2021-06-01
+||malware-c2.example^
+||phish-login.example^
+! picket-first-seen: 2023-02-14T09:30:00Z
+||cryptojack.example^
+||xn--80ak6aa92e.example^
+! picket-first-seen: none
+||new-threat.example^
+||badhost.co.example^
+||1-2-3.example^
+||sub.domain.malware-c2.example^
+||evil.example^
+||Upper-Case.Example^
+||trailing-dot.example^
+||_underscore.example^

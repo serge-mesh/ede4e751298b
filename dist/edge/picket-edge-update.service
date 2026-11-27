@@ -1,0 +1,23 @@
+# Written by picket-edge-update (edge-unifi.md §2); `picket-edge-update units` prints this text.
+# Started only by picket-edge-update.path. Nothing stops or restarts it, not even an update that
+# changes this file: a change applies from its next run (edge.md §14).
+# --platform and --data-dir are what these units were written for, so an update never re-detects
+# the platform and works in the data_dir this path unit watches, whatever edge.json says now.
+# No start timeout (TimeoutStartSec=infinity, a oneshot's default): systemd killing a run cuts a
+# rollback short with no result (edge.md §14 step 4, Result). Every step inside is bounded: the
+# lock 5 min, each systemctl call 5 min, `units` 10 s, readiness 120 s, at most 3 retries per
+# rollback step and result write.
+[Unit]
+Description=Picket edge updater
+RequiresMountsFor={{INSTALL_DIR}} {{DATA_DIR}}
+After=picket-accounts.service
+
+[Service]
+Type=oneshot
+ExecStart={{INSTALL_DIR}}/bin/current/picket-edge-update --platform {{PLATFORM}} --data-dir {{DATA_DIR}}
+Environment=MALLOC_ARENA_MAX=2
+TimeoutStartSec=infinity
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+RestrictAddressFamilies=AF_UNIX

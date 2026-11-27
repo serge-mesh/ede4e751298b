@@ -1,0 +1,18 @@
+# The IPv6 Policy-Table Destination NAT for br0 to the gateway's own address at port 5335.
+# Expect: redirect present for redirect.interfaces [br0] (ipv6: true).
+# Written from the spec (not recorded) as `ip6tables -t nat -S`. Gateway: 192.0.2.1 on br0, 198.51.100.1 on br10, 2001:db8:1::1 on br0.
+-P PREROUTING ACCEPT
+-P INPUT ACCEPT
+-P OUTPUT ACCEPT
+-P POSTROUTING ACCEPT
+-N UBIOS_POSTROUTING_JUMP
+-N UBIOS_POSTROUTING_USER_HOOK
+-N UBIOS_PREROUTING_JUMP
+-N UBIOS_PREROUTING_USER_HOOK
+-A PREROUTING -j UBIOS_PREROUTING_JUMP
+-A POSTROUTING -j UBIOS_POSTROUTING_JUMP
+-A UBIOS_POSTROUTING_JUMP -j UBIOS_POSTROUTING_USER_HOOK
+-A UBIOS_POSTROUTING_JUMP -o eth4 -m comment --comment UBIOS_WAN_MASQUERADE -j MASQUERADE
+-A UBIOS_PREROUTING_JUMP -j UBIOS_PREROUTING_USER_HOOK
+-A UBIOS_PREROUTING_USER_HOOK -i br0 -p udp -m udp --dport 53 -m comment --comment NAT_POLICY:6731c0de0000000000000101 -j DNAT --to-destination [2001:db8:1::1]:5335
+-A UBIOS_PREROUTING_USER_HOOK -i br0 -p tcp -m tcp --dport 53 -m comment --comment NAT_POLICY:6731c0de0000000000000101 -j DNAT --to-destination [2001:db8:1::1]:5335

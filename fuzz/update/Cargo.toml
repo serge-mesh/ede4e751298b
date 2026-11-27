@@ -1,0 +1,69 @@
+# cargo-fuzz targets for picket-edge-update (build-and-test.md §4, Fuzzing): every decoder of
+# input the updater doesn't trust. Its own workspace; the main workspace doesn't build it.
+#
+#   cargo +nightly fuzz run pending          (from fuzz/update)
+[package]
+name = "picket-edge-update-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+picket-edge-update = { path = "../../apps/picket-edge-update" }
+serde_json = "1"
+
+[[bin]]
+name = "pending"
+path = "fuzz_targets/pending.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "update_result"
+path = "fuzz_targets/update_result.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tarball"
+path = "fuzz_targets/tarball.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "units_output"
+path = "fuzz_targets/units_output.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "state_json"
+path = "fuzz_targets/state_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "minisig"
+path = "fuzz_targets/minisig.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "host_files"
+path = "fuzz_targets/host_files.rs"
+test = false
+doc = false
+bench = false

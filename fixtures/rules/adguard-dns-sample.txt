@@ -1,0 +1,31 @@
+! Title: AdGuard DNS filter (sample for picket-rules tests)
+! Description: Filter composed of several other filters (sample)
+! Homepage: https://github.com/AdguardTeam/AdGuardSDNSFilter
+! License: https://github.com/AdguardTeam/AdguardSDNSFilter/blob/master/LICENSE
+!
+||adsrvr.example^
+||ads.tracker.example^
+||metrics.example.net^
+||telemetry.example.com^$important
+@@||allowed.adsrvr.example^
+@@||cdn.metrics.example.net^|
+|exact.example.org^
+://scheme.example^
+*.wild.example^
+.dot.example^
+||ad-*.example.net^
+/^ad[0-9]+\.example\.org$/
+||pixel.example^$dnstype=A|AAAA
+||ipv6only.example^$dnstype=~A
+||kids-block.example^$client=192.168.1.0/24
+||guest-only.example^$ctag=device_tv
+||everything-but.example^$denyallow=good.everything-but.example
+||rewritten.example^$dnsrewrite=192.0.2.55
+||cname.example^$dnsrewrite=target.example
+||nx.example^$dnsrewrite=NXDOMAIN;;
+||adsrvr.example^$badfilter
+||1.2.3.4^
+|5.6.7.8^
+||2001:db8::bad^
+example-host.example
+0.0.0.0 hosts-in-adblock.example

@@ -1,0 +1,10 @@
+# Debian 13 test host: FORWARD ends in a REJECT that matches everything (edge-firewall.md §4).
+# Expect: jumps at the end of FORWARD directly above the final REJECT; no fw_catch_all.
+# Written from the spec (not recorded) as `iptables -S` (filter table; nft-backed iptables). ens4 is the protected LAN.
+-P INPUT ACCEPT
+-P FORWARD DROP
+-P OUTPUT ACCEPT
+-A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-A FORWARD -i ens4 -o ens4 -j ACCEPT
+-A FORWARD -i ens4 -p icmp -j ACCEPT
+-A FORWARD -j REJECT --reject-with icmp-port-unreachable

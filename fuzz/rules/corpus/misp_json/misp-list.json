@@ -1,0 +1,17 @@
+{
+  "description": "Sample MISP warninglist of known public DNS resolvers' hostnames (picket-rules tests)",
+  "list": [
+    "dns.google",
+    "one.one.one.one",
+    ".quad9.net",
+    "*.nextdns.io",
+    "bad..entry"
+  ],
+  "matching_attributes": [
+    "hostname",
+    "domain"
+  ],
+  "name": "List of known public DNS resolver hostnames (sample)",
+  "type": "hostname",
+  "version": 20261120
+}

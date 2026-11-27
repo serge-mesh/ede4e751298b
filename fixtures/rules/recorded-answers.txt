@@ -1,0 +1,52 @@
+# Recorded upstream answers for the response-phase parity test (crates/picket-rules/tests/
+# response_parity.rs, PARITY.md): AdGuard Home v0.107.80's filterDNSResponse vs Picket's response
+# checks (rules.md §5 step 5, §6) on the same answer.
+#
+#   <qname> <qtype>\t<rr>; <rr>; ...
+#
+# Records in presentation form: CNAME <target> | A <ip> | AAAA <ip> |
+# HTTPS|SVCB <prio> <target> [key=value ...] (ipv4hint=, ipv6hint=) | MX <pref> <host>.
+www.example.com 1	CNAME cdn.example.net.; A 93.184.216.34
+news.example 1	CNAME ads.example.com.; CNAME edge.tracker.net.; A 1.2.3.4
+news.example 28	CNAME ads.example.com.; AAAA 2001:db8::1
+static.example 1	CNAME x.tracker.net.; A 5.6.7.8
+cdn.example 1	CNAME banner.example.org.; A 198.51.100.7
+cdn.example 1	CNAME adserver.example.; A 10.0.0.1
+media.example 1	CNAME a.b.c.d.example.com.; A 192.0.2.10
+shop.example 1	CNAME example.net.; A 1.10.0.0
+shop.example 1	CNAME target.example.; A 10.0.0.5
+pixel.example 1	A 1.2.3.4
+pixel.example 1	A 10.0.0.1
+pixel.example 1	A 192.0.2.10
+pixel.example 28	AAAA 2001:db8::1
+pixel.example 28	AAAA 2001:db8::10
+pixel.example 28	AAAA ::ffff:1.2.3.4
+pixel.example 28	AAAA 2001:db8::bad
+api.example 1	CNAME evil.example.; CNAME example.com.evil.net.; A 203.0.113.9
+api.example 1	CNAME exact.example.org.; A 203.0.113.10
+api.example 1	CNAME w.exact.example.org.; A 203.0.113.11
+api.example 1	CNAME rewritten.example.; A 203.0.113.12
+api.example 1	CNAME mapped.example.; A 203.0.113.13
+api.example 1	CNAME ipv6only.example.; A 203.0.113.14
+api.example 1	CNAME kids-block.example.; A 203.0.113.15
+api.example 1	CNAME malware-c2.example.; A 203.0.113.16
+api.example 1	CNAME sub.domain.malware-c2.example.; A 203.0.113.17
+svc.example 65	HTTPS 1 . alpn=h2 ipv4hint=1.2.3.4 ipv6hint=2001:db8::1
+svc.example 65	HTTPS 1 . ipv4hint=5.6.7.8 ipv6hint=2001:db8::10
+svc.example 65	HTTPS 1 svc.ads.example.com. ipv4hint=198.51.100.7
+svc.example 65	HTTPS 1 tracker.net. alpn=h3
+svc.example 65	HTTPS 1 . ipv6hint=::ffff:1.2.3.4
+svc.example 64	SVCB 1 tracker.net. ipv4hint=1.2.3.4
+svc.example 64	SVCB 1 . ipv4hint=10.0.0.1
+mail.example 15	MX 10 ads.example.com.
+mail.example 1	CNAME mail.ads.example.com.; A 192.0.2.25
+odd.example 1	CNAME a!b.example.com.; A 192.0.2.30
+odd.example 1	CNAME example.com!x.; A 192.0.2.31
+odd.example 1	CNAME a\.b.example.com.; A 192.0.2.32
+odd.example 1	CNAME x\ y.example.com.; A 192.0.2.33
+odd.example 1	CNAME ads.Example.COM.; A 192.0.2.34
+odd.example 1	CNAME x/ads/banner.example.; A 192.0.2.35
+odd.example 65	HTTPS 1 a!b.example.com. ipv4hint=192.0.2.36
+chain.example 1	CNAME one.example.; CNAME two.example.; CNAME ads1.example.; A 192.0.2.40
+chain.example 28	CNAME foo-ads-bar.example.; AAAA 2001:db8::40
+ip.example 1	CNAME 1.2.3.4.; A 192.0.2.41

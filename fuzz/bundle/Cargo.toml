@@ -1,0 +1,111 @@
+# cargo-fuzz targets for picket-bundle (README §2 Untrusted input: every decoder of untrusted input
+# is fuzzed; build-and-test.md §4 "Fuzzing"): head, manifest and verdict-set head JSON, the FST,
+# the bf8 filter, page files and pages, patterns.bin, rich.json with its entity table, ips.bin,
+# deltas (domain, IP, verdict set), verdict records, whole bundles with one blob mutated, and the
+# compiled matcher against picket-rules' reference matcher on arbitrary names.
+# Its own workspace; the main workspace doesn't build it.
+#
+#   cargo +nightly fuzz run --fuzz-dir bundle heads     (from fuzz/)
+[package]
+name = "picket-bundle-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+picket-bundle = { path = "../../crates/picket-bundle" }
+picket-rules = { path = "../../crates/picket-rules" }
+picket-api = { path = "../../crates/picket-api" }
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+jiff = { version = "1.0.3", default-features = false, features = ["std"] }
+
+[[bin]]
+name = "heads"
+path = "fuzz_targets/heads.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fst"
+path = "fuzz_targets/fst.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bf8"
+path = "fuzz_targets/bf8.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pages"
+path = "fuzz_targets/pages.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "patterns"
+path = "fuzz_targets/patterns.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rich"
+path = "fuzz_targets/rich.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ips"
+path = "fuzz_targets/ips.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "deltas"
+path = "fuzz_targets/deltas.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "verdicts"
+path = "fuzz_targets/verdicts.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bundle_blobs"
+path = "fuzz_targets/bundle_blobs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lookup_parity"
+path = "fuzz_targets/lookup_parity.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "overlays"
+path = "fuzz_targets/overlays.rs"
+test = false
+doc = false
+bench = false

@@ -1,0 +1,154 @@
+# cargo-fuzz targets for picket-core's untrusted input (README §2: every decoder of untrusted
+# input is fuzzed). Run with `cargo +nightly fuzz run <target>` from this directory.
+[package]
+name = "picket-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+picket-core = { path = "../../apps/picket-core" }
+serde_json = "1.0"
+serde = "1.0"
+tempfile = "3"
+jiff = { version = "1.0.3", default-features = false, features = ["std"] }
+picket-api = { path = "../../crates/picket-api" }
+http = "1.5"
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+tokio = { version = "1", features = ["rt", "io-util", "time"] }
+hickory-proto = { version = "0.26", features = ["dnssec-aws-lc-rs"] }
+async-trait = "0.1"
+
+# Its own workspace: fuzz/ is outside the main one.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "csr"
+path = "fuzz_targets/csr.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_entity"
+path = "fuzz_targets/config_entity.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "settings_patch"
+path = "fuzz_targets/settings_patch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_inputs"
+path = "fuzz_targets/http_inputs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_cert"
+path = "fuzz_targets/client_cert.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "log_batch"
+path = "fuzz_targets/log_batch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "session_message"
+path = "fuzz_targets/session_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "edge_http"
+path = "fuzz_targets/edge_http.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "feed_body"
+path = "fuzz_targets/feed_body.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "download_answers"
+path = "fuzz_targets/download_answers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "provider_config"
+path = "fuzz_targets/provider_config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "browser_lists"
+path = "fuzz_targets/browser_lists.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sqs_replies"
+path = "fuzz_targets/sqs_replies.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "feed_export"
+path = "fuzz_targets/feed_export.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lookup_answers"
+path = "fuzz_targets/lookup_answers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire_check"
+path = "fuzz_targets/wire_check.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dnssec_answers"
+path = "fuzz_targets/dnssec_answers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_restore"
+path = "fuzz_targets/config_restore.rs"
+test = false
+doc = false
+bench = false

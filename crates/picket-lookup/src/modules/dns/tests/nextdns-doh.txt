@@ -1,0 +1,31 @@
+# NextDNS over doh.
+# 'normal' and 'nonexistent' are LIVE recordings from 45.90.28.0 (tls_host dns.nextdns.io, no
+# profile), 2026-11-20T19:16:38Z, with a padded query; they also confirm that the anycast IP
+# serves doh. 'blocked' and 'sinkhole_without_ede' are SYNTHESISED in the shape providers.md §5
+# describes (0.0.0.0 with EDE 17 'Blocked by NextDNS'; 0.0.0.0 without EDE, as with a block
+# page): a denylisted name needs a NextDNS profile the recording network doesn't have.
+
+case normal
+qname example.com
+qtype A
+answer edc981800001000200000001076578616d706c6503636f6d0000010001c00c000100010000002700046814179ac00c00010001000000270004ac4293f300002904d0000000000000
+expect clean -
+
+case nonexistent
+qname nxdomain-picket-fixture.example.org
+qtype A
+answer 318d81800001000000010001176e78646f6d61696e2d7069636b65742d66697874757265076578616d706c65036f72670000010001c02400060001000007080035076b6174656c796e026e730a636c6f7564666c61726503636f6d0003646e73c04c903f6f06000027100000096000093a800000070800002904d0000000000000
+expect clean -
+
+case blocked
+qname ads.picket-fixture.example
+qtype A
+answer 424281800001000100000001036164730e7069636b65742d66697874757265076578616d706c650000010001c00c000100010000012c00040000000000002904d0000000000018000f00140011426c6f636b6564206279204e657874444e53
+expect block blocked
+
+case sinkhole_without_ede
+qname ads2.picket-fixture.example
+qtype A
+answer 42428180000100010000000104616473320e7069636b65742d66697874757265076578616d706c650000010001c00c000100010000012c00040000000000002904d0000000000000
+expect block sinkhole
+

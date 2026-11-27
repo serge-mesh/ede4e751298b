@@ -1,0 +1,73 @@
+# cargo-fuzz targets for picket-rules (README §2 Untrusted input: every decoder of untrusted input
+# is fuzzed; build-and-test.md §4 "Fuzzing"): feed lines in each format, MISP list.json, the Go →
+# Rust regex translator, stored rule columns, rich.json's entity table and rich rules, and the
+# reference matcher.
+# Its own workspace; the main workspace doesn't build it.
+#
+#   cargo +nightly fuzz run adblock_line     (from fuzz/rules)
+[package]
+name = "picket-rules-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+picket-rules = { path = "../../crates/picket-rules" }
+jiff = { version = "1.0.3", default-features = false, features = ["std"] }
+serde_json = "1"
+
+[[bin]]
+name = "adblock_line"
+path = "fuzz_targets/adblock_line.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "feed_formats"
+path = "fuzz_targets/feed_formats.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "misp_json"
+path = "fuzz_targets/misp_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "go_regex"
+path = "fuzz_targets/go_regex.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "stored_rule"
+path = "fuzz_targets/stored_rule.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "matcher"
+path = "fuzz_targets/matcher.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rich_json"
+path = "fuzz_targets/rich_json.rs"
+test = false
+doc = false
+bench = false

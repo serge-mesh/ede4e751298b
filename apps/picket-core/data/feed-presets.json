@@ -1,0 +1,105 @@
+[
+  {
+    "id": "hagezi",
+    "title": "HaGeZi Threat Intelligence Feeds and Multi ULTIMATE",
+    "description": "Two feeds of one GitHub provider: threat domains (malware, phishing, scam), and ads, tracking, telemetry, phishing and malware (adblock syntax).",
+    "bundle": "block-common",
+    "provider": {
+      "id": "hagezi",
+      "name": "HaGeZi DNS blocklists",
+      "module": "github",
+      "config": {"owner": "hagezi", "repo": "dns-blocklists"},
+      "files": [
+        {"match": "adblock/tif.txt", "feed": {"format": "adblock", "category": "security", "name": "HaGeZi Threat Intelligence Feeds"}},
+        {"match": "adblock/ultimate.txt", "feed": {"format": "adblock", "category": "mixed", "name": "HaGeZi Multi ULTIMATE"}}
+      ]
+    }
+  },
+  {
+    "id": "oisd-big",
+    "title": "OISD big",
+    "description": "OISD's big list (ads, tracking, malware) in adblock syntax, from its GitHub repository.",
+    "legacy": [{"module": "http", "url": "https://big.oisd.nl/"}],
+    "bundle": "block-common",
+    "provider": {
+      "id": "oisd-big",
+      "name": "OISD big",
+      "module": "github",
+      "config": {"owner": "sjhgvr", "repo": "oisd", "branch": "main"},
+      "files": [{"match": "abp_big.txt", "feed": {"format": "adblock", "category": "mixed", "name": "OISD big"}}]
+    }
+  },
+  {
+    "id": "adguard-dns-filter",
+    "title": "AdGuard DNS filter",
+    "description": "AdGuard's DNS filter (ads and tracking), from its gh-pages branch on GitHub.",
+    "bundle": "block-common",
+    "provider": {
+      "id": "adguard",
+      "name": "AdGuard DNS filter",
+      "module": "github",
+      "config": {"owner": "AdguardTeam", "repo": "AdGuardSDNSFilter", "branch": "gh-pages"},
+      "files": [{"match": "Filters/filter.txt", "feed": {"format": "adblock", "category": "privacy", "name": "AdGuard DNS filter"}}]
+    }
+  },
+  {
+    "id": "alphamountain-threat-1000",
+    "title": "alphaMountain community threat 1000",
+    "description": "alphaMountain's rolling top 1,000 threat hostnames; entries stay until they expire.",
+    "bundle": "block-common",
+    "provider": {
+      "id": "alphamountain",
+      "name": "alphaMountain community threat 1000",
+      "module": "alphamountain_threat_1000",
+      "config": {"min_risk_score": 7.0},
+      "files": [{"match": "community-threat-1000", "feed": {
+        "format": "plain",
+        "category": "security",
+        "modes": {
+          "dns": {"mode": "aggregate", "expire_after": "7d"},
+          "ip": {"mode": "drop"},
+          "browser": {"mode": "drop"}
+        }
+      }}]
+    }
+  },
+  {
+    "id": "firehol-level1",
+    "title": "FireHOL level 1",
+    "description": "FireHOL's level 1 IP list: attack sources, bogons and other networks never to answer with.",
+    "bundle": "block-common",
+    "provider": {
+      "id": "firehol",
+      "name": "FireHOL level 1",
+      "module": "http",
+      "config": {"url": "https://iplists.firehol.org/files/firehol_level1.netset"},
+      "files": [{"match": "response", "feed": {"format": "plain", "category": "security"}}]
+    }
+  },
+  {
+    "id": "private-ipv4",
+    "title": "Private IPv4 (DNS rebinding)",
+    "description": "Blocks public names that answer with private, loopback, link-local or CGNAT IPv4 addresses. Names in a profile's forward zones aren't filtered, so local names still resolve.",
+    "bundle": "block-common",
+    "file": "10.0.0.0/8\n172.16.0.0/12\n192.168.0.0/16\n127.0.0.0/8\n169.254.0.0/16\n100.64.0.0/10\n0.0.0.0/8\n",
+    "feed": {
+      "id": "private-ipv4",
+      "name": "Private IPv4",
+      "category": "security",
+      "format": "plain"
+    }
+  },
+  {
+    "id": "private-ipv6",
+    "title": "Private IPv6 (DNS rebinding)",
+    "description": "Blocks public names that answer with loopback, unique-local or link-local IPv6 addresses. Names in a profile's forward zones aren't filtered, so local names still resolve.",
+    "bundle": "block-common",
+    "file": "::1/128\nfc00::/7\nfe80::/10\n",
+    "feed": {
+      "id": "private-ipv6",
+      "name": "Private IPv6",
+      "category": "security",
+      "format": "plain"
+    }
+  }
+]

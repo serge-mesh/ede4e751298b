@@ -1,0 +1,76 @@
+# cargo deny: advisories, licences, bans and sources (security.md §6, build-and-test.md §4).
+# Run with scripts/check-deny.sh (`cargo deny --all-features --locked check`).
+
+[graph]
+# The shipped targets (build-and-test.md §3); dependencies only other platforms use are ignored.
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+all-features = true
+
+[advisories]
+# The RustSec database. Vulnerabilities are always errors; unmaintained, unsound and yanked crates
+# are too, anywhere in the graph. An ignore entry needs an id and a reason.
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Permissive licences the graph uses. Unusual ones: CDLA-Permissive-2.0 (webpki-roots: Mozilla's
+# CA list, a data licence), BSL-1.0 (xxhash-rust), CC0-1.0 (notify), Unicode-3.0 (ICU4X under idna).
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "BSL-1.0",
+]
+confidence-threshold = 0.93
+# The workspace crates have no licence (publish = false): not checked.
+private = { ignore = true }
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+# Workspace path dependencies carry no version; allowed because no workspace crate is published.
+allow-wildcard-paths = true
+highlight = "all"
+deny = [
+    # security.md §1: the only non-Rust code is aws-lc-rs (and SQLite on core). ring is in Cargo.lock
+    # through optional features of hickory-proto, quinn-proto and rustls-webpki, but is never linked.
+    { crate = "ring", reason = "security.md §1: aws-lc-rs is the only crypto provider" },
+    { crate = "openssl-sys", reason = "security.md §1: TLS is rustls on aws-lc-rs, compiled in" },
+]
+# Duplicates we can't remove without changing a dependency; each names the older version.
+skip = [
+    # axum 0.8's `ws` feature still uses tokio-tungstenite 0.29; the workspace uses 0.30.
+    { crate = "tokio-tungstenite@0.29.0", reason = "axum 0.8 (ws); the workspace uses 0.30" },
+    { crate = "tungstenite@0.29.0", reason = "axum 0.8 (ws) through tokio-tungstenite 0.29" },
+    { crate = "rand@0.9.5", reason = "tungstenite 0.29 (axum ws); the workspace uses 0.10" },
+    { crate = "rand_core@0.9.5", reason = "rand 0.9 under tungstenite 0.29" },
+    { crate = "getrandom@0.3.4", reason = "rand_core 0.9 under tungstenite 0.29" },
+    { crate = "sha1@0.10.7", reason = "axum 0.8 and tungstenite 0.29; the workspace uses 0.11" },
+    { crate = "base64@0.22.1", reason = "axum 0.8; the workspace uses 0.23" },
+    # The previous RustCrypto generation, from minisign 0.10's scrypt (a dev-dependency) and sha1 0.10.
+    { crate = "digest@0.10.7", reason = "sha1 0.10 and minisign 0.10 (dev) through scrypt" },
+    { crate = "block-buffer@0.10.4", reason = "digest 0.10" },
+    { crate = "crypto-common@0.1.7", reason = "digest 0.10 and cipher 0.4 (scrypt, dev)" },
+    { crate = "cpufeatures@0.2.17", reason = "sha1 0.10 and sha2 0.10 (scrypt, dev)" },
+    # hickory-proto 0.26 uses prefix-trie 0.8; picket-edge uses 0.10.
+    { crate = "prefix-trie@0.8.4", reason = "hickory-proto 0.26" },
+    # Proc-macro crates are moving from syn 2 to syn 3 (build time only).
+    { crate = "syn@2.0.119", reason = "proc-macros not yet on syn 3 (build time only)" },
+    { crate = "synstructure@0.13.2", reason = "asn1-rs-derive, on syn 2 (build time only)" },
+    # aws-lc-rs uses untrusted 0.7, rustls-webpki 0.9.
+    { crate = "untrusted@0.7.1", reason = "aws-lc-rs; rustls-webpki uses 0.9" },
+]
+
+[sources]
+# crates.io only; the workspace has no git dependencies.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

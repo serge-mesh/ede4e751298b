@@ -1,0 +1,1 @@
+{"description":"Sample cidr warninglist","list":["8.8.8.0/24","8.8.4.4","2001:4860:4860::/48","not-an-ip"],"matching_attributes":["ip-dst","ip-src"],"name":"Sample public DNS resolvers (cidr)","type":"cidr","version":1}

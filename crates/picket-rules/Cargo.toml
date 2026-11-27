@@ -1,0 +1,23 @@
+[package]
+name = "picket-rules"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+picket-api.workspace = true
+idna.workspace = true
+regex-automata.workspace = true
+aho-corasick.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+jiff.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# the golden timestamp tables of the chrono → jiff compatibility tests (README §2)
+picket-api = { workspace = true, features = ["testkit"] }

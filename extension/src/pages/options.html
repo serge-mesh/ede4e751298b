@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Picket options</title>
+    <link rel="icon" href="/icons/icon-32.png" />
+    <script type="module" src="./options.entry.ts"></script>
+  </head>
+  <body class="page">
+    <main class="card wide">
+      <header class="brand">
+        <img src="/icons/icon-48.png" alt="" width="28" height="28" />
+        <span>Picket</span>
+      </header>
+      <h1>Options</h1>
+
+      <section>
+        <h2>Edge</h2>
+        <form id="settings" novalidate>
+          <label for="edge-url">Edge API URL</label>
+          <input id="edge-url" type="url" placeholder="https://dns.home.arpa:9853" autocomplete="off" spellcheck="false" required />
+          <p class="hint">The edge's DoH listener with the bypass API (<code>"api": true</code>), e.g. <code>https://dns.home.arpa:9853</code> on the UCG-Fiber.</p>
+
+          <label for="core-url">Core UI URL (optional)</label>
+          <input id="core-url" type="url" placeholder="https://core.home.arpa:8443" autocomplete="off" spellcheck="false" />
+          <p class="hint">Opened by "Allow permanently…"; nothing is ever sent to it.</p>
+
+          <div class="buttons">
+            <button type="submit" id="save">Save and test</button>
+          </div>
+        </form>
+        <div id="settings-status" class="status" role="status" aria-live="polite" hidden></div>
+        <p class="hint">
+          This browser must trust the LAN CA root: download it from core's UI. In Firefox, import it under
+          Settings → Privacy &amp; Security → Certificates → View Certificates → Authorities.
+        </p>
+      </section>
+
+      <section>
+        <h2>Blocked sub-resources</h2>
+        <label class="check">
+          <input type="checkbox" id="detection" />
+          <span>Detect blocked requests inside pages (images, scripts, frames) and list them in the popup</span>
+        </label>
+        <p class="hint">
+          Needs access to the requests of every site. The extension still sends nothing anywhere but the
+          edge: a failed request's host name is probed at the edge, which already resolves it.
+        </p>
+        <div id="detection-status" class="status" role="status" aria-live="polite" hidden></div>
+      </section>
+
+      <section>
+        <h2>Browser lists</h2>
+        <p>
+          Picket also publishes the browser rules DNS can't apply as filter lists. Subscribe to one in
+          this browser's content blocker.
+        </p>
+        <label for="list-kind">List</label>
+        <select id="list-kind">
+          <option value="pruned">Profile list: this browser always resolves through Picket</option>
+          <option value="full">Profile full list: laptop that leaves the network, or browser with its own DoH</option>
+          <option value="bundle">Bundle list (for a profile without lists)</option>
+        </select>
+        <label for="list-id" id="list-id-label">Profile ID</label>
+        <input id="list-id" type="text" placeholder="default" autocomplete="off" spellcheck="false" />
+        <label for="list-base">Core address</label>
+        <input id="list-base" type="url" placeholder="https://core.home.arpa:8443" autocomplete="off" spellcheck="false" />
+        <p class="hint">Over HTTPS the browser must trust the LAN CA; otherwise use core's plain-HTTP port.</p>
+        <label for="list-url">Subscription URL</label>
+        <div class="row">
+          <input id="list-url" type="text" readonly />
+          <button type="button" id="copy-url" class="secondary">Copy</button>
+        </div>
+        <div id="list-status" class="status" role="status" aria-live="polite" hidden></div>
+        <h3>Brave</h3>
+        <p>
+          Open <code>brave://settings/shields/filters</code>, choose <em>Add custom filter list</em> and paste the
+          URL. Brave's built-in lists stay on; a subscribed list's network exceptions cancel built-in
+          blocks, but its site-specific cosmetic exceptions don't.
+        </p>
+        <h3>Firefox</h3>
+        <p>
+          In uBlock Origin's dashboard, open <em>Filter lists</em>, tick <em>Import…</em> under
+          <em>Custom</em>, paste the URL and press <em>Apply changes</em>. All of uBlock Origin's lists share one
+          engine, so every exception applies to every list.
+        </p>
+        <p class="hint">
+          With the profile list, a temporary allow also unblocks the name in the browser; with the full list,
+          the browser still blocks it.
+        </p>
+      </section>
+    </main>
+  </body>
+</html>

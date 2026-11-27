@@ -1,0 +1,1 @@
+{"format":1,"bundle":"golden","part":"cold","shard":0,"keys":3,"checksum":"b03cbd43e719b08fd9fd9a6e79872247","files":{"cold.bf8":{"blake3":"d18c7c5464954f3ec16bb580cb5a69e76b8eac40958339bfd75b3275c4790a5d","size":60},"cold.pages":{"blake3":"d5db0bdef67084321627e5b5c120096489e7305e8e9a223506a5e63d463ce3f3","size":8192}},"pages":1}

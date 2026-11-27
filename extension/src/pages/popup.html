@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Picket</title>
+    <script type="module" src="./popup.entry.ts"></script>
+  </head>
+  <body class="popup">
+    <header class="brand">
+      <img src="/icons/icon-32.png" alt="" width="20" height="20" />
+      <span>Picket</span>
+    </header>
+
+    <section id="setup" hidden>
+      <p>Picket isn't set up in this browser yet.</p>
+      <button type="button" id="open-options">Set up</button>
+    </section>
+
+    <div id="main" hidden>
+      <section>
+        <h2>Blocked on this tab</h2>
+        <p id="blocks-hint" class="hint" hidden></p>
+        <ul id="blocks" class="list"></ul>
+        <div id="blocks-actions" class="row" hidden>
+          <label class="inline">
+            Allow selected for
+            <select id="duration"></select>
+          </label>
+          <button type="button" id="allow-selected">Allow</button>
+        </div>
+        <div id="blocks-status" class="status" role="status" aria-live="polite" hidden></div>
+      </section>
+
+      <section>
+        <h2>Active allows on this device</h2>
+        <ul id="allows" class="list"></ul>
+        <div id="allows-status" class="status" role="status" aria-live="polite" hidden></div>
+      </section>
+    </div>
+
+    <footer class="row">
+      <button type="button" id="refresh" class="link">Refresh</button>
+      <button type="button" id="options" class="link">Options</button>
+      <button type="button" id="core" class="link" hidden>Core UI</button>
+    </footer>
+  </body>
+</html>

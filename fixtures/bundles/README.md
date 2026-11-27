@@ -1,0 +1,3 @@
+# Golden bundle files
+
+Written by `crates/picket-bundle/tests/golden.rs` (regenerate with `PICKET_WRITE_GOLDEN_BUNDLES=1 cargo test -p picket-bundle --test golden`): a block bundle at its second version (`block-head.json`: hot, cold and IP shard bases with a hot, a cold and an IP delta, and both segments) and a verdict set (`verdict-head.json`: base and delta). Every blob is under `blobs/<blake3>`. `expectations.tsv` holds the decisions recorded when the files were written; the test reads the files back (cold and verdict pages with `pread`) and requires the same decisions (build-and-test.md §4).

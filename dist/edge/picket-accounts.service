@@ -1,0 +1,13 @@
+# Written by picket-edge-update (edge-unifi.md §2); `picket-edge-update units` prints this text.
+# A firmware upgrade wipes /etc/passwd: this re-creates Picket's accounts, with their fixed IDs,
+# at every boot. The helper and edge units want it and start after it.
+[Unit]
+Description=Picket system accounts
+RequiresMountsFor={{INSTALL_DIR}} {{DATA_DIR}} {{CONFIG_DIR}}
+After=systemd-sysusers.service
+Before=picket-edge-helper.service picket-edge.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/systemd-sysusers {{CONFIG_DIR}}/sysusers.conf

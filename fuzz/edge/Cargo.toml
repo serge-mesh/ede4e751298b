@@ -1,0 +1,157 @@
+# cargo-fuzz targets for picket-edge (README §2 Untrusted input: every decoder of untrusted input
+# is fuzzed). Core is untrusted as seen by the edge: its config objects and session messages;
+# also the updater's result file, spool segments read back from disk, mount tables, /proc and the
+# firmware version file; and the DNS data path's inputs: DNS messages from clients (the whole
+# pipeline), stream framing, DoH requests, listener certificates, rewrite values from bundles and
+# the config as the data path compiles it, refused ClientHellos; the activation layer's inputs:
+# helper frames, bypass API bodies and probe names, active.json, and release signatures.
+# Its own workspace; the main workspace doesn't build it.
+#
+#   cargo +nightly fuzz run config_object    (from fuzz/edge)
+#
+# Seeds: hand-named files in corpus/<target>/ are tracked (client_hello has them); libFuzzer's
+# own units (SHA-1 names) are ignored by the root .gitignore. Fuzz a scratch copy, so a run adds
+# nothing here:  cp -r corpus/client_hello <scratch> && cargo +nightly fuzz run client_hello <scratch>
+[package]
+name = "picket-edge-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+picket-edge = { path = "../../apps/picket-edge" }
+picket-api = { path = "../../crates/picket-api" }
+picket-wire = { path = "../../crates/picket-wire" }
+picket-bundle = { path = "../../crates/picket-bundle" }
+picket-rules = { path = "../../crates/picket-rules" }
+serde_json = "1"
+bytes = "1"
+jiff = { version = "1.0.3", default-features = false, features = ["std"] }
+futures-util = "0.3"
+tokio = { version = "1", features = ["full"] }
+
+[[bin]]
+name = "config_object"
+path = "fuzz_targets/config_object.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "session_message"
+path = "fuzz_targets/session_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "update_result"
+path = "fuzz_targets/update_result.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "spool_segment"
+path = "fuzz_targets/spool_segment.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "local_files"
+path = "fuzz_targets/local_files.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "proc_files"
+path = "fuzz_targets/proc_files.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "firmware_version"
+path = "fuzz_targets/firmware_version.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dns_config"
+path = "fuzz_targets/dns_config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "listener_input"
+path = "fuzz_targets/listener_input.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "listener_certs"
+path = "fuzz_targets/listener_certs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rewrite_svcb"
+path = "fuzz_targets/rewrite_svcb.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "query_pipeline"
+path = "fuzz_targets/query_pipeline.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "helper_frames"
+path = "fuzz_targets/helper_frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bypass_request"
+path = "fuzz_targets/bypass_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "active_record"
+path = "fuzz_targets/active_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "release_signature"
+path = "fuzz_targets/release_signature.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_hello"
+path = "fuzz_targets/client_hello.rs"
+test = false
+doc = false
+bench = false

@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RawConfig",
+  "description": "The config as stored and edited. The example is the `quad9` preset for DoT.",
+  "type": "object",
+  "properties": {
+    "transport": {
+      "$ref": "#/$defs/UpstreamProtocol",
+      "default": "dot",
+      "description": "One transport per provider, so an encrypted provider never falls back to plain DNS: `dot` (default; port 853), `doh` (443), `udp` (53) or `tcp` (53).",
+      "x-picket-warning": {
+        "when": ["udp", "tcp"],
+        "text": "Plain DNS is unencrypted. Every name this provider looks up is sent in clear text, and anyone on the network path can read it or change the answer, letting a blocked name through or blocking any name. Use DoT or DoH unless the resolver offers neither."
+      }
+    },
+    "servers": {
+      "description": "Tried in order; a server that failed is skipped for 30 s while another works.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/RawServer" },
+      "minItems": 1,
+      "maxItems": 8
+    },
+    "qtype": { "$ref": "#/$defs/Qtype", "default": "A", "description": "The query type, whatever the client asked." },
+    "rules": {
+      "description": "Checked in order; the first whose conditions all hold decides.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/RawRule" },
+      "maxItems": 32,
+      "default": []
+    },
+    "self_test": { "anyOf": [{ "$ref": "#/$defs/SelfTest" }, { "type": "null" }] }
+  },
+  "required": ["servers"],
+  "$defs": {
+    "UpstreamProtocol": { "type": "string", "enum": ["dot", "doh", "udp", "tcp"] },
+    "Qtype": { "type": "string", "enum": ["A", "AAAA"] },
+    "RawServer": {
+      "description": "A server, by IP (never resolved), as for upstreams (edge.md §6).",
+      "type": "object",
+      "properties": {
+        "ip": { "type": "string", "format": "ip" },
+        "port": { "description": "Default: 53 for `udp`/`tcp`, 853 for `dot`, 443 for `doh`.", "type": ["integer", "null"], "format": "uint16", "minimum": 0, "maximum": 65535 },
+        "tls_host": { "description": "The TLS name (`dot`, `doh`; required there).", "type": ["string", "null"] },
+        "trust_store": { "description": "PEM text (`dot`, `doh`); none: the Mozilla roots.", "type": ["string", "null"] },
+        "path": { "description": "The DoH path, default `/dns-query`.", "type": ["string", "null"] }
+      },
+      "required": ["ip"]
+    },
+    "RawRule": {
+      "description": "A rule: an `id` (`[a-z0-9_]{1,32}`), one or more conditions, and a verdict.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9_]{1,32}$" },
+        "when": { "$ref": "#/$defs/RawWhen" },
+        "verdict": { "$ref": "#/$defs/RuleVerdict" },
+        "score": { "description": "A Block's score.", "type": ["number", "null"], "format": "float" }
+      },
+      "required": ["id", "when", "verdict"]
+    },
+    "RawWhen": {
+      "type": "object",
+      "properties": {
+        "rcode": { "type": ["array", "null"], "items": { "type": "string" } },
+        "ede": { "type": ["array", "null"], "items": { "type": "integer" } },
+        "answer_ips": { "type": ["array", "null"], "items": { "type": "string" } }
+      }
+    },
+    "RuleVerdict": {
+      "description": "A rule's verdict: `block` (a Block whose reason is the rule's id), `clean` or `unknown`.",
+      "type": "string",
+      "enum": ["block", "clean", "unknown"]
+    },
+    "SelfTest": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "expect": { "type": "string", "enum": ["block", "clean"] },
+        "cron": { "type": "string" }
+      },
+      "required": ["name", "expect", "cron"]
+    }
+  }
+}

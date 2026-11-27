@@ -1,0 +1,37 @@
+[package]
+name = "picket-edge-update"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "picket_edge_update"
+path = "src/lib.rs"
+
+[[bin]]
+name = "picket-edge-update"
+path = "src/main.rs"
+
+# Normal dependencies are allowlisted: JSON, minisign verification and tar.gz unpacking only
+# (build-and-test.md §4, security.md §3). No DNS, network, TLS or async code; no libc, rustix or
+# nix of our own: std covers flock, fchown, symlinks and processes. CI runs
+# scripts/check-updater-deps.sh against dist/updater-deps-allowlist.json.
+#
+# picket-api is deliberately not a dependency: it pulls in jiff, blake3, rand, sha2 and
+# schemars. The few types the updater shares with picket-edge are mirrored in `src/api.rs`, and a
+# test (dev-dependency on picket-api) checks that both serialise identically.
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+minisign-verify.workspace = true
+tar.workspace = true
+flate2.workspace = true
+
+[dev-dependencies]
+picket-api.workspace = true
+tempfile.workspace = true
+minisign.workspace = true

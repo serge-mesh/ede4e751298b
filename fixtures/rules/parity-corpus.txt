@@ -1,0 +1,598 @@
+# Picket AdGuard-parity corpus (crates/picket-rules/PARITY.md §2): hand-written rule groups with
+# the decision urlfilter v0.23 and AdGuard Home v0.107.80's matchHost / processDNSRewrites give,
+# from urlfilter's DNS engine tests and rule docs. Each group is one bundle (one filter list).
+# tests/parity_corpus.rs checks Picket against every line without Go; the differential test
+# (tests/urlfilter_parity.rs) runs every group through the urlfilter oracle and fails if a written
+# expectation isn't urlfilter's own.
+#
+#   = <title>                      starts a group
+#   r <rule>                       a rule line (adblock format)
+#   e <name> <outcome> [opts]      a query name and the expected outcome
+#   i <address> <outcome> [opts]   an answer address and the expected outcome
+#   m <rule> ~~ <names it matches> ~~ <names it doesn't>
+#                                  a one-rule group (matching = block, or exception for @@);
+#                                  IP addresses are matched as answer addresses
+#
+# Outcomes: block | exception | none | hostmap[=ip,...] | a=ip[,ip] | aaaa=ip[,ip] |
+#           cname=name | rcode=NAME | nodata   (a=, aaaa= and nodata: the records of the
+#           query's type)
+# Options:  qtype=TYPE  ip=client-ip  client="client name"  tags=a,b  decisive="rule text"
+#           (default: qtype A, no client)
+#
+# Groups marked "(picket)" check a deviation the spec names (rules.md §1–§3) instead of AdGuard;
+# the oracle doesn't check them.
+
+= ||d^ matches the name and its subdomains
+r ||example.org^
+e example.org block
+e sub.example.org block
+e a.b.example.org block
+e badexample.org none
+e example.org.evil.com none
+e example.com none
+
+= |d^ matches the name only
+r |example.org^
+e example.org block
+e sub.example.org none
+
+= ://d^ matches the name only
+r ://example.org^
+e example.org block
+e sub.example.org none
+
+= ://d without a separator is a prefix on http://host
+r ://example.org
+e example.org block
+e example.org.au block
+e sub.example.org none
+
+= *.d^ and .d^ match subdomains only
+r *.example.org^
+r .example.net^
+e sub.example.org block
+e example.org none
+e x.y.example.net block
+e example.net none
+
+= a host rule matches the exact name
+r example.org
+e example.org block
+e sub.example.org none
+
+= a trailing /* is a separator
+r ||example2.org/*
+e example2.org block
+e sub.example2.org block
+
+= ||d| ends at the name
+r ||example3.org|
+e example3.org block
+e sub.example3.org block
+e example3.org.uk none
+
+= an unanchored pattern with a separator is a suffix match
+r example.com^
+e example.com block
+e myexample.com block
+e sub.example.com block
+e example.com.evil none
+
+= wildcards in a pattern
+r ||ads*.example.com^
+e ads1.example.com block
+e adsfoo.example.com block
+e x.ads.example.com block
+e ad.example.com none
+
+= generic fragments match anywhere in the name
+r -ad-banner.
+r -728x90-
+e x-ad-banner.example.com block
+e adbanner.example.com none
+e cdn-728x90-a.example block
+
+= /x. patterns run on http:// + host
+r /ads.
+e ads.example.com block
+e myads.example.com none
+e x.ads.example.com none
+
+= regex rules run on the host name
+r /^stats?\./
+e stats.test.com block
+e stat.test.com block
+e mystats.test.com none
+
+= a regex exception beats a block
+r ||stats.test.com^
+r @@/^stats?\./
+e stats.test.com exception
+
+= urlfilter's regex shortcut needs the longest branch of a top-level alternation
+r /ads|tracker/
+e tracker.example block
+e ads.example none
+
+= ||d^ + |d^$important + @@||d^ blocks d and allows sub.d
+r ||d.example^
+r |d.example^$important
+r @@||d.example^
+e d.example block
+e sub.d.example exception
+
+= ||d^$important + |d^ + @@||d^ blocks both
+r ||e.example^$important
+r |e.example^
+r @@||e.example^
+e e.example block
+e sub.e.example block
+
+= @@…$important beats …$important
+r ||f.example^$important
+r @@||f.example^$important
+e f.example exception
+
+= an exception beats a hosts line
+r @@||example.org^
+r 127.0.0.1  example.org
+e example.org exception
+
+= 192.0.2.10 d + @@||d^ resolves d upstream
+r 192.0.2.10 g.example
+r @@||g.example^
+e g.example exception
+
+= host-IP mappings answer with their addresses, exact name only
+r 192.0.2.10 h.example
+r 2001:db8::10 h.example
+e h.example hostmap=192.0.2.10,2001:db8::10
+e sub.h.example none
+
+= several addresses for one name
+r 1.1.1.1 m.example
+r 2.2.2.2 m.example
+e m.example hostmap=1.1.1.1,2.2.2.2
+
+= a host-IP mapping ranks below every network rule
+r 192.0.2.10 n.example
+r ||n.example^
+e n.example block
+
+= $badfilter removes the rule it names
+r ||example.org^
+r ||example.org^$badfilter
+e example.org none
+
+= $badfilter removes only the rule it names
+r ||host6^$ctag=pc|printer
+r ||host6^$badfilter
+e host6 block tags=pc
+e host6 none tags=phone
+
+= $ctag
+r ||host1^$ctag=pc|printer
+r ||host1^
+r ||host2^$ctag=pc|printer
+r ||host2^$ctag=pc|printer|router
+r ||host3^$ctag=~pc|~router
+r ||host4^$ctag=~pc|router
+r ||host5^$ctag=pc|printer
+r ||host5^$ctag=pc|printer,badfilter
+r ||host7^$ctag=~pc
+r ||host7^$ctag=~pc,badfilter
+e host1 block tags=phone decisive="||host1^"
+e host1 block tags=pc decisive="||host1^$ctag=pc|printer"
+e host2 block tags=phone,printer
+e host2 none tags=phone
+e host2 none
+e host3 block tags=phone,printer
+e host3 none tags=pc
+e host4 block tags=phone,router
+e host4 none tags=pc,router
+e host5 none tags=pc
+e host7 none tags=phone
+
+= $client
+r ||host0^$client=127.0.0.1
+r ||host1^$client=~127.0.0.1
+r ||host2^$client=2001::c0:ffee
+r ||host3^$client=~2001::c0:ffee
+r ||host4^$client=127.0.0.1/24
+r ||host5^$client=~127.0.0.1/24
+r ||host6^$client=2001::c0:ffee/120
+r ||host7^$client=~2001::c0:ffee/120
+r ||host8^$client='Frank\'s laptop'
+r ||host9^$client=0.0.0.0
+r ||host10^$client=::
+e host0 block ip=127.0.0.1
+e host0 none ip=127.0.0.2
+e host1 none ip=127.0.0.1
+e host1 block ip=127.0.0.2
+e host2 block ip=2001::c0:ffee
+e host2 none ip=2001::c0:ffef
+e host3 none ip=2001::c0:ffee
+e host3 block ip=2001::c0:ffef
+e host4 block ip=127.0.0.254
+e host4 none ip=127.0.1.1
+e host5 none ip=127.0.0.254
+e host5 block ip=127.0.1.1
+e host6 block ip=2001::c0:ff07
+e host6 none ip=2001::c0:feee
+e host7 none ip=2001::c0:ff07
+e host7 block ip=2001::c0:feee
+e host8 block client="Frank's laptop"
+e host8 none client="Franks laptop"
+e host9 block ip=0.0.0.0
+e host9 none ip=127.0.0.1
+e host10 none
+e host10 block ip=::
+e host10 none ip=::1
+
+= $dnstype
+r ||simple^$dnstype=AAAA
+r ||simple_case^$dnstype=aaaa
+r ||reverse^$dnstype=~AAAA
+r ||multiple^$dnstype=A|AAAA
+r ||multiple_reverse^$dnstype=~A|~AAAA
+r ||multiple_different^$dnstype=~A|AAAA
+r ||simple_client^$client=127.0.0.1,dnstype=AAAA
+r ||priority^$client=127.0.0.1
+r ||priority^$client=127.0.0.1,dnstype=AAAA
+e simple block qtype=AAAA
+e simple none qtype=A
+e simple_case block qtype=AAAA
+e simple_case none qtype=A
+e reverse none qtype=AAAA
+e reverse block qtype=A
+e multiple block qtype=AAAA
+e multiple block qtype=A
+e multiple none qtype=CNAME
+e multiple_reverse none qtype=AAAA
+e multiple_reverse none qtype=A
+e multiple_reverse block qtype=CNAME
+e multiple_different block qtype=AAAA
+e multiple_different none qtype=A
+e multiple_different none qtype=CNAME
+e simple_client block qtype=AAAA ip=127.0.0.1
+e simple_client none qtype=AAAA ip=127.0.0.2
+e simple_client none qtype=A ip=127.0.0.1
+e priority block qtype=AAAA ip=127.0.0.1 decisive="||priority^$client=127.0.0.1,dnstype=AAAA"
+e priority block qtype=A ip=127.0.0.1 decisive="||priority^$client=127.0.0.1"
+
+= a rule that can't match a name never decides
+r /$client=127.0.0.1
+e example.org none ip=127.0.0.1
+
+= $denyallow on a wildcard
+r *$denyallow=com|net
+e example.org block
+e example.com none
+e sub.example.net none
+
+= $denyallow on a key
+r ||ads.example.org^$denyallow=safe.ads.example.org
+e ads.example.org block
+e x.ads.example.org block
+e safe.ads.example.org none
+e x.safe.ads.example.org none
+
+= negated request types don't change DNS matching
+r ||neg.example^$~image,~script
+e neg.example block
+
+= $dnsrewrite exceptions and priorities
+r |disable-one^$dnsrewrite=127.0.0.1
+r |disable-one^$dnsrewrite=127.0.0.2
+r @@||disable-one^$dnsrewrite=127.0.0.1
+r |priority^$dnsrewrite=127.0.0.1
+r ||priority^
+r |priority-important^$dnsrewrite=127.0.0.1
+r ||priority-important^$important
+r |simple-exc^$dnsrewrite=127.0.0.1
+r @@||simple-exc^
+r @@|exc-exc^$dnsrewrite=127.0.0.1
+r @@||exc-exc^
+r @@||exc-exc-order^
+r @@|exc-exc-order^$dnsrewrite=127.0.0.1
+r |priority-rewrite-important^$important,dnsrewrite=127.0.0.1
+r @@||priority-rewrite-important^$dnsrewrite
+r |priority-rewrite-exc-important^$important,dnsrewrite=127.0.0.1
+r @@||priority-rewrite-exc-important^$important,dnsrewrite
+r |disable-cname^$dnsrewrite=127.0.0.1
+r |disable-cname^$dnsrewrite=new-cname
+r @@||disable-cname^$dnsrewrite=new-cname
+r |disable-cname-many^$dnsrewrite=127.0.0.1
+r |disable-cname-many^$dnsrewrite=new-cname-1
+r |disable-cname-many^$dnsrewrite=new-cname-2
+r @@||disable-cname-many^$dnsrewrite=new-cname-1
+r |disable-all^$dnsrewrite=127.0.0.1
+r |disable-all^$dnsrewrite=127.0.0.2
+r @@||disable-all^$dnsrewrite
+r |disable-all-order^$dnsrewrite=127.0.0.1
+r @@||disable-all-order^$dnsrewrite=
+r |disable-all-order^$dnsrewrite=127.0.0.2
+r |priority-disable-important^$important,dnsrewrite=127.0.0.1
+r @@||priority-disable-important^$dnsrewrite=127.0.0.1
+r |priority-disable-exc-important^$important,dnsrewrite=127.0.0.1
+r @@||priority-disable-exc-important^$important,dnsrewrite=127.0.0.1
+e disable-one a=127.0.0.2
+e priority a=127.0.0.1
+e priority-important a=127.0.0.1
+e simple-exc a=127.0.0.1
+e exc-exc exception
+e exc-exc-order exception
+e priority-rewrite-important a=127.0.0.1
+e priority-rewrite-exc-important none
+e disable-cname a=127.0.0.1
+e disable-cname-many cname=new-cname-2
+e disable-all none
+e disable-all-order none
+e priority-disable-important a=127.0.0.1
+e priority-disable-exc-important none
+
+= $dnsrewrite forms
+r ||short-v4^$dnsrewrite=1.2.3.4
+r ||short-v4-multiple^$dnsrewrite=1.2.3.4
+r ||short-v4-multiple^$dnsrewrite=1.2.3.5
+r ||normal-v4^$dnsrewrite=NOERROR;A;1.2.3.4
+r ||short-v6^$dnsrewrite=::1
+r ||mixed^$dnsrewrite=1.2.3.4
+r ||mixed^$dnsrewrite=::1
+r ||refused^$dnsrewrite=REFUSED
+r ||nxdomain^$dnsrewrite=NXDOMAIN;;
+r ||empty^$dnsrewrite=NOERROR;;
+r ||cname^$dnsrewrite=target.example
+r ||cname-wins^$dnsrewrite=1.2.3.4
+r ||cname-wins^$dnsrewrite=target.example
+r ||rcode-first^$dnsrewrite=NXDOMAIN;;
+r ||rcode-first^$dnsrewrite=target.example
+r ||self^$dnsrewrite=self
+r ||self^
+e short-v4 a=1.2.3.4
+e short-v4-multiple a=1.2.3.4,1.2.3.5
+e normal-v4 a=1.2.3.4
+e short-v6 aaaa=::1 qtype=AAAA
+e mixed a=1.2.3.4
+e mixed aaaa=::1 qtype=AAAA
+e refused rcode=REFUSED
+e nxdomain rcode=NXDOMAIN
+e empty nodata
+e cname cname=target.example
+e cname-wins cname=target.example
+e rcode-first rcode=NXDOMAIN
+e self block
+
+= @@…$dnsrewrite doesn't stop a host-IP mapping
+r 192.0.2.10 mapped.example
+r @@||mapped.example^$dnsrewrite
+e mapped.example hostmap=192.0.2.10
+
+= IP rules and IP-text patterns
+r ||192.0.2.66^
+r |198.51.100.1^
+r ||10.0.0^
+r @@||203.0.113.5^
+r ||203.0.113.5^$important
+r ||2001:db8::1^
+r /^172\.16\./
+i 192.0.2.66 block
+i ::ffff:192.0.2.66 block
+i 192.0.2.67 none
+i 198.51.100.1 block
+i 198.51.100.10 none
+i 1.10.0.0 block
+i 10.0.0.1 none
+i 203.0.113.5 block
+i 2001:db8::1 block
+i 2001:db8::1:5 block
+i 2001:db8::2 none
+i 172.16.1.1 block
+
+= an IP exception beats an IP block
+r ||192.0.2.0^
+r @@||192.0.2.0^
+i 192.0.2.0 exception
+
+= $denyallow rules never match IP text
+r *$denyallow=example.com
+i 192.0.2.1 none
+e other.example block
+
+= ||a.b.c.d^ also decides the name a.b.c.d and its subdomains
+r ||192.0.2.77^
+e 192.0.2.77 block
+e x.192.0.2.77 block
+e 192.0.2.7 none
+i 192.0.2.77 block
+i 192.0.2.7 none
+
+= $badfilter targets as urlfilter does: $dnstype isn't compared, $important is
+r ||bf.example^$dnstype=A
+r ||bf.example^$badfilter
+r ||bfi.example^$important
+r ||bfi.example^$badfilter
+r ||bfh.example^$badfilter
+r bfh.example
+e bf.example none
+e bfi.example block
+e bfh.example block
+
+= non-capturing and empty flag groups are Go syntax
+r /(?:trk|pix)\./
+r /^(?)beacon/
+e trk.example block
+e pix.example block
+e beacon.example block
+e xtrk.example block
+e mybeacon.example none
+e track.example none
+
+= IDN rules use A-labels (picket)
+r ||пример.рф^
+e xn--e1afmkfd.xn--p1ai block
+e sub.xn--e1afmkfd.xn--p1ai block
+
+= a trailing dot in a key is stripped (picket)
+r ||dotted.example.^
+e dotted.example block
+
+= the protocol/port extension blocks the host (picket)
+r https://ext-https.example
+r ||ext-port.example:8443^
+e ext-https.example block
+e sub.ext-https.example none
+e ext-port.example block
+e sub.ext-port.example block
+
+# ---------------------------------------------------------------------------------------------
+# Matrix: one rule per line, query type A, no client (derived from urlfilter's pattern → regex
+# conversion and match target).
+m ||example.org^ ~~ example.org sub.example.org a.b.example.org ~~ badexample.org example.org.evil.com example.com example.or
+m |example.org^ ~~ example.org ~~ sub.example.org badexample.org example.org.uk
+m ://example.org^ ~~ example.org ~~ sub.example.org xexample.org
+m *.example.org^ ~~ sub.example.org a.b.example.org ~~ example.org badexample.org
+m .example.org^ ~~ sub.example.org ~~ example.org xexample.org
+m example.org ~~ example.org ~~ sub.example.org example.org.uk
+m ||example.org ~~ example.org sub.example.org example.org.uk example.organic.com ~~ badexample.org
+m |example.org ~~ example.org example.org.uk example.organic.com ~~ sub.example.org
+m example.org| ~~ example.org badexample.org sub.example.org ~~ example.org.uk
+m |example.org| ~~ example.org ~~ sub.example.org example.org.uk badexample.org
+m example ~~ example ~~ example.com sub.example
+m ads ~~ ads ~~ ads.example.com
+m ads. ~~ ads.example.com myads.example.com x.ads.y ~~ ads example.ads
+m .ads. ~~ x.ads.example.com ~~ ads.example.com myads.example.com
+m ||ads.*^ ~~ ads.example.com x.ads.y ~~ myads.com ads
+m ||*.ads^ ~~ x.ads a.b.ads ~~ ads x.ads.com
+m ad*.example.com^ ~~ ad.example.com ads.example.com xad1.example.com ~~ example.com d.example.com
+m ||ad*.example.com^ ~~ ad.example.com ads.example.com x.adserver.example.com ~~ xad.example.com example.com
+m /^ad[0-9]+\./ ~~ ad1.example.com ad42.x ~~ ad.example.com xad1.example.com
+m /\.ru$/ ~~ example.ru a.b.ru ~~ example.ru.com ru
+m /^[a-z]{20,}\.com$/ ~~ abcdefghijklmnopqrstu.com ~~ short.com abcdefghijklmnopqrstu.net
+m -ad- ~~ x-ad-y.com my-ad-.com ~~ ad.com xad-y.com
+m _ads_ ~~ x_ads_y.com ~~ ads.com
+m ||example.org^$important ~~ example.org sub.example.org ~~ xexample.org
+m @@||example.org^ ~~ example.org sub.example.org ~~ xexample.org
+m ||example.org^| ~~ example.org sub.example.org ~~ example.org.uk
+m http://example.org^ ~~ example.org ~~ sub.example.org
+m ||1.2.3.4^ ~~ 1.2.3.4 ::ffff:1.2.3.4 ~~ 1.2.3.5 11.2.3.4 1.2.3.40
+m |1.2.3.4^ ~~ 1.2.3.4 ~~ 1.2.3.45 11.2.3.4
+m 1.2.3.4 ~~ 1.2.3.4 11.2.3.4 1.2.3.45 ~~ 1.2.3.5
+m ||1.2.3^ ~~ 5.1.2.3 ~~ 1.2.3.4
+m ||2001:db8::1^ ~~ 2001:db8::1 2001:db8::1:5 ~~ 2001:db8::2 2001:db8::10
+m /^10\./ ~~ 10.1.2.3 ~~ 110.1.2.3 1.10.2.3
+m ||com^ ~~ example.com com a.b.com ~~ example.org comx.net
+m *$dnstype=A ~~ example.org anything.net ~~
+m ||example.org^$dnstype=~A ~~ ~~ example.org
+m /(?:ads|track)\./ ~~ ads.x.com track.y.org ~~ tracker.x.com
+m /ads\d+/ ~~ ads1.example.com xads22.com ~~ ads.example.com
+m ||example.org^$denyallow=sub.example.org ~~ example.org other.example.org ~~ sub.example.org a.sub.example.org
+m *$denyallow=org ~~ example.com example.net ~~ example.org a.b.org 1.2.3.4
+m ||xn--e1afmkfd.xn--p1ai^ ~~ xn--e1afmkfd.xn--p1ai ~~ xn--p1ai
+m example.com. ~~ example.com.cdn.net ~~ example.com sub.example.com
+m ||sub.example.org^ ~~ sub.example.org a.sub.example.org ~~ example.org bsub.example.org
+m .example.org ~~ sub.example.org a.example.organic ~~ example.org
+m |ads.*.com^ ~~ ads.x.com ads.a.b.com ~~ x.ads.y.com ads.com
+m ad^ ~~ ad mad x.load ~~ ads.com ad.com
+m @@/^ads?\./ ~~ ads.example.com ad.example.com ~~ xads.example.com
+m ||example.org^$client=192.168.1.0/24 ~~ ~~ example.org
+m ||example.org^$ctag=kids ~~ ~~ example.org
+m ||example.org^$~image ~~ example.org ~~ example.com
+m ||s3.amazonaws.com^ ~~ bucket.s3.amazonaws.com s3.amazonaws.com ~~ amazonaws.com s3-eu.amazonaws.com
+m ||tracking.*.example^ ~~ tracking.a.example x.tracking.b.example ~~ tracking.example
+m /tracking/ ~~ tracking.example mytracking.net ~~ track.example
+# urlfilter's shortcut is part of the decision: a regex rule whose shortcut isn't in
+# "http://" + host never matches (octal escapes are Go syntax).
+m /\dabc/ ~~ ~~ 1abc.example.com
+m /\101/ ~~ 101a.com ~~ a.com
+m http://ads. ~~ ads.x.com ~~ myads.x.com
+m p://ads. ~~ ~~ ads.x.com
+m /x\.com/ ~~ x.com ~~ xycom
+m /\Qx.com\E/ ~~ x.com ~~ xycom
+m /[[:digit:]]{3}/ ~~ a123.com ~~ a12.com
+m ||example.org^*ads ~~ ~~ example.org example.org.ads.com
+
+# ---------------------------------------------------------------------------------------------
+# Review round 1 (each group pins one finding; written from the urlfilter oracle).
+
+= a bare ^ pattern matches nothing, whatever its modifiers (urlfilter matchesNothing)
+r ^$dnstype=A
+r ^$client=10.0.0.1
+r ^$dnstype=A,dnsrewrite=1.2.3.4
+r ||caret.example^
+r @@^$dnstype=A
+e example.com none ip=10.0.0.1
+e caret.example block
+e sub.caret.example block qtype=AAAA
+
+= /* normalises to ^ but isn't the bare ^: it matches every name
+r /*$dnstype=AAAA
+e example.com block qtype=AAAA
+e example.com none
+
+= Go refuses \C; numeric and duplicate capture names are Go syntax
+r /\C/
+r /(?P<x>gads)|(?P<x>gtracker)/
+r /(?P<1>numcap)/
+e gads.example block
+e gtracker.example block
+e numcap.example block
+e c.example none
+
+= Go refuses nested repeats whose product passes 1000
+r /(?i)(a{1000}){2}|nested/
+r /(?i)(b{500}){2}|halfnested/
+e nested.example none
+e halfnested.example block
+
+= $denyallow entities: name.* covers name.<public suffix> and its subdomains
+r ||denyent.example^$denyallow=tracker.*
+r *$denyallow=tracker.*|example.*,dnstype=AAAA
+e denyent.example block
+e sub.denyent.example block
+e other.net block qtype=AAAA
+e tracker.co.uk none qtype=AAAA
+e a.tracker.net none qtype=AAAA
+e tracker.blogspot.com block qtype=AAAA
+e tracker.co.ck none qtype=AAAA
+e tracker.zzz block qtype=AAAA
+e x.tracker.foo.com block qtype=AAAA
+e a.tracker.xtracker.com none qtype=AAAA
+e example.de none qtype=AAAA
+e notexample.de block qtype=AAAA
+e 1.2.3.4 none qtype=AAAA
+
+= rewrites answer in urlfilter's matched-rule order (shortcut index, then unindexed)
+r ||ex*^$dnsrewrite=NXDOMAIN;;
+r ||example.com^$dnsrewrite=target.example
+e example.com cname=target.example
+
+= $badfilter and rewrite exceptions compare text as written
+r ||Example.org^
+r ||example.org^$badfilter
+r ||ads*.Example.org^
+r ||ads*.example.org^$badfilter
+r ||rw.example^$dnsrewrite=Target.example
+r @@||rw.example^$dnsrewrite=target.example
+r ||self.example^$dnsrewrite=Self.EXAMPLE
+r ||self.example^
+e example.org block
+e ads1.example.org block
+e rw.example cname=Target.example
+e self.example cname=Self.EXAMPLE
+
+= a hosts line whose name is an IPv6 address blocks that address
+r 0.0.0.0 2001:db8::1
+i 2001:db8::1 block qtype=AAAA
+i 2001:db8::2 none qtype=AAAA
+
+= a mapping whose name is an IPv6 address maps that address's text (review round 2, CC8)
+r 192.0.2.1 2001:db8::1
+r 2001:db8::5 2001:db8::1
+i 2001:db8::1 hostmap=192.0.2.1,2001:db8::5 qtype=AAAA
+i 2001:db8::1 hostmap=192.0.2.1,2001:db8::5
+i 2001:db8::2 none qtype=AAAA
+
+= $client with an IPv4-mapped address never matches an IPv4 client
+r ||mapped-client.example^$client=::ffff:10.0.0.1
+e mapped-client.example none ip=10.0.0.1

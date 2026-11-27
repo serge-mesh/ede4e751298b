@@ -1,0 +1,72 @@
+# query	qtype	client name	decision reason (written by tests/golden.rs; PICKET_WRITE_GOLDEN_BUNDLES=1)
+name:ads.example	1	-	block Exact/Suffix { labels: 2 }/hot
+name:ads.example	28	kid	block Exact/Suffix { labels: 2 }/hot
+name:x.ads.example	1	-	block Subs/Suffix { labels: 2 }/hot
+name:x.ads.example	28	kid	block Subs/Suffix { labels: 2 }/hot
+name:ok.ads.example	1	-	allow Exact/Suffix { labels: 3 }/hot
+name:ok.ads.example	28	kid	allow Exact/Suffix { labels: 3 }/hot
+name:a.ok.ads.example	1	-	allow Subs/Suffix { labels: 3 }/hot
+name:a.ok.ads.example	28	kid	allow Subs/Suffix { labels: 3 }/hot
+name:exact.example	1	-	none -
+name:exact.example	28	kid	none -
+name:sub.exact.example	1	-	none -
+name:sub.exact.example	28	kid	none -
+name:imp.example	1	-	block Exact/Suffix { labels: 2 }/hot
+name:imp.example	28	kid	block Exact/Suffix { labels: 2 }/hot
+name:x.imp.example	1	-	block Subs/Suffix { labels: 2 }/hot
+name:x.imp.example	28	kid	block Subs/Suffix { labels: 2 }/hot
+name:subs.example	1	-	none -
+name:subs.example	28	kid	none -
+name:a.subs.example	1	-	block Subs/Suffix { labels: 2 }/hot
+name:a.subs.example	28	kid	block Subs/Suffix { labels: 2 }/hot
+name:hosts.example	1	-	block Exact/Suffix { labels: 2 }/hot
+name:hosts.example	28	kid	block Exact/Suffix { labels: 2 }/hot
+name:mapped.example	1	-	hosts 192.0.2.10 Rich/Suffix { labels: 2 }/hot
+name:mapped.example	28	kid	hosts 192.0.2.10 Rich/Suffix { labels: 2 }/hot
+name:rw.example	1	-	rewrite records 1=203.0.113.7 Rich/Suffix { labels: 2 }/hot
+name:rw.example	28	kid	rewrite records 1=203.0.113.7 Rich/Suffix { labels: 2 }/hot
+name:nx.example	1	-	rewrite rcode 3 Rich/Suffix { labels: 2 }/hot
+name:nx.example	28	kid	rewrite rcode 3 Rich/Suffix { labels: 2 }/hot
+name:aaaa.example	1	-	none -
+name:aaaa.example	28	kid	block Rich/Suffix { labels: 2 }/hot
+name:kid.example	1	-	none -
+name:kid.example	28	kid	block Rich/Suffix { labels: 2 }/hot
+name:deny.example	1	-	block Rich/Suffix { labels: 2 }/hot
+name:deny.example	28	kid	block Rich/Suffix { labels: 2 }/hot
+name:fine.deny.example	1	-	none -
+name:fine.deny.example	28	kid	none -
+name:x.fine.deny.example	1	-	none -
+name:x.fine.deny.example	28	kid	none -
+name:ads1.track.example	1	-	block Pattern/Pattern { index: 0 }/hot
+name:ads1.track.example	28	kid	block Pattern/Pattern { index: 0 }/hot
+name:banner12.example.net	1	-	block Pattern/Pattern { index: 1 }/hot
+name:banner12.example.net	28	kid	block Pattern/Pattern { index: 1 }/hot
+name:cold1.example	1	-	block Exact/Suffix { labels: 2 }/cold
+name:cold1.example	28	kid	block Exact/Suffix { labels: 2 }/cold
+name:x.cold2.example	1	-	none -
+name:x.cold2.example	28	kid	none -
+name:cold3.example	1	-	block Exact/Suffix { labels: 2 }/cold
+name:cold3.example	28	kid	block Exact/Suffix { labels: 2 }/cold
+name:cold4.example	1	-	block Exact/Suffix { labels: 2 }/cold
+name:cold4.example	28	kid	block Exact/Suffix { labels: 2 }/cold
+name:new.example	1	-	block Exact/Suffix { labels: 2 }/hot
+name:new.example	28	kid	block Exact/Suffix { labels: 2 }/hot
+name:1.2.3.4	1	-	block Exact/Suffix { labels: 4 }/hot
+name:1.2.3.4	28	kid	block Exact/Suffix { labels: 4 }/hot
+name:other.example	1	-	none -
+name:other.example	28	kid	none -
+name:1.10.0.0	1	-	block Subs/Suffix { labels: 3 }/hot
+name:1.10.0.0	28	kid	block Subs/Suffix { labels: 3 }/hot
+ip:1.2.3.4	1	-	block Ip/Address/hot
+ip:1.2.3.5	1	-	allow Exact/Suffix { labels: 4 }/hot
+ip:1.2.3.6	1	-	none -
+ip:10.0.0.9	1	-	none -
+ip:1.10.0.0	1	-	block Subs/Suffix { labels: 3 }/hot
+ip:198.51.100.7	1	-	allow Exact/Suffix { labels: 4 }/hot
+ip:198.51.100.8	1	-	block Ip/Address/hot
+ip:203.0.113.5	1	-	block Ip/Address/hot
+ip:203.0.113.99	1	-	none -
+ip:2001:db8::1	1	-	block Pattern/Pattern { index: 2 }/hot
+ip:2001:db8:1::9	1	-	block Ip/Address/hot
+ip:2001:db8:2::1	1	-	none -
+ip:::ffff:1.2.3.4	1	-	block Ip/Address/hot

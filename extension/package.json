@@ -1,0 +1,39 @@
+{
+  "name": "picket-browser-extension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Picket block page and temporary allows for Brave and Firefox (browser-extension.md).",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
+    "lint": "npm run typecheck && eslint --max-warnings 0 . && npm run lint:firefox",
+    "lint:firefox": "node scripts/lint-firefox.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:browser": "node scripts/build.mjs && playwright test",
+    "test:browser:slow": "node scripts/build.mjs && PICKET_BROWSER_SLOW=1 PICKET_BROWSER_LOADS=300 playwright test --grep \"@slow|silently dropped|appears for every blocked page load\"",
+    "package": "node scripts/build.mjs && node scripts/package.mjs"
+  },
+  "dependencies": {
+    "webextension-polyfill": "0.12.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.65.1",
+    "@types/node": "24.19.2",
+    "@types/webextension-polyfill": "0.12.6",
+    "eslint": "10.14.0",
+    "globals": "17.14.0",
+    "jsdom": "29.1.1",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.1",
+    "vite": "8.3.6",
+    "vitest": "4.1.12",
+    "web-ext": "10.8.0"
+  }
+}

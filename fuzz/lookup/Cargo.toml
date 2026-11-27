@@ -1,0 +1,88 @@
+# cargo-fuzz targets for picket-lookup (README §2 Untrusted input: every decoder of untrusted input
+# is fuzzed): http_json response handling, JSON Pointer evaluation (against serde_json's pointer as
+# an oracle), comparison parsing, Retry-After, dns configs and rules over arbitrary answers, and
+# `${secret:…}` resolution with redaction.
+# Its own workspace; the main workspace doesn't build it.
+#
+#   cargo +nightly fuzz run --fuzz-dir lookup http_json_response   (from fuzz/)
+[package]
+name = "picket-lookup-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+picket-lookup = { path = "../../crates/picket-lookup" }
+picket-wire = { path = "../../crates/picket-wire" }
+serde_json = "1"
+http = "1"
+jiff = { version = "1.0.3", default-features = false, features = ["std"] }
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "http_json_response"
+path = "fuzz_targets/http_json_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_json_config"
+path = "fuzz_targets/http_json_config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json_pointer"
+path = "fuzz_targets/json_pointer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "comparison"
+path = "fuzz_targets/comparison.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "retry_after"
+path = "fuzz_targets/retry_after.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dns_config"
+path = "fuzz_targets/dns_config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dns_rules"
+path = "fuzz_targets/dns_rules.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "secrets"
+path = "fuzz_targets/secrets.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1

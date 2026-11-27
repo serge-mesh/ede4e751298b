@@ -1,0 +1,6 @@
+-P INPUT ACCEPT
+-P FORWARD ACCEPT
+-P OUTPUT ACCEPT
+-A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-A FORWARD -i eth0 -o eth1 -j ACCEPT
+-A FORWARD -j REJECT --reject-with icmp-port-unreachable

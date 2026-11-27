@@ -1,0 +1,41 @@
+# UniFi zone-based firewall with UniFi's default Allow for Internal -> External and no Block All policy.
+# Expect: jump directly above UBIOS_DEFAULT_LAN_WAN; an enforce interface reports fw_catch_all allow.
+# Written from the spec (not recorded) as `iptables -S` (filter table); ip6tables uses the same layout (edge-unifi.md §4).
+# Networks: br0 Default and br10 IoT (zone LAN, Internal), br20 Guest (zone HOTSPOT), eth4 WAN.
+-P INPUT ACCEPT
+-P FORWARD ACCEPT
+-P OUTPUT ACCEPT
+-N UBIOS_FORWARD_IN_USER
+-N UBIOS_FORWARD_JUMP
+-N UBIOS_FORWARD_USER_HOOK
+-N UBIOS_HOTSPOT_IN_USER
+-N UBIOS_HOTSPOT_WAN_USER
+-N UBIOS_INPUT_JUMP
+-N UBIOS_INPUT_USER_HOOK
+-N UBIOS_LAN_IN_USER
+-N UBIOS_LAN_LAN_USER
+-N UBIOS_LAN_WAN_USER
+-N UBIOS_WAN_IN_USER
+-N UBIOS_WAN_LAN_USER
+-A INPUT -j UBIOS_INPUT_JUMP
+-A FORWARD -j UBIOS_FORWARD_JUMP
+-A UBIOS_FORWARD_IN_USER -i br0 -m comment --comment UBIOS_ZONE_LAN_br0 -j UBIOS_LAN_IN_USER
+-A UBIOS_FORWARD_IN_USER -i br10 -m comment --comment UBIOS_ZONE_LAN_br10 -j UBIOS_LAN_IN_USER
+-A UBIOS_FORWARD_IN_USER -i br20 -m comment --comment UBIOS_ZONE_HOTSPOT_br20 -j UBIOS_HOTSPOT_IN_USER
+-A UBIOS_FORWARD_IN_USER -i eth4 -m comment --comment UBIOS_ZONE_WAN_eth4 -j UBIOS_WAN_IN_USER
+-A UBIOS_FORWARD_JUMP -j UBIOS_FORWARD_USER_HOOK
+-A UBIOS_FORWARD_JUMP -m conntrack --ctstate RELATED,ESTABLISHED -m comment --comment UBIOS_RETURN_TRAFFIC -j ACCEPT
+-A UBIOS_FORWARD_JUMP -j UBIOS_FORWARD_IN_USER
+-A UBIOS_HOTSPOT_IN_USER -m set ! --match-set UBIOS_local_zoned_subnets dst -m comment --comment UBIOS_ZONE_PAIR_HOTSPOT_WAN -j UBIOS_HOTSPOT_WAN_USER
+-A UBIOS_HOTSPOT_IN_USER -m comment --comment UBIOS_DEFAULT_HOTSPOT_LAN -j DROP
+-A UBIOS_HOTSPOT_WAN_USER -m conntrack --ctstate INVALID -m comment --comment UBIOS_INVALID_HOTSPOT_WAN -j DROP
+-A UBIOS_HOTSPOT_WAN_USER -m comment --comment UBIOS_DEFAULT_HOTSPOT_WAN -j ACCEPT
+-A UBIOS_INPUT_JUMP -j UBIOS_INPUT_USER_HOOK
+-A UBIOS_LAN_IN_USER -m set --match-set UBIOS_local_zoned_subnets dst -m comment --comment UBIOS_ZONE_PAIR_LAN_LAN -j UBIOS_LAN_LAN_USER
+-A UBIOS_LAN_IN_USER -m set ! --match-set UBIOS_local_zoned_subnets dst -m comment --comment UBIOS_ZONE_PAIR_LAN_WAN -j UBIOS_LAN_WAN_USER
+-A UBIOS_LAN_LAN_USER -m comment --comment UBIOS_DEFAULT_LAN_LAN -j ACCEPT
+-A UBIOS_LAN_WAN_USER -p udp -m udp --dport 123 -m comment --comment FIREWALL_POLICY:6731c0de0000000000000001 -j ACCEPT
+-A UBIOS_LAN_WAN_USER -m conntrack --ctstate INVALID -m comment --comment UBIOS_INVALID_LAN_WAN -j DROP
+-A UBIOS_LAN_WAN_USER -m comment --comment UBIOS_DEFAULT_LAN_WAN -j ACCEPT
+-A UBIOS_WAN_IN_USER -m set --match-set UBIOS_local_zoned_subnets dst -m comment --comment UBIOS_ZONE_PAIR_WAN_LAN -j UBIOS_WAN_LAN_USER
+-A UBIOS_WAN_LAN_USER -m comment --comment UBIOS_DEFAULT_WAN_LAN -j DROP

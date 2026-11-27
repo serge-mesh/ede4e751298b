@@ -1,0 +1,104 @@
+-P PREROUTING ACCEPT
+-P INPUT ACCEPT
+-P OUTPUT ACCEPT
+-P POSTROUTING ACCEPT
+-N UBIOS_PREROUTING_JUMP
+-N UBIOS_PREROUTING_USER_HOOK
+-N UBIOS_FANOUT_0
+-N UBIOS_FANOUT_1
+-N UBIOS_FANOUT_2
+-N UBIOS_FANOUT_3
+-N UBIOS_FANOUT_4
+-N UBIOS_FANOUT_5
+-N UBIOS_FANOUT_6
+-N UBIOS_FANOUT_7
+-N UBIOS_FANOUT_8
+-N UBIOS_FANOUT_9
+-N UBIOS_FANOUT_10
+-N UBIOS_FANOUT_11
+-N UBIOS_FANOUT_12
+-N UBIOS_DNAT_USER
+-N UBIOS_POSTROUTING_JUMP
+-A PREROUTING -j UBIOS_PREROUTING_JUMP
+-A POSTROUTING -j UBIOS_POSTROUTING_JUMP
+-A UBIOS_PREROUTING_JUMP -j UBIOS_PREROUTING_USER_HOOK
+-A UBIOS_PREROUTING_USER_HOOK -j UBIOS_FANOUT_0
+-A UBIOS_FANOUT_0 -m comment --comment "fan-out 0.0" -j UBIOS_FANOUT_1
+-A UBIOS_FANOUT_0 -m comment --comment "fan-out 0.1" -j UBIOS_FANOUT_1
+-A UBIOS_FANOUT_0 -m comment --comment "fan-out 0.2" -j UBIOS_FANOUT_1
+-A UBIOS_FANOUT_0 -m comment --comment "fan-out 0.3" -j UBIOS_FANOUT_1
+-A UBIOS_FANOUT_0 -m comment --comment "fan-out 0.4" -j UBIOS_FANOUT_1
+-A UBIOS_FANOUT_0 -m comment --comment "fan-out 0.5" -j UBIOS_FANOUT_1
+-A UBIOS_FANOUT_1 -m comment --comment "fan-out 1.0" -j UBIOS_FANOUT_2
+-A UBIOS_FANOUT_1 -m comment --comment "fan-out 1.1" -j UBIOS_FANOUT_2
+-A UBIOS_FANOUT_1 -m comment --comment "fan-out 1.2" -j UBIOS_FANOUT_2
+-A UBIOS_FANOUT_1 -m comment --comment "fan-out 1.3" -j UBIOS_FANOUT_2
+-A UBIOS_FANOUT_1 -m comment --comment "fan-out 1.4" -j UBIOS_FANOUT_2
+-A UBIOS_FANOUT_1 -m comment --comment "fan-out 1.5" -j UBIOS_FANOUT_2
+-A UBIOS_FANOUT_2 -m comment --comment "fan-out 2.0" -j UBIOS_FANOUT_3
+-A UBIOS_FANOUT_2 -m comment --comment "fan-out 2.1" -j UBIOS_FANOUT_3
+-A UBIOS_FANOUT_2 -m comment --comment "fan-out 2.2" -j UBIOS_FANOUT_3
+-A UBIOS_FANOUT_2 -m comment --comment "fan-out 2.3" -j UBIOS_FANOUT_3
+-A UBIOS_FANOUT_2 -m comment --comment "fan-out 2.4" -j UBIOS_FANOUT_3
+-A UBIOS_FANOUT_2 -m comment --comment "fan-out 2.5" -j UBIOS_FANOUT_3
+-A UBIOS_FANOUT_3 -m comment --comment "fan-out 3.0" -j UBIOS_FANOUT_4
+-A UBIOS_FANOUT_3 -m comment --comment "fan-out 3.1" -j UBIOS_FANOUT_4
+-A UBIOS_FANOUT_3 -m comment --comment "fan-out 3.2" -j UBIOS_FANOUT_4
+-A UBIOS_FANOUT_3 -m comment --comment "fan-out 3.3" -j UBIOS_FANOUT_4
+-A UBIOS_FANOUT_3 -m comment --comment "fan-out 3.4" -j UBIOS_FANOUT_4
+-A UBIOS_FANOUT_3 -m comment --comment "fan-out 3.5" -j UBIOS_FANOUT_4
+-A UBIOS_FANOUT_4 -m comment --comment "fan-out 4.0" -j UBIOS_FANOUT_5
+-A UBIOS_FANOUT_4 -m comment --comment "fan-out 4.1" -j UBIOS_FANOUT_5
+-A UBIOS_FANOUT_4 -m comment --comment "fan-out 4.2" -j UBIOS_FANOUT_5
+-A UBIOS_FANOUT_4 -m comment --comment "fan-out 4.3" -j UBIOS_FANOUT_5
+-A UBIOS_FANOUT_4 -m comment --comment "fan-out 4.4" -j UBIOS_FANOUT_5
+-A UBIOS_FANOUT_4 -m comment --comment "fan-out 4.5" -j UBIOS_FANOUT_5
+-A UBIOS_FANOUT_5 -m comment --comment "fan-out 5.0" -j UBIOS_FANOUT_6
+-A UBIOS_FANOUT_5 -m comment --comment "fan-out 5.1" -j UBIOS_FANOUT_6
+-A UBIOS_FANOUT_5 -m comment --comment "fan-out 5.2" -j UBIOS_FANOUT_6
+-A UBIOS_FANOUT_5 -m comment --comment "fan-out 5.3" -j UBIOS_FANOUT_6
+-A UBIOS_FANOUT_5 -m comment --comment "fan-out 5.4" -j UBIOS_FANOUT_6
+-A UBIOS_FANOUT_5 -m comment --comment "fan-out 5.5" -j UBIOS_FANOUT_6
+-A UBIOS_FANOUT_6 -m comment --comment "fan-out 6.0" -j UBIOS_FANOUT_7
+-A UBIOS_FANOUT_6 -m comment --comment "fan-out 6.1" -j UBIOS_FANOUT_7
+-A UBIOS_FANOUT_6 -m comment --comment "fan-out 6.2" -j UBIOS_FANOUT_7
+-A UBIOS_FANOUT_6 -m comment --comment "fan-out 6.3" -j UBIOS_FANOUT_7
+-A UBIOS_FANOUT_6 -m comment --comment "fan-out 6.4" -j UBIOS_FANOUT_7
+-A UBIOS_FANOUT_6 -m comment --comment "fan-out 6.5" -j UBIOS_FANOUT_7
+-A UBIOS_FANOUT_7 -m comment --comment "fan-out 7.0" -j UBIOS_FANOUT_8
+-A UBIOS_FANOUT_7 -m comment --comment "fan-out 7.1" -j UBIOS_FANOUT_8
+-A UBIOS_FANOUT_7 -m comment --comment "fan-out 7.2" -j UBIOS_FANOUT_8
+-A UBIOS_FANOUT_7 -m comment --comment "fan-out 7.3" -j UBIOS_FANOUT_8
+-A UBIOS_FANOUT_7 -m comment --comment "fan-out 7.4" -j UBIOS_FANOUT_8
+-A UBIOS_FANOUT_7 -m comment --comment "fan-out 7.5" -j UBIOS_FANOUT_8
+-A UBIOS_FANOUT_8 -m comment --comment "fan-out 8.0" -j UBIOS_FANOUT_9
+-A UBIOS_FANOUT_8 -m comment --comment "fan-out 8.1" -j UBIOS_FANOUT_9
+-A UBIOS_FANOUT_8 -m comment --comment "fan-out 8.2" -j UBIOS_FANOUT_9
+-A UBIOS_FANOUT_8 -m comment --comment "fan-out 8.3" -j UBIOS_FANOUT_9
+-A UBIOS_FANOUT_8 -m comment --comment "fan-out 8.4" -j UBIOS_FANOUT_9
+-A UBIOS_FANOUT_8 -m comment --comment "fan-out 8.5" -j UBIOS_FANOUT_9
+-A UBIOS_FANOUT_9 -m comment --comment "fan-out 9.0" -j UBIOS_FANOUT_10
+-A UBIOS_FANOUT_9 -m comment --comment "fan-out 9.1" -j UBIOS_FANOUT_10
+-A UBIOS_FANOUT_9 -m comment --comment "fan-out 9.2" -j UBIOS_FANOUT_10
+-A UBIOS_FANOUT_9 -m comment --comment "fan-out 9.3" -j UBIOS_FANOUT_10
+-A UBIOS_FANOUT_9 -m comment --comment "fan-out 9.4" -j UBIOS_FANOUT_10
+-A UBIOS_FANOUT_9 -m comment --comment "fan-out 9.5" -j UBIOS_FANOUT_10
+-A UBIOS_FANOUT_10 -m comment --comment "fan-out 10.0" -j UBIOS_FANOUT_11
+-A UBIOS_FANOUT_10 -m comment --comment "fan-out 10.1" -j UBIOS_FANOUT_11
+-A UBIOS_FANOUT_10 -m comment --comment "fan-out 10.2" -j UBIOS_FANOUT_11
+-A UBIOS_FANOUT_10 -m comment --comment "fan-out 10.3" -j UBIOS_FANOUT_11
+-A UBIOS_FANOUT_10 -m comment --comment "fan-out 10.4" -j UBIOS_FANOUT_11
+-A UBIOS_FANOUT_10 -m comment --comment "fan-out 10.5" -j UBIOS_FANOUT_11
+-A UBIOS_FANOUT_11 -m comment --comment "fan-out 11.0" -j UBIOS_FANOUT_12
+-A UBIOS_FANOUT_11 -m comment --comment "fan-out 11.1" -j UBIOS_FANOUT_12
+-A UBIOS_FANOUT_11 -m comment --comment "fan-out 11.2" -j UBIOS_FANOUT_12
+-A UBIOS_FANOUT_11 -m comment --comment "fan-out 11.3" -j UBIOS_FANOUT_12
+-A UBIOS_FANOUT_11 -m comment --comment "fan-out 11.4" -j UBIOS_FANOUT_12
+-A UBIOS_FANOUT_11 -m comment --comment "fan-out 11.5" -j UBIOS_FANOUT_12
+-A UBIOS_FANOUT_12 -p udp -m udp --dport 5353 -j RETURN
+-A UBIOS_PREROUTING_JUMP -j UBIOS_DNAT_USER
+-A UBIOS_POSTROUTING_JUMP -o eth4 -m comment --comment "UBIOS masquerade" -j MASQUERADE
+-A UBIOS_DNAT_USER -i br0 -p udp -m udp --dport 53 -m comment --comment "NAT_POLICY DNS to Picket" -j DNAT --to-destination 192.0.2.1:5335
+-A UBIOS_DNAT_USER -i br0 -p tcp -m tcp --dport 53 -m comment --comment "NAT_POLICY DNS to Picket" -j DNAT --to-destination 192.0.2.1:5335
+-A UBIOS_DNAT_USER -i br10 -p udp -m udp --dport 53 -m comment --comment "NAT_POLICY DNS to Picket" -j DNAT --to-destination 198.51.100.1:5335
+-A UBIOS_DNAT_USER -i br10 -p tcp -m tcp --dport 53 -m comment --comment "NAT_POLICY DNS to Picket" -j DNAT --to-destination 198.51.100.1:5335

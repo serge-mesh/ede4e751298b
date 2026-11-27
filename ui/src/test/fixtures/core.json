@@ -1,0 +1,2818 @@
+{
+ "/alerts": {
+  "items": [],
+  "next_cursor": null
+ },
+ "/browser-lists": [
+  {
+   "blake3": "5c21d6e2b700a8f7bf54e6f7b6bd13158cf1e6aa35d70c8d305356cc89b5f53b",
+   "kind": "bundle",
+   "stats": {
+    "added": 0,
+    "dropped": 0,
+    "removed": 0,
+    "rules": 0
+   },
+   "target": "allow-common",
+   "url": "/lists/allow-common.txt",
+   "version": "202611230952",
+   "written_at": "2026-11-23T09:52:56.263298Z"
+  },
+  {
+   "blake3": "f1bd5fd684e3d3b7974be0ec093a124cbf65cfed84986c6ff840971892b32eb1",
+   "kind": "bundle",
+   "stats": {
+    "added": 0,
+    "dropped": 0,
+    "removed": 0,
+    "rules": 0
+   },
+   "target": "block-common",
+   "url": "/lists/block-common.txt",
+   "version": "202611230952",
+   "written_at": "2026-11-23T09:52:56.346252Z"
+  }
+ ],
+ "/bundle-status": [
+  {
+   "action": "allow",
+   "browser_list": "/lists/allow-common.txt",
+   "building": false,
+   "built_at": "2026-11-23T10:40:16.390394Z",
+   "bundle": "allow-common",
+   "error": null,
+   "feed_runs": {
+    "manual-allow": 4
+   },
+   "head": "b7a8cbda6d2901cf9b15cd798c71d9e2a7d538ce65de2f1f573f07b4433c8f2e",
+   "open_alerts": 0,
+   "stats": {
+    "badfiltered": 0,
+    "base_bytes": 0,
+    "changed_keys": 0,
+    "cold_filter_bytes": 0,
+    "cold_keys": 0,
+    "cold_page_bytes": 0,
+    "cold_shards": 0,
+    "delta_bytes": 0,
+    "duration_ms": 49,
+    "edge_mem_bytes": 181,
+    "entity_refused": 0,
+    "entries_read": 0,
+    "exact_rewrite_order": false,
+    "findings_dropped": 0,
+    "hot_bytes": 87,
+    "hot_keys": 0,
+    "ip_runs": 0,
+    "ip_shards": 0,
+    "keys_added": 0,
+    "keys_changed": 0,
+    "keys_deleted": 0,
+    "mode": "incremental",
+    "moves": 0,
+    "overlay_bytes": 0,
+    "patterns": 0,
+    "patterns_edge_memory": 0,
+    "pruned": 0,
+    "reasons": [
+     "definition change"
+    ],
+    "rich_rules": 0,
+    "shards": 1,
+    "unlinked_entities": 0,
+    "unreadable_rows": 0,
+    "wide_digest": "0d0fdd2b724e6c8c43a32306514a6924504c69d18fd8509f02cd31160b8d9d73"
+   },
+   "status": "ok"
+  },
+  {
+   "action": "block",
+   "browser_list": "/lists/block-common.txt",
+   "building": false,
+   "built_at": "2026-11-23T10:40:34.925464Z",
+   "bundle": "block-common",
+   "error": null,
+   "feed_runs": {
+    "canaries": 1,
+    "manual-block": 7
+   },
+   "head": "853ad822f1864f393cd77a02c5bf7f608159ef87b44e5cf0128e2b278173e775",
+   "open_alerts": 0,
+   "stats": {
+    "badfiltered": 0,
+    "base_bytes": 0,
+    "changed_keys": 2,
+    "cold_filter_bytes": 0,
+    "cold_keys": 0,
+    "cold_page_bytes": 0,
+    "cold_shards": 0,
+    "delta_bytes": 252,
+    "duration_ms": 61,
+    "edge_mem_bytes": 531,
+    "entity_refused": 0,
+    "entries_read": 2,
+    "exact_rewrite_order": false,
+    "findings_dropped": 0,
+    "hot_bytes": 87,
+    "hot_keys": 5,
+    "ip_runs": 0,
+    "ip_shards": 0,
+    "keys_added": 2,
+    "keys_changed": 0,
+    "keys_deleted": 0,
+    "mode": "incremental",
+    "moves": 0,
+    "overlay_bytes": 150,
+    "patterns": 0,
+    "patterns_edge_memory": 0,
+    "pruned": 0,
+    "reasons": [
+     "feed manual-block"
+    ],
+    "rich_rules": 3,
+    "shards": 1,
+    "unlinked_entities": 0,
+    "unreadable_rows": 0,
+    "wide_digest": "a392c608a7ed9a057797188ee2d1e1450dcfb952e909036fe19aaa681d0cf1ef"
+   },
+   "status": "ok"
+  },
+  {
+   "action": "scope",
+   "browser_list": null,
+   "building": false,
+   "built_at": "2026-11-23T09:52:56.765647Z",
+   "bundle": "lookup-exclude",
+   "error": null,
+   "feed_runs": {
+    "lookup-exclude": 3
+   },
+   "head": "ad7581794276793ba41b4ea1a2369b094d5d1b3f24ae180b29fd344e58c61b0a",
+   "open_alerts": 0,
+   "stats": {
+    "badfiltered": 0,
+    "base_bytes": 0,
+    "changed_keys": 4,
+    "cold_filter_bytes": 0,
+    "cold_keys": 0,
+    "cold_page_bytes": 0,
+    "cold_shards": 0,
+    "delta_bytes": 236,
+    "duration_ms": 166,
+    "edge_mem_bytes": 181,
+    "entity_refused": 0,
+    "entries_read": 4,
+    "exact_rewrite_order": false,
+    "findings_dropped": 0,
+    "hot_bytes": 87,
+    "hot_keys": 3,
+    "ip_runs": 0,
+    "ip_shards": 0,
+    "keys_added": 3,
+    "keys_changed": 0,
+    "keys_deleted": 0,
+    "mode": "incremental",
+    "moves": 0,
+    "overlay_bytes": 90,
+    "patterns": 0,
+    "patterns_edge_memory": 0,
+    "pruned": 1,
+    "reasons": [
+     "feed lookup-exclude"
+    ],
+    "rich_rules": 0,
+    "shards": 1,
+    "unlinked_entities": 0,
+    "unreadable_rows": 0,
+    "wide_digest": "0d0fdd2b724e6c8c43a32306514a6924504c69d18fd8509f02cd31160b8d9d73"
+   },
+   "status": "ok"
+  },
+  {
+   "action": "warn",
+   "browser_list": null,
+   "building": false,
+   "built_at": "2026-11-23T10:40:16.411007Z",
+   "bundle": "warn-common",
+   "error": null,
+   "feed_runs": {
+    "manual-warn": 5
+   },
+   "head": null,
+   "open_alerts": 0,
+   "stats": {
+    "badfiltered": 0,
+    "base_bytes": 0,
+    "changed_keys": 0,
+    "cold_filter_bytes": 0,
+    "cold_keys": 0,
+    "cold_page_bytes": 0,
+    "cold_shards": 0,
+    "delta_bytes": 0,
+    "duration_ms": 12,
+    "edge_mem_bytes": 0,
+    "entity_refused": 0,
+    "entries_read": 0,
+    "exact_rewrite_order": false,
+    "findings_dropped": 0,
+    "hot_bytes": 0,
+    "hot_keys": 0,
+    "ip_runs": 0,
+    "ip_shards": 0,
+    "keys_added": 0,
+    "keys_changed": 0,
+    "keys_deleted": 0,
+    "mode": "incremental",
+    "moves": 0,
+    "overlay_bytes": 0,
+    "patterns": 0,
+    "patterns_edge_memory": 0,
+    "pruned": 0,
+    "reasons": [
+     "definition change"
+    ],
+    "rich_rules": 0,
+    "shards": 0,
+    "unlinked_entities": 0,
+    "unreadable_rows": 0,
+    "wide_digest": "0d0fdd2b724e6c8c43a32306514a6924504c69d18fd8509f02cd31160b8d9d73"
+   },
+   "status": "ok"
+  }
+ ],
+ "/bundles": {
+  "items": [
+   {
+    "action": "allow",
+    "feeds": [
+     {
+      "feed": "manual-allow"
+     }
+    ],
+    "hot_max_mib": null,
+    "id": "allow-common",
+    "max_shard_keys": 1000000,
+    "name": "Common allows",
+    "system": true
+   },
+   {
+    "action": "block",
+    "feeds": [
+     {
+      "feed": "manual-block"
+     },
+     {
+      "feed": "canaries"
+     }
+    ],
+    "hot_max_mib": null,
+    "id": "block-common",
+    "max_shard_keys": 1000000,
+    "name": "Common blocks",
+    "system": true
+   },
+   {
+    "action": "scope",
+    "feeds": [
+     {
+      "feed": "lookup-exclude"
+     }
+    ],
+    "hot_max_mib": null,
+    "id": "lookup-exclude",
+    "max_shard_keys": 1000000,
+    "name": "Lookup exclusions",
+    "system": true
+   },
+   {
+    "action": "warn",
+    "feeds": [
+     {
+      "feed": "manual-warn"
+     }
+    ],
+    "hot_max_mib": null,
+    "id": "warn-common",
+    "max_shard_keys": 1000000,
+    "name": "Common warninglist",
+    "system": true
+   }
+  ],
+  "next_cursor": null
+ },
+ "/bundles/block-common": {
+  "action": "block",
+  "feeds": [
+   {
+    "feed": "manual-block"
+   },
+   {
+    "feed": "canaries"
+   }
+  ],
+  "hot_max_mib": null,
+  "id": "block-common",
+  "max_shard_keys": 1000000,
+  "name": "Common blocks",
+  "system": true
+ },
+ "/bundles/block-common/status": {
+  "action": "block",
+  "browser_list": "/lists/block-common.txt",
+  "building": false,
+  "built_at": "2026-11-23T10:40:34.925464Z",
+  "bundle": "block-common",
+  "edges": {
+   "e-cacc845b": "853ad822f1864f393cd77a02c5bf7f608159ef87b44e5cf0128e2b278173e775"
+  },
+  "error": null,
+  "feed_runs": {
+   "canaries": 1,
+   "manual-block": 7
+  },
+  "head": "853ad822f1864f393cd77a02c5bf7f608159ef87b44e5cf0128e2b278173e775",
+  "ip_shards": [],
+  "open_alerts": 0,
+  "shards": [
+   {
+    "base": "daed5fe06d18aa34ccec224cb37c2cd6b6d15481fc0f1f159ff4b2ce086be97c",
+    "created_at": "2026-11-23T09:52:46.264288Z",
+    "deltas": 2,
+    "disk_bytes": 0,
+    "keys": 5,
+    "mem_bytes": 87,
+    "overlay_entries": 5,
+    "part": "hot",
+    "shard": 0
+   }
+  ],
+  "stats": {
+   "badfiltered": 0,
+   "base_bytes": 0,
+   "changed_keys": 2,
+   "cold_filter_bytes": 0,
+   "cold_keys": 0,
+   "cold_page_bytes": 0,
+   "cold_shards": 0,
+   "delta_bytes": 252,
+   "duration_ms": 61,
+   "edge_mem_bytes": 531,
+   "entity_refused": 0,
+   "entries_read": 2,
+   "exact_rewrite_order": false,
+   "findings_dropped": 0,
+   "hot_bytes": 87,
+   "hot_keys": 5,
+   "ip_runs": 0,
+   "ip_shards": 0,
+   "keys_added": 2,
+   "keys_changed": 0,
+   "keys_deleted": 0,
+   "mode": "incremental",
+   "moves": 0,
+   "overlay_bytes": 150,
+   "patterns": 0,
+   "patterns_edge_memory": 0,
+   "pruned": 0,
+   "reasons": [
+    "feed manual-block"
+   ],
+   "rich_rules": 3,
+   "shards": 1,
+   "unlinked_entities": 0,
+   "unreadable_rows": 0,
+   "wide_digest": "a392c608a7ed9a057797188ee2d1e1450dcfb952e909036fe19aaa681d0cf1ef"
+  },
+  "status": "ok"
+ },
+ "/bundles/block-common/versions": {
+  "items": [
+   {
+    "current": true,
+    "definition_hash": "f628cbcf49d5a95a552c3d59ff3a42ab24834e14ee7d8c7616012eed1ae74971",
+    "feed_runs": {
+     "canaries": 1,
+     "manual-block": 7
+    },
+    "head": "853ad822f1864f393cd77a02c5bf7f608159ef87b44e5cf0128e2b278173e775",
+    "last_used_at": "2026-11-23T10:40:34.925464Z",
+    "published_at": "2026-11-23T10:40:34.925464Z",
+    "stats": {
+     "badfiltered": 0,
+     "base_bytes": 0,
+     "changed_keys": 2,
+     "cold_filter_bytes": 0,
+     "cold_keys": 0,
+     "cold_page_bytes": 0,
+     "cold_shards": 0,
+     "delta_bytes": 252,
+     "duration_ms": 61,
+     "edge_mem_bytes": 531,
+     "entity_refused": 0,
+     "entries_read": 2,
+     "exact_rewrite_order": false,
+     "findings_dropped": 0,
+     "hot_bytes": 87,
+     "hot_keys": 5,
+     "ip_runs": 0,
+     "ip_shards": 0,
+     "keys_added": 2,
+     "keys_changed": 0,
+     "keys_deleted": 0,
+     "mode": "incremental",
+     "moves": 0,
+     "overlay_bytes": 150,
+     "patterns": 0,
+     "patterns_edge_memory": 0,
+     "pruned": 0,
+     "reasons": [
+      "feed manual-block"
+     ],
+     "rich_rules": 3,
+     "shards": 1,
+     "unlinked_entities": 0,
+     "unreadable_rows": 0,
+     "wide_digest": "a392c608a7ed9a057797188ee2d1e1450dcfb952e909036fe19aaa681d0cf1ef"
+    }
+   },
+   {
+    "current": false,
+    "definition_hash": "f628cbcf49d5a95a552c3d59ff3a42ab24834e14ee7d8c7616012eed1ae74971",
+    "feed_runs": {
+     "canaries": 1,
+     "manual-block": 2
+    },
+    "head": "384b881ba32aa07b289076e522423ce77019d98ce048f000e2c8bb3860e5afd2",
+    "last_used_at": "2026-11-23T09:57:50.921453Z",
+    "published_at": "2026-11-23T09:52:56.663423Z",
+    "stats": {
+     "badfiltered": 0,
+     "base_bytes": 0,
+     "changed_keys": 3,
+     "cold_filter_bytes": 0,
+     "cold_keys": 0,
+     "cold_page_bytes": 0,
+     "cold_shards": 0,
+     "delta_bytes": 267,
+     "duration_ms": 118,
+     "edge_mem_bytes": 531,
+     "entity_refused": 0,
+     "entries_read": 3,
+     "exact_rewrite_order": false,
+     "findings_dropped": 0,
+     "hot_bytes": 87,
+     "hot_keys": 3,
+     "ip_runs": 0,
+     "ip_shards": 0,
+     "keys_added": 3,
+     "keys_changed": 0,
+     "keys_deleted": 0,
+     "mode": "incremental",
+     "moves": 0,
+     "overlay_bytes": 90,
+     "patterns": 0,
+     "patterns_edge_memory": 0,
+     "pruned": 0,
+     "reasons": [
+      "feed canaries"
+     ],
+     "rich_rules": 3,
+     "shards": 1,
+     "unlinked_entities": 0,
+     "unreadable_rows": 0,
+     "wide_digest": "a392c608a7ed9a057797188ee2d1e1450dcfb952e909036fe19aaa681d0cf1ef"
+    }
+   },
+   {
+    "current": false,
+    "definition_hash": "f628cbcf49d5a95a552c3d59ff3a42ab24834e14ee7d8c7616012eed1ae74971",
+    "feed_runs": {
+     "canaries": 0,
+     "manual-block": 0
+    },
+    "head": "e31c3df6800384bd8d4828ba086fdf95594426f5db3a5b8849f7018a4fc11db6",
+    "last_used_at": "2026-11-23T09:52:46.330948Z",
+    "published_at": "2026-11-23T09:52:46.330948Z",
+    "stats": {
+     "badfiltered": 0,
+     "base_bytes": 87,
+     "changed_keys": 0,
+     "cold_filter_bytes": 0,
+     "cold_keys": 0,
+     "cold_page_bytes": 0,
+     "cold_shards": 0,
+     "delta_bytes": 0,
+     "duration_ms": 225,
+     "edge_mem_bytes": 181,
+     "entity_refused": 0,
+     "entries_read": 0,
+     "exact_rewrite_order": false,
+     "findings_dropped": 0,
+     "hot_bytes": 87,
+     "hot_keys": 0,
+     "ip_runs": 0,
+     "ip_shards": 0,
+     "keys_added": 0,
+     "keys_changed": 0,
+     "keys_deleted": 0,
+     "mode": "fresh",
+     "moves": 0,
+     "overlay_bytes": 0,
+     "patterns": 0,
+     "patterns_edge_memory": 0,
+     "pruned": 0,
+     "reasons": [
+      "start"
+     ],
+     "rich_rules": 0,
+     "shards": 1,
+     "unlinked_entities": 0,
+     "unreadable_rows": 0,
+     "wide_digest": "0d0fdd2b724e6c8c43a32306514a6924504c69d18fd8509f02cd31160b8d9d73"
+    }
+   }
+  ],
+  "next_cursor": null
+ },
+ "/bundles/block-common/warnings": {
+  "alerts": [],
+  "warnings": {
+   "items": [],
+   "next_cursor": null
+  }
+ },
+ "/bundles/warn-common/warnings": {
+  "alerts": [],
+  "warnings": {
+   "items": [],
+   "next_cursor": null
+  }
+ },
+ "/clients": {
+  "items": [
+   {
+    "macs": [
+     "da:a1:19:00:00:01"
+    ],
+    "name": "phone",
+    "position": 0,
+    "profile": null,
+    "source_ips": [],
+    "tags": [
+     "kids"
+    ]
+   }
+  ],
+  "next_cursor": null
+ },
+ "/config-changes": {
+  "items": [
+   {
+    "at": "2026-11-23T10:40:24.201269Z",
+    "diff": {
+     "changes": {
+      "edges": {
+       "after": [
+        "e-cacc845b"
+       ],
+       "before": []
+      }
+     },
+     "op": "update",
+     "source": "ui"
+    },
+    "entity": "listener",
+    "entity_id": "doh-lan",
+    "id": 23,
+    "source_ip": "127.0.0.1"
+   },
+   {
+    "at": "2026-11-23T10:40:24.179733Z",
+    "diff": {
+     "file": "saved",
+     "op": "update",
+     "size": 34,
+     "source": "ui",
+     "version": "406dfda686b20c67"
+    },
+    "entity": "feed",
+    "entity_id": "manual-block",
+    "id": 22,
+    "source_ip": "127.0.0.1"
+   },
+   {
+    "at": "2026-11-23T10:40:16.391796Z",
+    "diff": {
+     "after": {
+      "config": {
+       "branch": "main",
+       "owner": "hagezi",
+       "repo": "dns-blocklists"
+      },
+      "enabled": false,
+      "exclude": [],
+      "files": [
+       {
+        "feed": {
+         "category": "security",
+         "format": "adblock"
+        },
+        "match": "adblock/tif.txt"
+       }
+      ],
+      "id": "hagezi",
+      "module": "github",
+      "name": "HaGeZi",
+      "system": false,
+      "trigger": {
+       "kind": "dynamic",
+       "min_interval": "2m"
+      }
+     },
+     "op": "create",
+     "source": "ui"
+    },
+    "entity": "feed_provider",
+    "entity_id": "hagezi",
+    "id": 21,
+    "source_ip": "127.0.0.1"
+   },
+   {
+    "at": "2026-11-23T10:40:16.370780Z",
+    "diff": {
+     "after": {
+      "macs": [
+       "da:a1:19:00:00:01"
+      ],
+      "name": "phone",
+      "position": 0,
+      "profile": null,
+      "source_ips": [],
+      "tags": [
+       "kids"
+      ]
+     },
+     "op": "create",
+     "source": "ui"
+    },
+    "entity": "client",
+    "entity_id": "phone",
+    "id": 20,
+    "source_ip": "127.0.0.1"
+   },
+   {
+    "at": "2026-11-23T10:40:16.348664Z",
+    "diff": {
+     "after": {
+      "api": true,
+      "bind": "192.168.1.1:443",
+      "edges": [],
+      "id": "doh-lan",
+      "interfaces": [],
+      "ips": [],
+      "limits": {
+       "idle_timeout_ms": 10000,
+       "max_connections": 512,
+       "udp_payload": 1232
+      },
+      "name": "DoH LAN",
+      "proto": "doh",
+      "tls": {
+       "managed": "dns.home.arpa"
+      }
+     },
+     "op": "create",
+     "source": "ui"
+    },
+    "entity": "listener",
+    "entity_id": "doh-lan",
+    "id": 19,
+    "source_ip": "127.0.0.1"
+   }
+  ],
+  "next_cursor": null
+ },
+ "/config/issues": {
+  "items": [],
+  "next_cursor": null
+ },
+ "/download-modules": [
+  {
+   "config_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "A provider's settings.",
+    "properties": {
+     "min_risk_score": {
+      "default": 7.0,
+      "description": "Rows with a `risk_score` at or above this are kept (0\u201310).",
+      "format": "double",
+      "type": "number"
+     },
+     "url": {
+      "description": "The CSV's `https://` URL; null = alphaMountain's published list.",
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "title": "Config",
+    "type": "object"
+   },
+   "default_feed": {
+    "format": "plain"
+   },
+   "fixed_file": "community-threat-1000",
+   "id": "alphamountain_threat_1000",
+   "lists_files": false
+  },
+  {
+   "config_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "A `github` feed provider's settings.",
+    "properties": {
+     "branch": {
+      "description": "The branch to follow; left out: the repository's default branch. Tags are never followed.",
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "owner": {
+      "description": "The repository's owner (user or organisation).",
+      "type": "string"
+     },
+     "repo": {
+      "description": "The repository.",
+      "type": "string"
+     },
+     "token": {
+      "description": "A read-only GitHub token, as `${secret:name}`; sent to GitHub only.",
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "owner",
+     "repo"
+    ],
+    "title": "Config",
+    "type": "object"
+   },
+   "default_feed": null,
+   "fixed_file": null,
+   "id": "github",
+   "lists_files": true
+  },
+  {
+   "config_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "An `http` feed provider's settings.",
+    "properties": {
+     "date_line_regex": {
+      "description": "A regular expression for the list's date line; its first capture group (or the whole\nmatch) is the time of the last change. Without it, a comment line such as\n`! Last modified: \u2026` or `# Updated : \u2026` is used.",
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "headers": {
+      "additionalProperties": {
+       "type": "string"
+      },
+      "description": "Extra request headers. Any header but `Accept`, `Accept-Language`, `Cache-Control`,\n`Content-Type`, `Pragma` and `User-Agent` takes only `${secret:name}` references; headers\ngo to the URL's host only, never across a redirect.",
+      "type": "object"
+     },
+     "url": {
+      "description": "The list's `https://` URL (a query is part of it; no user info or fragment).",
+      "type": "string"
+     }
+    },
+    "required": [
+     "url"
+    ],
+    "title": "Config",
+    "type": "object"
+   },
+   "default_feed": {
+    "format": "adblock"
+   },
+   "fixed_file": "response",
+   "id": "http",
+   "lists_files": false
+  }
+ ],
+ "/edges": {
+  "items": [
+   {
+    "auto_update": true,
+    "bundle_budget_mib": 384,
+    "cache": {
+     "prefetch_min_hits": 3,
+     "size_mib": 8,
+     "stale_max_s": 86400,
+     "stale_ttl_s": 30
+    },
+    "created_at": "2026-11-23T10:40:16.325971Z",
+    "firewall": {
+     "ack_wait_ms": 20,
+     "exempt_sources": [],
+     "interfaces": [],
+     "static_allow": []
+    },
+    "id": "e-cacc845b",
+    "key": "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "limits": {
+     "client_inflight": 64,
+     "client_qps": 100
+    },
+    "listeners": [
+     "doh-lan"
+    ],
+    "logging": {
+     "batch_max": 1000,
+     "retention_h": 72,
+     "spool_after_s": 5,
+     "spool_max_mib": 256,
+     "ssd_spool_max_mib": null
+    },
+    "name": "gw <img src=x onerror=alert(1)>",
+    "overlay_budget_mib": null,
+    "platform": "unifi",
+    "status": {
+     "conditions": [],
+     "edge": "e-cacc845b",
+     "last_seen": null,
+     "online": false
+    },
+    "unifi": {
+     "redirect": null
+    },
+    "verdict_budget_mib": 16
+   }
+  ],
+  "next_cursor": null
+ },
+ "/edges/e-cacc845b": {
+  "auto_update": true,
+  "bundle_budget_mib": 384,
+  "cache": {
+   "prefetch_min_hits": 3,
+   "size_mib": 8,
+   "stale_max_s": 86400,
+   "stale_ttl_s": 30
+  },
+  "created_at": "2026-11-23T10:40:16.325971Z",
+  "firewall": {
+   "ack_wait_ms": 20,
+   "exempt_sources": [],
+   "interfaces": [],
+   "static_allow": []
+  },
+  "id": "e-cacc845b",
+  "key": "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "limits": {
+   "client_inflight": 64,
+   "client_qps": 100
+  },
+  "listeners": [
+   "doh-lan"
+  ],
+  "logging": {
+   "batch_max": 1000,
+   "retention_h": 72,
+   "spool_after_s": 5,
+   "spool_max_mib": 256,
+   "ssd_spool_max_mib": null
+  },
+  "name": "gw <img src=x onerror=alert(1)>",
+  "overlay_budget_mib": null,
+  "platform": "unifi",
+  "status": {
+   "conditions": [],
+   "edge": "e-cacc845b",
+   "last_seen": null,
+   "online": false
+  },
+  "unifi": {
+   "redirect": null
+  },
+  "verdict_budget_mib": 16
+ },
+ "/edges/e-cacc845b/config": {
+  "config": {
+   "bundles": {
+    "allow-common": "b7a8cbda6d2901cf9b15cd798c71d9e2a7d538ce65de2f1f573f07b4433c8f2e",
+    "block-common": "853ad822f1864f393cd77a02c5bf7f608159ef87b44e5cf0128e2b278173e775"
+   },
+   "cache": {
+    "prefetch_min_hits": 3,
+    "size_mib": 8,
+    "stale_max_s": 86400,
+    "stale_ttl_s": 30
+   },
+   "clients": [
+    {
+     "macs": [
+      "da:a1:19:00:00:01"
+     ],
+     "name": "phone",
+     "profile": null,
+     "source_ips": [],
+     "tags": [
+      "kids"
+     ]
+    }
+   ],
+   "default_profile": "default",
+   "edge": {
+    "id": "e-cacc845b",
+    "name": "gw <img src=x onerror=alert(1)>",
+    "platform": "unifi"
+   },
+   "firewall": {
+    "ack_wait_ms": 20,
+    "exempt_sources": [],
+    "interfaces": [],
+    "static_allow": []
+   },
+   "flush": {
+    "dns": null,
+    "lookups": {}
+   },
+   "forward_zones": {},
+   "limits": {
+    "client_inflight": 64,
+    "client_qps": 100
+   },
+   "listeners": [
+    {
+     "api": true,
+     "bind": "192.168.1.1:443",
+     "id": "doh-lan",
+     "interfaces": [],
+     "ips": [
+      "192.168.1.1"
+     ],
+     "limits": {
+      "idle_timeout_ms": 10000,
+      "max_connections": 512,
+      "udp_payload": 1232
+     },
+     "proto": "doh",
+     "tls": {
+      "managed": "dns.home.arpa"
+     }
+    }
+   ],
+   "logging": {
+    "batch_max": 1000,
+    "retention_h": 72,
+    "spool_after_s": 5,
+    "spool_max_mib": 256,
+    "ssd_spool_max_mib": null
+   },
+   "lookup_providers": {},
+   "memory": {
+    "bundle_budget_mib": 384,
+    "overlay_budget_mib": 16
+   },
+   "profiles": {
+    "default": {
+     "allow": [
+      "allow-common"
+     ],
+     "allowed_sources": [
+      "0.0.0.0/0",
+      "::/0"
+     ],
+     "block": [
+      "block-common"
+     ],
+     "block_response": {
+      "ttl": 10,
+      "type": "null_ip"
+     },
+     "bypass": {
+      "ips": false,
+      "max_active": 50,
+      "max_duration": "1d",
+      "mode": "off",
+      "rate_per_hour": 20
+     },
+     "firewall": {
+      "add_entries": true,
+      "grace_s": 120,
+      "granularity": "per_client_ip",
+      "on_full": "reply_anyway"
+     },
+     "forward_zones": [],
+     "log": "full",
+     "lookup_budget_ms": 150,
+     "lookups": [],
+     "private_reverse": "nxdomain",
+     "response_checks": "skip_after_allow",
+     "ttl": {
+      "max": 300,
+      "min": 0
+     },
+     "upstream": "cloudflare"
+    },
+    "dnssec-validator": {
+     "allow": [],
+     "allowed_sources": [
+      "10.255.255.254/32",
+      "172.16.89.1/32",
+      "172.17.0.1/32",
+      "172.18.0.1/32",
+      "172.19.0.1/32",
+      "172.20.0.1/32",
+      "172.21.0.1/32",
+      "172.22.0.1/32",
+      "172.23.0.1/32",
+      "172.24.0.1/32",
+      "172.25.0.1/32",
+      "172.26.0.1/32",
+      "172.27.0.1/32",
+      "172.28.0.1/32",
+      "172.29.0.1/32",
+      "172.30.252.206/32",
+      "172.31.0.1/32",
+      "fe80::215:5dff:fee4:f5ff/128",
+      "fe80::904d:e8ff:fe7a:396c/128",
+      "fe80::a4a4:c4ff:fe8d:5ca5/128"
+     ],
+     "block": [],
+     "block_response": {
+      "ttl": 10,
+      "type": "null_ip"
+     },
+     "bypass": {
+      "ips": false,
+      "max_active": 50,
+      "max_duration": "1d",
+      "mode": "off",
+      "rate_per_hour": 20
+     },
+     "firewall": {
+      "add_entries": false,
+      "grace_s": 120,
+      "granularity": "per_client_ip",
+      "on_full": "reply_anyway"
+     },
+     "forward_zones": [],
+     "log": "off",
+     "lookup_budget_ms": 150,
+     "lookups": [],
+     "private_reverse": "nxdomain",
+     "response_checks": "skip_after_allow",
+     "ttl": {
+      "max": 300,
+      "min": 0
+     },
+     "upstream": "cloudflare"
+    }
+   },
+   "release": null,
+   "revoked_allows": null,
+   "secrets": {},
+   "unifi": {
+    "redirect": null
+   },
+   "upstream_groups": {
+    "cloudflare": {
+     "optimistic": true,
+     "strategy": "fastest",
+     "upstreams": [
+      "cf-dot-1",
+      "cf-dot-2",
+      "cf-dot-3",
+      "cf-dot-4",
+      "cf-doh"
+     ]
+    }
+   },
+   "upstreams": {
+    "cf-doh": {
+     "ip": "1.1.1.1",
+     "path": "/dns-query",
+     "port": 443,
+     "protocol": "doh",
+     "tls_host": "cloudflare-dns.com",
+     "trust_store": null
+    },
+    "cf-dot-1": {
+     "ip": "1.1.1.1",
+     "port": 853,
+     "protocol": "dot",
+     "tls_host": "one.one.one.one",
+     "trust_store": null
+    },
+    "cf-dot-2": {
+     "ip": "1.0.0.1",
+     "port": 853,
+     "protocol": "dot",
+     "tls_host": "one.one.one.one",
+     "trust_store": null
+    },
+    "cf-dot-3": {
+     "ip": "2606:4700:4700::1111",
+     "port": 853,
+     "protocol": "dot",
+     "tls_host": "one.one.one.one",
+     "trust_store": null
+    },
+    "cf-dot-4": {
+     "ip": "2606:4700:4700::1001",
+     "port": 853,
+     "protocol": "dot",
+     "tls_host": "one.one.one.one",
+     "trust_store": null
+    }
+   },
+   "verdict_sets": {}
+  },
+  "id": "4e57178fce5a9920a6cf6b444ac7f623271697a92fe26aa47fa812c177d65552",
+  "missing_heads": [],
+  "missing_secrets": []
+ },
+ "/edges/e-cacc845b/status": {
+  "conditions": [],
+  "config": "4e57178fce5a9920a6cf6b444ac7f623271697a92fe26aa47fa812c177d65552",
+  "config_published_at": "2026-11-23T10:40:35.242400Z",
+  "edge": "e-cacc845b",
+  "events": [],
+  "have": {
+   "bundles": {},
+   "config": [],
+   "fetched": null,
+   "in_progress": {
+    "bundles": {},
+    "config": null,
+    "verdict_sets": {}
+   },
+   "release": null,
+   "verdict_sets": {}
+  },
+  "heartbeat": null,
+  "hello": null,
+  "last_seen": null,
+  "listeners": [
+   {
+    "allowed": null,
+    "bind": "192.168.1.1:443",
+    "id": "doh-lan"
+   }
+  ],
+  "missing_heads": [],
+  "missing_secrets": [],
+  "missing_verdict_sets": [],
+  "name": "gw <img src=x onerror=alert(1)>",
+  "named": [
+   {
+    "active_at": null,
+    "id": "b7a8cbda6d2901cf9b15cd798c71d9e2a7d538ce65de2f1f573f07b4433c8f2e",
+    "kind": "bundle",
+    "lag_s": 28.165,
+    "named_at": "2026-11-23T10:40:16.650071Z",
+    "target": "allow-common"
+   },
+   {
+    "active_at": null,
+    "id": "853ad822f1864f393cd77a02c5bf7f608159ef87b44e5cf0128e2b278173e775",
+    "kind": "bundle",
+    "lag_s": 9.573,
+    "named_at": "2026-11-23T10:40:35.242400Z",
+    "target": "block-common"
+   },
+   {
+    "active_at": null,
+    "id": "4e57178fce5a9920a6cf6b444ac7f623271697a92fe26aa47fa812c177d65552",
+    "kind": "config",
+    "lag_s": 9.573,
+    "named_at": "2026-11-23T10:40:35.242400Z",
+    "target": ""
+   }
+  ],
+  "online": false,
+  "ready_version": null,
+  "release": null,
+  "requests": [],
+  "session": null,
+  "update": null,
+  "versions": null
+ },
+ "/edges/pending": {
+  "items": [],
+  "next_cursor": null
+ },
+ "/feed-presets": [
+  {
+   "bundle": "block-common",
+   "description": "Two feeds of one GitHub provider: threat domains (malware, phishing, scam), and ads, tracking, telemetry, phishing and malware (adblock syntax).",
+   "id": "hagezi",
+   "installed": true,
+   "provider": {
+    "config": {
+     "owner": "hagezi",
+     "repo": "dns-blocklists"
+    },
+    "files": [
+     {
+      "feed": {
+       "category": "security",
+       "format": "adblock",
+       "name": "HaGeZi Threat Intelligence Feeds"
+      },
+      "match": "adblock/tif.txt"
+     },
+     {
+      "feed": {
+       "category": "mixed",
+       "format": "adblock",
+       "name": "HaGeZi Multi ULTIMATE"
+      },
+      "match": "adblock/ultimate.txt"
+     }
+    ],
+    "id": "hagezi",
+    "module": "github",
+    "name": "HaGeZi DNS blocklists"
+   },
+   "title": "HaGeZi Threat Intelligence Feeds and Multi ULTIMATE"
+  },
+  {
+   "bundle": "block-common",
+   "description": "OISD's big list (ads, tracking, malware) in adblock syntax, from its GitHub repository.",
+   "id": "oisd-big",
+   "installed": false,
+   "provider": {
+    "config": {
+     "branch": "main",
+     "owner": "sjhgvr",
+     "repo": "oisd"
+    },
+    "files": [
+     {
+      "feed": {
+       "category": "mixed",
+       "format": "adblock",
+       "name": "OISD big"
+      },
+      "match": "abp_big.txt"
+     }
+    ],
+    "id": "oisd-big",
+    "module": "github",
+    "name": "OISD big"
+   },
+   "title": "OISD big"
+  },
+  {
+   "bundle": "block-common",
+   "description": "AdGuard's DNS filter (ads and tracking), from its gh-pages branch on GitHub.",
+   "id": "adguard-dns-filter",
+   "installed": false,
+   "provider": {
+    "config": {
+     "branch": "gh-pages",
+     "owner": "AdguardTeam",
+     "repo": "AdGuardSDNSFilter"
+    },
+    "files": [
+     {
+      "feed": {
+       "category": "privacy",
+       "format": "adblock",
+       "name": "AdGuard DNS filter"
+      },
+      "match": "Filters/filter.txt"
+     }
+    ],
+    "id": "adguard",
+    "module": "github",
+    "name": "AdGuard DNS filter"
+   },
+   "title": "AdGuard DNS filter"
+  },
+  {
+   "bundle": "block-common",
+   "description": "alphaMountain's rolling top 1,000 threat hostnames; entries stay until they expire.",
+   "id": "alphamountain-threat-1000",
+   "installed": false,
+   "provider": {
+    "config": {
+     "min_risk_score": 7.0
+    },
+    "files": [
+     {
+      "feed": {
+       "category": "security",
+       "format": "plain",
+       "modes": {
+        "browser": {
+         "mode": "drop"
+        },
+        "dns": {
+         "expire_after": "7d",
+         "mode": "aggregate"
+        },
+        "ip": {
+         "mode": "drop"
+        }
+       }
+      },
+      "match": "community-threat-1000"
+     }
+    ],
+    "id": "alphamountain",
+    "module": "alphamountain_threat_1000",
+    "name": "alphaMountain community threat 1000"
+   },
+   "title": "alphaMountain community threat 1000"
+  },
+  {
+   "bundle": "block-common",
+   "description": "FireHOL's level 1 IP list: attack sources, bogons and other networks never to answer with.",
+   "id": "firehol-level1",
+   "installed": false,
+   "provider": {
+    "config": {
+     "url": "https://iplists.firehol.org/files/firehol_level1.netset"
+    },
+    "files": [
+     {
+      "feed": {
+       "category": "security",
+       "format": "plain"
+      },
+      "match": "response"
+     }
+    ],
+    "id": "firehol",
+    "module": "http",
+    "name": "FireHOL level 1"
+   },
+   "title": "FireHOL level 1"
+  },
+  {
+   "bundle": "block-common",
+   "description": "Blocks public names that answer with private, loopback, link-local or CGNAT IPv4 addresses. Names in a profile's forward zones aren't filtered, so local names still resolve.",
+   "feed": {
+    "category": "security",
+    "format": "plain",
+    "id": "private-ipv4",
+    "name": "Private IPv4"
+   },
+   "file": "10.0.0.0/8\n172.16.0.0/12\n192.168.0.0/16\n127.0.0.0/8\n169.254.0.0/16\n100.64.0.0/10\n0.0.0.0/8\n",
+   "id": "private-ipv4",
+   "installed": false,
+   "title": "Private IPv4 (DNS rebinding)"
+  },
+  {
+   "bundle": "block-common",
+   "description": "Blocks public names that answer with loopback, unique-local or link-local IPv6 addresses. Names in a profile's forward zones aren't filtered, so local names still resolve.",
+   "feed": {
+    "category": "security",
+    "format": "plain",
+    "id": "private-ipv6",
+    "name": "Private IPv6"
+   },
+   "file": "::1/128\nfc00::/7\nfe80::/10\n",
+   "id": "private-ipv6",
+   "installed": false,
+   "title": "Private IPv6 (DNS rebinding)"
+  }
+ ],
+ "/feed-provider-status": {
+  "items": [
+   {
+    "checking": false,
+    "checks_24h": 0,
+    "enabled": false,
+    "failing_since": null,
+    "failures_24h": 0,
+    "feeds": [],
+    "k": null,
+    "last_check": null,
+    "last_ok": null,
+    "listing": null,
+    "listing_incomplete": false,
+    "module": "github",
+    "name": "HaGeZi",
+    "next_check": null,
+    "nudged_at": null,
+    "paused_until": null,
+    "provider": "hagezi",
+    "sqs": null,
+    "trigger": "dynamic"
+   }
+  ],
+  "next_cursor": null
+ },
+ "/feed-providers": {
+  "items": [
+   {
+    "config": {
+     "branch": "main",
+     "owner": "hagezi",
+     "repo": "dns-blocklists"
+    },
+    "enabled": false,
+    "exclude": [],
+    "files": [
+     {
+      "feed": {
+       "category": "security",
+       "format": "adblock"
+      },
+      "match": "adblock/tif.txt"
+     }
+    ],
+    "id": "hagezi",
+    "module": "github",
+    "name": "HaGeZi",
+    "system": false,
+    "trigger": {
+     "kind": "dynamic",
+     "min_interval": "2m"
+    }
+   }
+  ],
+  "next_cursor": null
+ },
+ "/feed-providers-review": [],
+ "/feed-providers/hagezi": {
+  "config": {
+   "branch": "main",
+   "owner": "hagezi",
+   "repo": "dns-blocklists"
+  },
+  "enabled": false,
+  "exclude": [],
+  "files": [
+   {
+    "feed": {
+     "category": "security",
+     "format": "adblock"
+    },
+    "match": "adblock/tif.txt"
+   }
+  ],
+  "id": "hagezi",
+  "module": "github",
+  "name": "HaGeZi",
+  "system": false,
+  "trigger": {
+   "kind": "dynamic",
+   "min_interval": "2m"
+  }
+ },
+ "/feed-providers/hagezi/backtest": [
+  {
+   "caught_2min": 0,
+   "changes": 0,
+   "checks": 0,
+   "checks_per_day": 0.0,
+   "k": 1.0,
+   "median_delay_s": null,
+   "p90_delay_s": null,
+   "share_2min": 1.0
+  },
+  {
+   "caught_2min": 0,
+   "changes": 0,
+   "checks": 0,
+   "checks_per_day": 0.0,
+   "k": 2.0,
+   "median_delay_s": null,
+   "p90_delay_s": null,
+   "share_2min": 1.0
+  },
+  {
+   "caught_2min": 0,
+   "changes": 0,
+   "checks": 0,
+   "checks_per_day": 0.0,
+   "k": 3.0,
+   "median_delay_s": null,
+   "p90_delay_s": null,
+   "share_2min": 1.0
+  },
+  {
+   "caught_2min": 0,
+   "changes": 0,
+   "checks": 0,
+   "checks_per_day": 0.0,
+   "k": 5.0,
+   "median_delay_s": null,
+   "p90_delay_s": null,
+   "share_2min": 1.0
+  }
+ ],
+ "/feed-providers/hagezi/checks": {
+  "items": [],
+  "next_cursor": null
+ },
+ "/feed-providers/hagezi/listing": {
+  "items": [],
+  "listing": null,
+  "next_cursor": null,
+  "prefixes": []
+ },
+ "/feed-providers/hagezi/status": {
+  "checking": false,
+  "checks_24h": 0,
+  "enabled": false,
+  "failing_since": null,
+  "failures_24h": 0,
+  "feeds": [],
+  "k": null,
+  "last_check": null,
+  "last_ok": null,
+  "listing": null,
+  "listing_incomplete": false,
+  "module": "github",
+  "name": "HaGeZi",
+  "next_check": null,
+  "nudged_at": null,
+  "paused_until": null,
+  "provider": "hagezi",
+  "sqs": null,
+  "trigger": "dynamic"
+ },
+ "/feed-status": {
+  "items": [
+   {
+    "busy": false,
+    "changes_7d": 0,
+    "checks_24h": 0,
+    "enabled": true,
+    "failing_since": null,
+    "failures": 0,
+    "failures_24h": 0,
+    "feed": "canaries",
+    "file": null,
+    "held_run": null,
+    "hits_24h": {
+     "also_matched": 0.0,
+     "decisive": 0.0
+    },
+    "k": null,
+    "last_change": "2026-11-23T09:52:42.750117Z",
+    "last_check": null,
+    "last_download": "2026-11-23T09:52:46.055738Z",
+    "last_ok": null,
+    "latest_run": {
+     "added": {
+      "browser": 0,
+      "dns": 3,
+      "ip": 0
+     },
+     "blob": "7b214782ec8616e3e09beea76bcc78417150055fded7d576f8550d079d111a6c",
+     "confirmed_at": "2026-11-23T09:52:46.055738Z",
+     "downloaded_at": "2026-11-23T09:52:46.055738Z",
+     "error": null,
+     "feed_id": "canaries",
+     "gate": null,
+     "id": 1,
+     "kind": "download",
+     "parse": {
+      "entries": {
+       "browser": 0,
+       "dns": 3,
+       "ip": 0
+      },
+      "error_samples": [],
+      "errors": 0,
+      "kept": 3,
+      "lines": 3,
+      "rule_lines": 3,
+      "warnings": {}
+     },
+     "policy_dropped": {},
+     "removed": {
+      "browser": 0,
+      "dns": 0,
+      "ip": 0
+     },
+     "source_run": null,
+     "status": "applied",
+     "total": {
+      "browser": 0,
+      "dns": 3,
+      "ip": 0
+     },
+     "updated_at": "2026-11-23T09:52:42.750117Z",
+     "version": "7b214782ec8616e3"
+    },
+    "manual": true,
+    "median_delay_s": null,
+    "name": "Canaries",
+    "next_ask": null,
+    "next_check": null,
+    "p90_delay_s": null,
+    "pattern": null,
+    "paused_until": null,
+    "provider": null,
+    "since_last_change_s": 2881,
+    "totals": {
+     "browser": 0,
+     "dns": 3,
+     "ip": 0
+    },
+    "version": null,
+    "saved_at": null,
+    "manual_retry_at": null
+   },
+   {
+    "busy": false,
+    "changes_7d": 0,
+    "checks_24h": 0,
+    "enabled": true,
+    "failing_since": null,
+    "failures": 0,
+    "failures_24h": 0,
+    "feed": "lookup-exclude",
+    "file": null,
+    "held_run": null,
+    "hits_24h": {
+     "also_matched": 0.0,
+     "decisive": 0.0
+    },
+    "k": null,
+    "last_change": "2026-11-23T09:52:42.737635Z",
+    "last_check": null,
+    "last_download": "2026-11-23T09:52:46.056756Z",
+    "last_ok": null,
+    "latest_run": {
+     "added": {
+      "browser": 0,
+      "dns": 4,
+      "ip": 0
+     },
+     "blob": "bfda6a841d7133720fa8164a020cb621821f27c8aae6417973cd369e5405dee5",
+     "confirmed_at": "2026-11-23T09:52:46.056756Z",
+     "downloaded_at": "2026-11-23T09:52:46.056756Z",
+     "error": null,
+     "feed_id": "lookup-exclude",
+     "gate": null,
+     "id": 3,
+     "kind": "download",
+     "parse": {
+      "entries": {
+       "browser": 0,
+       "dns": 4,
+       "ip": 0
+      },
+      "error_samples": [],
+      "errors": 0,
+      "kept": 4,
+      "lines": 4,
+      "rule_lines": 4,
+      "warnings": {}
+     },
+     "policy_dropped": {},
+     "removed": {
+      "browser": 0,
+      "dns": 0,
+      "ip": 0
+     },
+     "source_run": null,
+     "status": "applied",
+     "total": {
+      "browser": 0,
+      "dns": 4,
+      "ip": 0
+     },
+     "updated_at": "2026-11-23T09:52:42.737635Z",
+     "version": "bfda6a841d713372"
+    },
+    "manual": true,
+    "median_delay_s": null,
+    "name": "Lookup exclusions",
+    "next_ask": null,
+    "next_check": null,
+    "p90_delay_s": null,
+    "pattern": null,
+    "paused_until": null,
+    "provider": null,
+    "since_last_change_s": 2881,
+    "totals": {
+     "browser": 0,
+     "dns": 4,
+     "ip": 0
+    },
+    "version": null,
+    "saved_at": null,
+    "manual_retry_at": null
+   },
+   {
+    "busy": false,
+    "changes_7d": 0,
+    "checks_24h": 0,
+    "enabled": true,
+    "failing_since": null,
+    "failures": 0,
+    "failures_24h": 0,
+    "feed": "manual-allow",
+    "file": null,
+    "held_run": null,
+    "hits_24h": {
+     "also_matched": 0.0,
+     "decisive": 0.0
+    },
+    "k": null,
+    "last_change": "2026-11-23T09:52:42.726846Z",
+    "last_check": null,
+    "last_download": "2026-11-23T09:52:46.057448Z",
+    "last_ok": null,
+    "latest_run": {
+     "added": {
+      "browser": 0,
+      "dns": 0,
+      "ip": 0
+     },
+     "blob": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+     "confirmed_at": "2026-11-23T09:52:46.057448Z",
+     "downloaded_at": "2026-11-23T09:52:46.057448Z",
+     "error": null,
+     "feed_id": "manual-allow",
+     "gate": null,
+     "id": 4,
+     "kind": "download",
+     "parse": {
+      "entries": {
+       "browser": 0,
+       "dns": 0,
+       "ip": 0
+      },
+      "error_samples": [],
+      "errors": 0,
+      "kept": 0,
+      "lines": 0,
+      "rule_lines": 0,
+      "warnings": {}
+     },
+     "policy_dropped": {},
+     "removed": {
+      "browser": 0,
+      "dns": 0,
+      "ip": 0
+     },
+     "source_run": null,
+     "status": "applied",
+     "total": {
+      "browser": 0,
+      "dns": 0,
+      "ip": 0
+     },
+     "updated_at": "2026-11-23T09:52:42.726846Z",
+     "version": "af1349b9f5f9a1a6"
+    },
+    "manual": true,
+    "median_delay_s": null,
+    "name": "Manual allow",
+    "next_ask": null,
+    "next_check": null,
+    "p90_delay_s": null,
+    "pattern": null,
+    "paused_until": null,
+    "provider": null,
+    "since_last_change_s": 2881,
+    "totals": {
+     "browser": 0,
+     "dns": 0,
+     "ip": 0
+    },
+    "version": null,
+    "saved_at": null,
+    "manual_retry_at": null
+   },
+   {
+    "busy": false,
+    "changes_7d": 0,
+    "checks_24h": 0,
+    "enabled": true,
+    "failing_since": null,
+    "failures": 0,
+    "failures_24h": 0,
+    "feed": "manual-block",
+    "file": null,
+    "held_run": null,
+    "hits_24h": {
+     "also_matched": 0.0,
+     "decisive": 0.0
+    },
+    "k": null,
+    "last_change": "2026-11-23T10:40:24.176301Z",
+    "last_check": null,
+    "last_download": "2026-11-23T10:40:24.185417Z",
+    "last_ok": null,
+    "latest_run": {
+     "added": {
+      "browser": 0,
+      "dns": 2,
+      "ip": 0
+     },
+     "blob": "406dfda686b20c67d8dc664e175bc9486f0c16199b4dc826a8007a0def2a45a3",
+     "confirmed_at": "2026-11-23T10:40:24.185417Z",
+     "downloaded_at": "2026-11-23T10:40:24.185417Z",
+     "error": null,
+     "feed_id": "manual-block",
+     "gate": null,
+     "id": 7,
+     "kind": "download",
+     "parse": {
+      "entries": {
+       "browser": 0,
+       "dns": 2,
+       "ip": 0
+      },
+      "error_samples": [],
+      "errors": 0,
+      "kept": 2,
+      "lines": 2,
+      "rule_lines": 2,
+      "warnings": {}
+     },
+     "policy_dropped": {},
+     "removed": {
+      "browser": 0,
+      "dns": 0,
+      "ip": 0
+     },
+     "source_run": null,
+     "status": "applied",
+     "total": {
+      "browser": 0,
+      "dns": 2,
+      "ip": 0
+     },
+     "updated_at": "2026-11-23T10:40:24.176301Z",
+     "version": "406dfda686b20c67"
+    },
+    "manual": true,
+    "median_delay_s": null,
+    "name": "Manual block",
+    "next_ask": null,
+    "next_check": null,
+    "p90_delay_s": null,
+    "pattern": null,
+    "paused_until": null,
+    "provider": null,
+    "since_last_change_s": 20,
+    "totals": {
+     "browser": 0,
+     "dns": 2,
+     "ip": 0
+    },
+    "version": "406dfda686b20c67",
+    "saved_at": "2026-11-23T10:40:24.176301Z",
+    "manual_retry_at": null
+   },
+   {
+    "busy": false,
+    "changes_7d": 0,
+    "checks_24h": 0,
+    "enabled": true,
+    "failing_since": null,
+    "failures": 0,
+    "failures_24h": 0,
+    "feed": "manual-warn",
+    "file": null,
+    "held_run": null,
+    "hits_24h": {
+     "also_matched": 0.0,
+     "decisive": 0.0
+    },
+    "k": null,
+    "last_change": "2026-11-23T09:52:42.727070Z",
+    "last_check": null,
+    "last_download": "2026-11-23T09:52:46.057536Z",
+    "last_ok": null,
+    "latest_run": {
+     "added": {
+      "browser": 0,
+      "dns": 0,
+      "ip": 0
+     },
+     "blob": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+     "confirmed_at": "2026-11-23T09:52:46.057536Z",
+     "downloaded_at": "2026-11-23T09:52:46.057536Z",
+     "error": null,
+     "feed_id": "manual-warn",
+     "gate": null,
+     "id": 5,
+     "kind": "download",
+     "parse": {
+      "entries": {
+       "browser": 0,
+       "dns": 0,
+       "ip": 0
+      },
+      "error_samples": [],
+      "errors": 0,
+      "kept": 0,
+      "lines": 0,
+      "rule_lines": 0,
+      "warnings": {}
+     },
+     "policy_dropped": {},
+     "removed": {
+      "browser": 0,
+      "dns": 0,
+      "ip": 0
+     },
+     "source_run": null,
+     "status": "applied",
+     "total": {
+      "browser": 0,
+      "dns": 0,
+      "ip": 0
+     },
+     "updated_at": "2026-11-23T09:52:42.727070Z",
+     "version": "af1349b9f5f9a1a6"
+    },
+    "manual": true,
+    "median_delay_s": null,
+    "name": "Manual warn",
+    "next_ask": null,
+    "next_check": null,
+    "p90_delay_s": null,
+    "pattern": null,
+    "paused_until": null,
+    "provider": null,
+    "since_last_change_s": 2881,
+    "totals": {
+     "browser": 0,
+     "dns": 0,
+     "ip": 0
+    },
+    "version": null,
+    "saved_at": null,
+    "manual_retry_at": null
+   }
+  ],
+  "next_cursor": null
+ },
+ "/feeds": {
+  "items": [
+   {
+    "category": "mixed",
+    "enabled": true,
+    "file": null,
+    "format": "adblock",
+    "format_options": {},
+    "id": "canaries",
+    "modes": {
+     "browser": {
+      "mode": "drop"
+     },
+     "dns": {
+      "mode": "replace"
+     },
+     "ip": {
+      "mode": "replace"
+     }
+    },
+    "name": "Canaries",
+    "provider": null,
+    "rule_policy": {
+     "browser_changes": "keep",
+     "client_rules": "keep",
+     "redirects": "keep"
+    },
+    "sanity": {
+     "confirm_after": "1h",
+     "max_change_ratio": 0.2,
+     "max_entries": null,
+     "max_parse_error_ratio": 0.01,
+     "min_change_allowance": 100,
+     "min_entries": null
+    },
+    "system": true,
+    "warn_on": null
+   },
+   {
+    "category": "mixed",
+    "enabled": true,
+    "file": null,
+    "format": "adblock",
+    "format_options": {},
+    "id": "lookup-exclude",
+    "modes": {
+     "browser": {
+      "mode": "drop"
+     },
+     "dns": {
+      "mode": "replace"
+     },
+     "ip": {
+      "mode": "replace"
+     }
+    },
+    "name": "Lookup exclusions",
+    "provider": null,
+    "rule_policy": {
+     "browser_changes": "keep",
+     "client_rules": "keep",
+     "redirects": "keep"
+    },
+    "sanity": {
+     "confirm_after": "1h",
+     "max_change_ratio": 0.2,
+     "max_entries": null,
+     "max_parse_error_ratio": 0.01,
+     "min_change_allowance": 100,
+     "min_entries": null
+    },
+    "system": true,
+    "warn_on": null
+   },
+   {
+    "category": "mixed",
+    "enabled": true,
+    "file": null,
+    "format": "adblock",
+    "format_options": {},
+    "id": "manual-allow",
+    "modes": {
+     "browser": {
+      "mode": "drop"
+     },
+     "dns": {
+      "mode": "replace"
+     },
+     "ip": {
+      "mode": "replace"
+     }
+    },
+    "name": "Manual allow",
+    "provider": null,
+    "rule_policy": {
+     "browser_changes": "keep",
+     "client_rules": "keep",
+     "redirects": "keep"
+    },
+    "sanity": {
+     "confirm_after": "1h",
+     "max_change_ratio": 0.2,
+     "max_entries": null,
+     "max_parse_error_ratio": 0.01,
+     "min_change_allowance": 100,
+     "min_entries": null
+    },
+    "system": true,
+    "warn_on": null
+   },
+   {
+    "category": "mixed",
+    "enabled": true,
+    "file": null,
+    "format": "adblock",
+    "format_options": {},
+    "id": "manual-block",
+    "modes": {
+     "browser": {
+      "mode": "drop"
+     },
+     "dns": {
+      "mode": "replace"
+     },
+     "ip": {
+      "mode": "replace"
+     }
+    },
+    "name": "Manual block",
+    "provider": null,
+    "rule_policy": {
+     "browser_changes": "keep",
+     "client_rules": "keep",
+     "redirects": "keep"
+    },
+    "sanity": {
+     "confirm_after": "1h",
+     "max_change_ratio": 0.2,
+     "max_entries": null,
+     "max_parse_error_ratio": 0.01,
+     "min_change_allowance": 100,
+     "min_entries": null
+    },
+    "system": true,
+    "warn_on": null
+   },
+   {
+    "category": "mixed",
+    "enabled": true,
+    "file": null,
+    "format": "adblock",
+    "format_options": {},
+    "id": "manual-warn",
+    "modes": {
+     "browser": {
+      "mode": "drop"
+     },
+     "dns": {
+      "mode": "replace"
+     },
+     "ip": {
+      "mode": "replace"
+     }
+    },
+    "name": "Manual warn",
+    "provider": null,
+    "rule_policy": {
+     "browser_changes": "keep",
+     "client_rules": "keep",
+     "redirects": "keep"
+    },
+    "sanity": {
+     "confirm_after": "1h",
+     "max_change_ratio": 0.2,
+     "max_entries": null,
+     "max_parse_error_ratio": 0.01,
+     "min_change_allowance": 100,
+     "min_entries": null
+    },
+    "system": true,
+    "warn_on": null
+   }
+  ],
+  "next_cursor": null
+ },
+ "/feeds/manual-block": {
+  "category": "mixed",
+  "enabled": true,
+  "file": null,
+  "format": "adblock",
+  "format_options": {},
+  "id": "manual-block",
+  "modes": {
+   "browser": {
+    "mode": "drop"
+   },
+   "dns": {
+    "mode": "replace"
+   },
+   "ip": {
+    "mode": "replace"
+   }
+  },
+  "name": "Manual block",
+  "provider": null,
+  "rule_policy": {
+   "browser_changes": "keep",
+   "client_rules": "keep",
+   "redirects": "keep"
+  },
+  "sanity": {
+   "confirm_after": "1h",
+   "max_change_ratio": 0.2,
+   "max_entries": null,
+   "max_parse_error_ratio": 0.01,
+   "min_change_allowance": 100,
+   "min_entries": null
+  },
+  "system": true,
+  "warn_on": null
+ },
+ "/feeds/manual-block/checks": {
+  "items": [],
+  "next_cursor": null
+ },
+ "/feeds/manual-block/entries": {
+  "items": [
+   {
+    "dropped_at": null,
+    "first_run": 7,
+    "first_seen_at": "2026-11-23T10:40:24.185417Z",
+    "flags": 3,
+    "id": 8,
+    "key": "example.ads",
+    "kind": "name",
+    "last_seen_at": "2026-11-23T10:40:24.185417Z",
+    "line_no": 1,
+    "raw": "||ads.example^",
+    "rule_type": "dns"
+   },
+   {
+    "dropped_at": null,
+    "first_run": 7,
+    "first_seen_at": "2026-11-23T10:40:24.185417Z",
+    "flags": 3,
+    "id": 9,
+    "key": "example.tracker",
+    "kind": "name",
+    "last_seen_at": "2026-11-23T10:40:24.185417Z",
+    "line_no": 2,
+    "raw": "||tracker.example^",
+    "rule_type": "dns"
+   }
+  ],
+  "next_cursor": null
+ },
+ "/feeds/manual-block/export-size": {
+  "body_cap": 8589934592,
+  "entries": 2,
+  "file_bytes": 34,
+  "file_cap": 268435456,
+  "json_bytes": 332
+ },
+ "/feeds/manual-block/file": {
+  "content": "||ads.example^\n||tracker.example^\n",
+  "saved_at": "2026-11-23T10:40:24.176301Z",
+  "size": 34,
+  "version": "406dfda686b20c67"
+ },
+ "/feeds/manual-block/policy-drops": {
+  "items": [],
+  "next_cursor": null
+ },
+ "/feeds/manual-block/runs": {
+  "items": [
+   {
+    "added": {
+     "browser": 0,
+     "dns": 2,
+     "ip": 0
+    },
+    "blob": "406dfda686b20c67d8dc664e175bc9486f0c16199b4dc826a8007a0def2a45a3",
+    "confirmed_at": "2026-11-23T10:40:24.185417Z",
+    "downloaded_at": "2026-11-23T10:40:24.185417Z",
+    "error": null,
+    "feed_id": "manual-block",
+    "gate": null,
+    "id": 7,
+    "kind": "download",
+    "parse": {
+     "entries": {
+      "browser": 0,
+      "dns": 2,
+      "ip": 0
+     },
+     "error_samples": [],
+     "errors": 0,
+     "kept": 2,
+     "lines": 2,
+     "rule_lines": 2,
+     "warnings": {}
+    },
+    "policy_dropped": {},
+    "removed": {
+     "browser": 0,
+     "dns": 0,
+     "ip": 0
+    },
+    "source_run": null,
+    "status": "applied",
+    "total": {
+     "browser": 0,
+     "dns": 2,
+     "ip": 0
+    },
+    "updated_at": "2026-11-23T10:40:24.176301Z",
+    "version": "406dfda686b20c67"
+   },
+   {
+    "added": {
+     "browser": 0,
+     "dns": 0,
+     "ip": 0
+    },
+    "blob": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+    "confirmed_at": "2026-11-23T09:52:46.056287Z",
+    "downloaded_at": "2026-11-23T09:52:46.056287Z",
+    "error": null,
+    "feed_id": "manual-block",
+    "gate": null,
+    "id": 2,
+    "kind": "download",
+    "parse": {
+     "entries": {
+      "browser": 0,
+      "dns": 0,
+      "ip": 0
+     },
+     "error_samples": [],
+     "errors": 0,
+     "kept": 0,
+     "lines": 0,
+     "rule_lines": 0,
+     "warnings": {}
+    },
+    "policy_dropped": {},
+    "removed": {
+     "browser": 0,
+     "dns": 0,
+     "ip": 0
+    },
+    "source_run": null,
+    "status": "applied",
+    "total": {
+     "browser": 0,
+     "dns": 0,
+     "ip": 0
+    },
+    "updated_at": "2026-11-23T09:52:42.726987Z",
+    "version": "af1349b9f5f9a1a6"
+   }
+  ],
+  "next_cursor": null
+ },
+ "/feeds/manual-block/schedule": {
+  "changes_7d": 0,
+  "checks_24h": 0,
+  "k": null,
+  "k_chosen_at": null,
+  "kind": "manual",
+  "next_check": null,
+  "pattern": null,
+  "period_s": null
+ },
+ "/feeds/manual-block/status": {
+  "busy": false,
+  "changes_7d": 0,
+  "checks_24h": 0,
+  "enabled": true,
+  "failing_since": null,
+  "failures": 0,
+  "failures_24h": 0,
+  "feed": "manual-block",
+  "file": null,
+  "held_run": null,
+  "hits_24h": {
+   "also_matched": 0.0,
+   "decisive": 0.0
+  },
+  "k": null,
+  "last_change": "2026-11-23T10:40:24.176301Z",
+  "last_check": null,
+  "last_download": "2026-11-23T10:40:24.185417Z",
+  "last_ok": null,
+  "latest_run": {
+   "added": {
+    "browser": 0,
+    "dns": 2,
+    "ip": 0
+   },
+   "blob": "406dfda686b20c67d8dc664e175bc9486f0c16199b4dc826a8007a0def2a45a3",
+   "confirmed_at": "2026-11-23T10:40:24.185417Z",
+   "downloaded_at": "2026-11-23T10:40:24.185417Z",
+   "error": null,
+   "feed_id": "manual-block",
+   "gate": null,
+   "id": 7,
+   "kind": "download",
+   "parse": {
+    "entries": {
+     "browser": 0,
+     "dns": 2,
+     "ip": 0
+    },
+    "error_samples": [],
+    "errors": 0,
+    "kept": 2,
+    "lines": 2,
+    "rule_lines": 2,
+    "warnings": {}
+   },
+   "policy_dropped": {},
+   "removed": {
+    "browser": 0,
+    "dns": 0,
+    "ip": 0
+   },
+   "source_run": null,
+   "status": "applied",
+   "total": {
+    "browser": 0,
+    "dns": 2,
+    "ip": 0
+   },
+   "updated_at": "2026-11-23T10:40:24.176301Z",
+   "version": "406dfda686b20c67"
+  },
+  "manual": true,
+  "median_delay_s": null,
+  "name": "Manual block",
+  "next_ask": null,
+  "next_check": null,
+  "p90_delay_s": null,
+  "pattern": null,
+  "paused_until": null,
+  "provider": null,
+  "since_last_change_s": 20,
+  "totals": {
+   "browser": 0,
+   "dns": 2,
+   "ip": 0
+  },
+  "version": "406dfda686b20c67",
+  "saved_at": "2026-11-23T10:40:24.176301Z",
+  "manual_retry_at": null
+ },
+ "/forward-zones": {
+  "items": [],
+  "next_cursor": null
+ },
+ "/identity": {
+  "fingerprint": "SHA256:pkPxy81t28AJItfPCK+UKSmlBhqHAqb9NNFsN6vJTu4",
+  "instance_id": "ae2acedc72d5fa31ce5f5bae0aef5901",
+  "lanca_download": "/lanca/ca.crt",
+  "lanca_fingerprint": "SHA256:5b23f5292fe850ed0bc91cddd56f43034ab8e2e4d4921baff9530c3442953f9c",
+  "lanca_zones": [
+   "home.arpa"
+  ],
+  "plain_http": false,
+  "ui_embedded": true,
+  "version": "0.1.0"
+ },
+ "/jobs": {
+  "heavy_completed": 27,
+  "heavy_depth": 0,
+  "heavy_dropped": 0,
+  "heavy_failed": 0,
+  "heavy_running": null,
+  "light_depth": 0,
+  "light_dropped": 0
+ },
+ "/listeners": {
+  "items": [
+   {
+    "api": true,
+    "bind": "192.168.1.1:443",
+    "edges": [
+     "e-cacc845b"
+    ],
+    "id": "doh-lan",
+    "interfaces": [],
+    "ips": [],
+    "limits": {
+     "idle_timeout_ms": 10000,
+     "max_connections": 512,
+     "udp_payload": 1232
+    },
+    "name": "DoH LAN",
+    "proto": "doh",
+    "tls": {
+     "managed": "dns.home.arpa"
+    }
+   }
+  ],
+  "next_cursor": null
+ },
+ "/lookup-providers": {
+  "items": [],
+  "next_cursor": null
+ },
+ "/profiles": {
+  "items": [
+   {
+    "alert_categories": [
+     "security"
+    ],
+    "alert_providers": null,
+    "allow": [
+     "allow-common"
+    ],
+    "allowed_sources": [
+     "0.0.0.0/0",
+     "::/0"
+    ],
+    "block": [
+     "block-common"
+    ],
+    "block_response": {
+     "ttl": 10,
+     "type": "null_ip"
+    },
+    "browser_list": {
+     "enabled": false
+    },
+    "bypass": {
+     "ips": false,
+     "max_active": 50,
+     "max_duration": "1d",
+     "mode": "off",
+     "rate_per_hour": 20
+    },
+    "firewall": {
+     "add_entries": true,
+     "grace_s": 120,
+     "granularity": "per_client_ip",
+     "on_full": "reply_anyway"
+    },
+    "forward_zones": [],
+    "id": "default",
+    "log": "full",
+    "lookup_budget_ms": 150,
+    "lookups": [],
+    "name": "Default",
+    "private_reverse": "nxdomain",
+    "response_checks": "skip_after_allow",
+    "system": false,
+    "trial_bundles": [],
+    "ttl": {
+     "max": 300,
+     "min": 0
+    },
+    "upstream": "cloudflare"
+   },
+   {
+    "alert_categories": [],
+    "alert_providers": [],
+    "allow": [],
+    "allowed_sources": [],
+    "block": [],
+    "block_response": {
+     "ttl": 10,
+     "type": "null_ip"
+    },
+    "browser_list": {
+     "enabled": false
+    },
+    "bypass": {
+     "ips": false,
+     "max_active": 50,
+     "max_duration": "1d",
+     "mode": "off",
+     "rate_per_hour": 20
+    },
+    "firewall": {
+     "add_entries": false,
+     "grace_s": 120,
+     "granularity": "per_client_ip",
+     "on_full": "reply_anyway"
+    },
+    "forward_zones": [],
+    "id": "dnssec-validator",
+    "log": "off",
+    "lookup_budget_ms": 150,
+    "lookups": [],
+    "name": "DNSSEC validator",
+    "private_reverse": "nxdomain",
+    "response_checks": "skip_after_allow",
+    "system": true,
+    "trial_bundles": [],
+    "ttl": {
+     "max": 300,
+     "min": 0
+    },
+    "upstream": "cloudflare"
+   }
+  ],
+  "next_cursor": null
+ },
+ "/profiles/default": {
+  "alert_categories": [
+   "security"
+  ],
+  "alert_providers": null,
+  "allow": [
+   "allow-common"
+  ],
+  "allowed_sources": [
+   "0.0.0.0/0",
+   "::/0"
+  ],
+  "block": [
+   "block-common"
+  ],
+  "block_response": {
+   "ttl": 10,
+   "type": "null_ip"
+  },
+  "browser_list": {
+   "enabled": false
+  },
+  "bypass": {
+   "ips": false,
+   "max_active": 50,
+   "max_duration": "1d",
+   "mode": "off",
+   "rate_per_hour": 20
+  },
+  "firewall": {
+   "add_entries": true,
+   "grace_s": 120,
+   "granularity": "per_client_ip",
+   "on_full": "reply_anyway"
+  },
+  "forward_zones": [],
+  "id": "default",
+  "log": "full",
+  "lookup_budget_ms": 150,
+  "lookups": [],
+  "name": "Default",
+  "private_reverse": "nxdomain",
+  "response_checks": "skip_after_allow",
+  "system": false,
+  "trial_bundles": [],
+  "ttl": {
+   "max": 300,
+   "min": 0
+  },
+  "upstream": "cloudflare"
+ },
+ "/secrets": {
+  "items": [],
+  "next_cursor": null
+ },
+ "/settings": {
+  "lanca": {
+   "can_rotate": true,
+   "clock_synced": true,
+   "created_at": "2026-11-23T08:00:00.000000Z",
+   "download": "/lanca/ca.crt",
+   "fingerprint": "SHA256:5b23f5292fe850ed0bc91cddd56f43034ab8e2e4d4921baff9530c3442953f9c",
+   "previous": [],
+   "zones": ["home.arpa"]
+  },
+  "read_only": [],
+  "release_keys": [
+   "RWQAAAAAAAAAAA5pMKK7EBOb2uv67gn1XqmH3z7rjtF8/4sRaQSD+CLV"
+  ],
+  "settings": {
+   "alerts": {
+    "evidence_per_alert": 1000,
+    "evidence_total_mib": 128,
+    "feed_stale_days": 30,
+    "temporary_allow": false,
+    "thresholds": {}
+   },
+   "crosscheck": {
+    "block_page_ips": [],
+    "dedupe_window": "1d",
+    "enabled": false,
+    "max_per_minute": 60,
+    "negative": true,
+    "resolver": null,
+    "sinkhole": true
+   },
+   "default_profile": "default",
+   "dnssec": {
+    "dedupe_window": "1d",
+    "enabled": true,
+    "listener": null,
+    "max_per_minute": 120,
+    "source_ips": null
+   },
+   "edge_api": {
+    "port": 17443
+   },
+   "edges": {
+    "min_firmware": [
+     {
+      "min": "6.0.17",
+      "target": "UCGF"
+     }
+    ]
+   },
+   "feeds": {
+    "max_download_mib": 256,
+    "max_per_provider": 50
+   },
+   "lanca": {
+    "zones": [
+     "home.arpa"
+    ]
+   },
+   "lists": {
+    "allow_cidrs": [
+     "0.0.0.0/0",
+     "::/0"
+    ],
+    "profile_recheck_interval": "30m"
+   },
+   "lookups": {
+    "verdict_delta_s": 300
+   },
+   "metrics": {
+    "allow_cidrs": []
+   },
+   "resolver": "system",
+   "retention": {
+    "bundle_versions": "3d",
+    "config_changes": "3d",
+    "dnssec_results": "3d",
+    "edge_events": "3d",
+    "feed_checks": "60d",
+    "feed_entries": "3d",
+    "feed_runs": "3d",
+    "lookup_blocks": "3d",
+    "metrics": "3d",
+    "query_logs": "3d",
+    "raw_downloads": "3d",
+    "temp_allows": "3d",
+    "warnings": "3d"
+   },
+   "web": {
+    "allow_cidrs": [
+     "0.0.0.0/0",
+     "::/0"
+    ],
+    "cert_file": null,
+    "http_port": null,
+    "key_file": null,
+    "names": [],
+    "port": 18443,
+    "tls": "managed"
+   }
+  }
+ },
+ "/upstream-groups": {
+  "items": [
+   {
+    "id": "cloudflare",
+    "name": "Cloudflare",
+    "optimistic": true,
+    "strategy": "fastest",
+    "upstreams": [
+     "cf-dot-1",
+     "cf-dot-2",
+     "cf-dot-3",
+     "cf-dot-4",
+     "cf-doh"
+    ]
+   }
+  ],
+  "next_cursor": null
+ },
+ "/upstreams": {
+  "items": [
+   {
+    "id": "cf-doh",
+    "ip": "1.1.1.1",
+    "name": "Cloudflare DoH 1.1.1.1",
+    "operator": "cloudflare",
+    "path": "/dns-query",
+    "port": 443,
+    "protocol": "doh",
+    "tls_host": "cloudflare-dns.com",
+    "trust_store": null
+   },
+   {
+    "id": "cf-dot-1",
+    "ip": "1.1.1.1",
+    "name": "Cloudflare DoT 1.1.1.1",
+    "operator": "cloudflare",
+    "path": null,
+    "port": 853,
+    "protocol": "dot",
+    "tls_host": "one.one.one.one",
+    "trust_store": null
+   },
+   {
+    "id": "cf-dot-2",
+    "ip": "1.0.0.1",
+    "name": "Cloudflare DoT 1.0.0.1",
+    "operator": "cloudflare",
+    "path": null,
+    "port": 853,
+    "protocol": "dot",
+    "tls_host": "one.one.one.one",
+    "trust_store": null
+   },
+   {
+    "id": "cf-dot-3",
+    "ip": "2606:4700:4700::1111",
+    "name": "Cloudflare DoT 2606:4700:4700::1111",
+    "operator": "cloudflare",
+    "path": null,
+    "port": 853,
+    "protocol": "dot",
+    "tls_host": "one.one.one.one",
+    "trust_store": null
+   },
+   {
+    "id": "cf-dot-4",
+    "ip": "2606:4700:4700::1001",
+    "name": "Cloudflare DoT 2606:4700:4700::1001",
+    "operator": "cloudflare",
+    "path": null,
+    "port": 853,
+    "protocol": "dot",
+    "tls_host": "one.one.one.one",
+    "trust_store": null
+   }
+  ],
+  "next_cursor": null
+ },
+ "/warninglists": [
+  {
+   "bundle": "warn-common",
+   "checked_feeds": [],
+   "feeds": [
+    "manual-warn"
+   ],
+   "name": "Common warninglist",
+   "open_warnings": 0
+  }
+ ]
+}

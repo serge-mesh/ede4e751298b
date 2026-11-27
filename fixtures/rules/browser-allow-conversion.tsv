@@ -1,0 +1,14 @@
+// allow-bundle rule	written as (bundles.md §8 "Allow bundles"); DROPPED = dropped and counted
+||ads.example/banner$script,important	@@||ads.example/banner$script
+||ads.example^$third-party	@@||ads.example^$third-party
+news.example##.sponsored	news.example#@#.sponsored
+##.ad-banner	#@#.ad-banner
+news.example#?#div:has(> .label)	news.example#@?#div:has(> .label)
+news.example##+js(set-constant, ads.enabled, false)	news.example#@#+js(set-constant, ads.enabled, false)
+news.example##^script:has-text(adblock)	news.example#@#^script:has-text(adblock)
+||video.example^$redirect=noopmp4-1s	DROPPED
+||video.example^$redirect-rule=noopjs	DROPPED
+@@||cdn.example^$script	@@||cdn.example^$script
+news.example#@#.ad-banner	news.example#@#.ad-banner
+news.example#@?#div.x	news.example#@?#div.x
+||ads.example^$script,badfilter	||ads.example^$script,badfilter

@@ -1,0 +1,1 @@
+{"format":1,"bundle":"golden","part":"hot","shard":3,"keys":5,"checksum":"22093c99cb76113f3382bfb6bd79a57c","files":{"domains.bf8":{"blake3":"71c48ebcfd660dbb5b7ac5191f772b69a6a0d681a8fd468e68316dfb52faa090","size":60},"domains.fst":{"blake3":"ef855f9c2cdd765d01784299e375e2ee02aa6018f64c0683d85be165f68b389b","size":102}}}

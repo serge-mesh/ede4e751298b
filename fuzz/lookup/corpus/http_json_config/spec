@@ -1,0 +1,1 @@
+{"method": "GET", "url": "https://api.example.net/v1/domain/{domain}", "headers": {"Authorization": "Bearer x"}, "verdict": {"pointer": "/risk_score", "block_if": ">= 7.0", "clean_if": "< 4.0"}}ÿbad.example.org

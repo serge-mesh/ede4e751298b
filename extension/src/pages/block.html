@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Blocked by Picket</title>
+    <link rel="icon" href="/icons/icon-32.png" />
+    <script type="module" src="./block.entry.ts"></script>
+  </head>
+  <body class="page">
+    <main class="card">
+      <header class="brand">
+        <img src="/icons/icon-48.png" alt="" width="28" height="28" />
+        <span>Picket</span>
+      </header>
+      <h1 id="title">Blocked</h1>
+      <p id="lead" class="lead"></p>
+      <dl id="details" class="details"></dl>
+      <p id="note" class="note" hidden></p>
+
+      <section id="choose" hidden>
+        <h2>Allow it on this device for</h2>
+        <div id="durations" class="buttons"></div>
+        <label id="subdomains-row" class="check" hidden>
+          <input type="checkbox" id="subdomains" />
+          <span id="subdomains-label">Also allow its subdomains</span>
+        </label>
+      </section>
+
+      <div id="status" class="status" role="status" aria-live="polite" hidden></div>
+
+      <div class="buttons">
+        <button type="button" id="retry" hidden>Retry</button>
+        <button type="button" id="core" class="secondary" hidden>Allow permanently…</button>
+        <button type="button" id="back" class="secondary">Go back</button>
+      </div>
+
+      <p class="fineprint">
+        A temporary allow lifts only Picket's DNS or firewall block. Browser filter rules for the
+        name, from Picket's full list or the browser's own lists, still apply.
+      </p>
+    </main>
+  </body>
+</html>

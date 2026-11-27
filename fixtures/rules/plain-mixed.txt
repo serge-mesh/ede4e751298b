@@ -1,0 +1,17 @@
+# plain feed mixing names, IPs, CIDRs and comments (feeds.md §4)
+; semicolon comment
+! picket-first-seen: 2024-01-01
+plain-name.example
+*.plain-wild.example
+203.0.113.7
+198.51.100.0/24
+2001:db8:dead::/48
+plain-other.example # trailing comment
+not a valid line
+.plain-dot.example
+Plain-Upper.Example.NET.
+bücher.example
+2001:db8::1
+10.0.0.0/8 # private
+plain-semi.example ; trailing comment
+https://example.org/path

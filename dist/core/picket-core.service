@@ -1,0 +1,50 @@
+# picket-core (core.md §13, security.md §4). The core VM image adds a drop-in that sets
+# --data-dir /var/lib/picket/core, ReadWritePaths=/var/lib/picket/core and
+# RequiresMountsFor=/var/lib/picket (pipelines.md §5).
+[Unit]
+Description=Picket core: web UI and API, feeds, bundles, logs, alerts, edge releases
+After=network-online.target picket-core-init.service
+Wants=network-online.target picket-core-init.service
+
+[Service]
+Type=simple
+User=picket-core
+Group=picket-core
+ExecStart=/usr/bin/picket-core run --data-dir /var/lib/picket-core
+Environment=MALLOC_ARENA_MAX=2
+Environment=SQLITE_TMPDIR=/var/lib/picket-core/tmp
+# 78 (EX_CONFIG): no instance marker, a failed migration or a database newer than this release.
+# Restarting can't fix any of them, so systemd leaves core stopped.
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=78
+TimeoutStopSec=30
+UMask=0027
+LimitNOFILE=65536
+# Above the 512 MB peak (core.md §1).
+MemoryMax=1G
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ReadWritePaths=/var/lib/picket-core
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

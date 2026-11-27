@@ -1,0 +1,1 @@
+{"transport": "udp", "servers": [{"ip": "192.168.1.1", "port": 5353}], "qtype": "AAAA", "rules": [{"id": "s", "when": {"answers_in": ["0.0.0.0/8", "::"], "cname_suffix": ["block.example"], "ede_text": "blocked"}, "verdict": "block", "score": 5}]}

@@ -1,0 +1,1 @@
+news.example#?#div:has(> .label:has-text(Sponsored))

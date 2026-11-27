@@ -1,0 +1,63 @@
+[package]
+name = "picket-wire-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# cargo-fuzz targets for picket-wire (build-and-test.md §4 "Fuzzing"): the query check, the
+# upstream answer pipeline with `domain` as the differential oracle, lookup answer facts, names
+# from log text (core reads edge-supplied names with QName::from_text) and SVCB/HTTPS RDATA.
+# Run with `cargo +nightly fuzz run <target>` from this directory; seeds are in corpus/.
+[package.metadata]
+cargo-fuzz = true
+
+# Its own workspace: fuzz/ is outside the main workspace.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+picket-wire = { path = "../../crates/picket-wire" }
+picket-api = { path = "../../crates/picket-api" }
+hickory-proto = { version = "0.26", features = ["dnssec-aws-lc-rs"] }
+domain = { version = "0.13", default-features = false, features = ["std"] }
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "query_check"
+path = "fuzz_targets/query_check.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "upstream_answer"
+path = "fuzz_targets/upstream_answer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lookup_facts"
+path = "fuzz_targets/lookup_facts.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "qname_text"
+path = "fuzz_targets/qname_text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "svcb_rdata"
+path = "fuzz_targets/svcb_rdata.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1

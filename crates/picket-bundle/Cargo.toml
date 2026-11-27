@@ -1,0 +1,35 @@
+[package]
+name = "picket-bundle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# rule semantics the compiled form must reproduce (rules.md §3–§6) and the compiler helpers
+picket-rules.workspace = true
+# shared interface types: names' AdGuard text form, `versions` blocks, match kinds (api.md §5)
+picket-api.workspace = true
+# query names as wire labels (edge.md §4, bundles.md §6)
+picket-wire.workspace = true
+fst.workspace = true
+# bundles.md §4 binary fuse filters; deterministic (no random fill of unused slots)
+xorf.workspace = true
+regex-automata.workspace = true
+aho-corasick.workspace = true
+xxhash-rust.workspace = true
+blake3.workspace = true
+flate2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+smallvec.workspace = true
+
+[dev-dependencies]
+# build-and-test.md §4: filter evaluation makes zero heap allocations (counting global allocator)
+stats_alloc.workspace = true
+# the golden timestamp tables of the chrono → jiff compatibility tests (README §2)
+picket-api = { workspace = true, features = ["testkit"] }

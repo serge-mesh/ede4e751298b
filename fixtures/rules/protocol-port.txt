@@ -1,0 +1,18 @@
+! One line per protocol/port extension form (rules.md §2).
+https://scheme-bare.example
+|https://scheme-anchored.example^
+https://scheme-star.example/*
+wss://scheme-ws.example^
+https://scheme-slash.example/
+||port.example:8443^
+||port-bare.example:8443
+http://http-port.example:8080^
+|ftp://scheme-ftp.example^
+|https://scheme-tlsport.example:8443^
+ws://scheme-plainws.example^
+|https://[2001:db8::7]^
+! Not extension forms:
+http://http-only.example^
+https://scheme-path.example/ads
+@@https://exception-scheme.example^
+@@||exception-port.example:443^

@@ -1,0 +1,15 @@
+/target/
+/target-*
+/dev/
+/dist/release.pub
+/dist/image.pub
+**/node_modules/
+/ui/dist/
+/extension/dist/
+*.swp
+.DS_Store
+/fuzz/*/target/
+/fuzz/corpus/
+/fuzz/*/artifacts/
+# libFuzzer-generated corpus units (named by their SHA-1); hand-named seeds stay tracked
+/fuzz/*/corpus/*/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]

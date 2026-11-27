@@ -1,0 +1,18 @@
+-P PREROUTING ACCEPT
+-P INPUT ACCEPT
+-P OUTPUT ACCEPT
+-P POSTROUTING ACCEPT
+-N UBIOS_PREROUTING_JUMP
+-N UBIOS_PREROUTING_USER_HOOK
+-N UBIOS_DNAT_USER
+-N UBIOS_POSTROUTING_JUMP
+-A PREROUTING -j UBIOS_PREROUTING_JUMP
+-A POSTROUTING -j UBIOS_POSTROUTING_JUMP
+-A UBIOS_PREROUTING_JUMP -j UBIOS_PREROUTING_USER_HOOK
+-A UBIOS_PREROUTING_JUMP -j UBIOS_DNAT_USER
+-A UBIOS_POSTROUTING_JUMP -o eth4 -m comment --comment "UBIOS masquerade" -j MASQUERADE
+-A UBIOS_DNAT_USER -i br0 -p udp -m udp --dport 53 -m comment --comment "other resolver" -j DNAT --to-destination 192.0.2.53
+-A UBIOS_DNAT_USER -i br0 -p udp -m udp --dport 53 -m comment --comment "NAT_POLICY DNS to Picket" -j DNAT --to-destination 192.0.2.1:5335
+-A UBIOS_DNAT_USER -i br0 -p tcp -m tcp --dport 53 -m comment --comment "NAT_POLICY DNS to Picket" -j DNAT --to-destination 192.0.2.1:5335
+-A UBIOS_DNAT_USER -i br10 -p udp -m udp --dport 53 -m comment --comment "NAT_POLICY DNS to Picket" -j DNAT --to-destination 198.51.100.1:5335
+-A UBIOS_DNAT_USER -i br10 -p tcp -m tcp --dport 53 -m comment --comment "NAT_POLICY DNS to Picket" -j DNAT --to-destination 198.51.100.1:5335

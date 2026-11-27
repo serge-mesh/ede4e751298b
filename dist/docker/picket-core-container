@@ -1,0 +1,33 @@
+#!/bin/sh
+# Entry point of the picket-core container (pipelines.md §10): runs picket-core with the
+# container's arguments (default: run --data-dir /var/lib/picket-core), forwards SIGTERM and
+# SIGINT to it, and exits 0 when core exits 78 (EX_CONFIG), so Docker's on-failure restart
+# policy leaves it stopped as RestartPreventExitStatus=78 does for the unit. Any other exit code
+# is passed on.
+set -u
+
+if [ "$#" -eq 0 ]; then
+    set -- run --data-dir /var/lib/picket-core
+fi
+
+/usr/bin/picket-core "$@" &
+child=$!
+
+trap 'kill -TERM "$child" 2>/dev/null' TERM
+trap 'kill -INT "$child" 2>/dev/null' INT
+
+# `wait` returns early (status > 128) when a trapped signal arrives; keep waiting until the
+# child itself has exited and been reaped.
+while :; do
+    wait "$child"
+    status=$?
+    kill -0 "$child" 2>/dev/null || break
+done
+
+if [ "$status" -eq 78 ]; then
+    echo "picket-core-container: picket-core exited with 78 (EX_CONFIG: no instance marker in the data" \
+         "directory, a failed migration, or a database newer than this release; see its message above)." \
+         "Exiting 0 so the on-failure restart policy leaves the container stopped." >&2
+    exit 0
+fi
+exit "$status"
