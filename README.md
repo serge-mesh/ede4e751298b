@@ -47,10 +47,6 @@ Supply them at build time when building release binaries:
 When unset, binaries compile with no default release keys and fail closed unless keys are provided
 at runtime (`release_keys` in `edge.json` on edges).
 
-## Local development
-
-See `docs/development.md` and the spec's pipelines.md §9.
-
 ## CI
 
 `.github/workflows/ci.yml` runs fmt, clippy and tests, and builds the UI and the extension, on
