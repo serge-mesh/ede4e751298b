@@ -566,8 +566,8 @@ pub(crate) mod tests {
         assert_eq!(current.addresses, ["192.168.1.141", "192.168.1.142"]);
         assert_eq!(current.extra, latest.extra);
         assert_eq!(
-            AllowsStore::load(&p, logs).list()[0].expires_at,
-            latest.expires_at
+            AllowsStore::load(&p, logs).list()[0].expires_at.as_microsecond(),
+            latest.expires_at.as_microsecond()
         );
         s.end(&["a-1".into()], AllowAction::Revoked, "core").unwrap();
         s.remove_address_held(&selected, "192.168.1.141");
