@@ -47,6 +47,12 @@ Supply them at build time when building release binaries:
 When unset, binaries compile with no default release keys and fail closed unless keys are provided
 at runtime (`release_keys` in `edge.json` on edges).
 
+## Existing installs
+
+There are no existing installs yet, so renaming a config or schema field (in `edge.json`, other
+stored config or state, or the `picket-api` types) doesn't need a migration or compatibility
+handling for previously stored data. Revisit this once there are real deployments.
+
 ## CI
 
 `.github/workflows/ci.yml` runs fmt, clippy and tests, and builds the UI and the extension, on
