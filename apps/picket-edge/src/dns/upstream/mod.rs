@@ -15,8 +15,10 @@
 //! - **Health** is passive (README §2 "Health": only timeouts, transport errors and malformed
 //!   answers count) plus a breaker per upstream. An answer refused for its size alone
 //!   ([`Invalid::is_size_limit`]: too many records in a section, an RRset over
-//!   `limits.max_rrset_records`) fails the attempt but shows the upstream answering, so it counts
-//!   as a success for the breaker: one large domain can't take a single-upstream group down. A
+//!   `limits.max_rrset_records`) fails the attempt without judging the upstream: the breaker is
+//!   left as it was (no failure, so one large domain can't take a single-upstream group down; no
+//!   success, so a refused reply never erases earlier failures or closes a half-open breaker), and
+//!   a probe slot the attempt held goes back. A
 //!   group whose upstreams are all unhealthy for 30 s holds `upstream_down` (key: the group). An
 //!   upstream is healthy while its breaker is closed:
 //!   a half-open one takes a query as its probe but counts as unhealthy until that probe
@@ -354,6 +356,9 @@ pub struct Failure {
 enum Attempt {
     Ok(Box<Resolved>),
     Fail(Arc<Upstream>, Cause),
+    /// Failed the query without judging the upstream: its breaker is untouched, and a probe slot
+    /// the attempt held is given back.
+    Unjudged(Arc<Upstream>, Cause),
 }
 
 /// Group → its upstreams' settings (sorted by id) and its generation.
@@ -586,8 +591,9 @@ impl UpstreamPool {
             active: probe,
         };
         let r = self.attempt_inner(u, req, hedge).await;
-        // The attempt judged the upstream (success or failure reset the breaker's probe).
-        guard.active = false;
+        // An attempt that judged the upstream reset the breaker's probe (success or failure); an
+        // unjudged one leaves the guard to give the slot back.
+        guard.active = guard.active && matches!(r, Attempt::Unjudged(..));
         r
     }
 
@@ -620,7 +626,7 @@ impl UpstreamPool {
             &params,
         ) {
             Ok(n) => n,
-            Err(_) => return Attempt::Fail(u, Cause::Invalid),
+            Err(_) => return Attempt::Unjudged(u, Cause::Invalid),
         };
         let start = Instant::now();
         let raw = u
@@ -688,11 +694,10 @@ impl UpstreamPool {
             Err(inv) => {
                 u.counters.invalid.get(inv.reason()).fetch_add(1, Relaxed);
                 if inv.is_size_limit() {
-                    // Well-formed DNS over a size limit: the upstream works (issue #16).
-                    u.breaker.success();
-                } else {
-                    u.breaker.failure(Instant::now());
+                    // Refused by a size limit, not shown broken: no health signal (issue #16).
+                    return Attempt::Unjudged(u, Cause::Invalid);
                 }
+                u.breaker.failure(Instant::now());
                 Attempt::Fail(u, Cause::Invalid)
             }
         }
@@ -724,7 +729,7 @@ impl UpstreamPool {
                         // The other attempts are dropped (cancelled) here; their guards give
                         // back any probe slot they held.
                         Some(Attempt::Ok(res)) => return Ok(*res),
-                        Some(Attempt::Fail(_u, cause)) => {
+                        Some(Attempt::Fail(_u, cause) | Attempt::Unjudged(_u, cause)) => {
                             last = Some(cause);
                             if inflight.is_empty() {
                                 match self.pick(&g, &tried, req.exclude.as_ref()) {
@@ -921,7 +926,8 @@ mod tests {
     }
 
     /// Issue #16: an answer refused for its size alone fails the query (SERVFAIL, `cause=invalid`)
-    /// and is counted by reason, but never opens the breaker: the upstream answered.
+    /// and is counted by reason, but leaves the breaker as it was: it never opens it, never
+    /// erases earlier failures and never closes a half-open one; a probe slot goes back.
     #[tokio::test]
     async fn size_refusals_fail_the_query_but_not_the_upstream() {
         assert_eq!(
@@ -958,6 +964,34 @@ mod tests {
             let ok = pool.resolve(&request()).await.ok().unwrap();
             assert_eq!(ok.answer.facts.addrs.len(), 3, "limit {limit}");
         }
+
+        // Earlier failures stand: two, a size refusal, one more opens the breaker.
+        let (pool, u) = pool_for(port, 2);
+        for _ in 0..BREAKER_FAILURES - 1 {
+            u.breaker.failure(Instant::now());
+        }
+        assert_eq!(
+            pool.resolve(&request()).await.err().unwrap().cause,
+            Cause::Invalid
+        );
+        assert!(u.healthy());
+        u.breaker.failure(Instant::now());
+        assert!(!u.healthy(), "the refusal didn't reset the count");
+
+        // A half-open breaker whose probe is refused stays half-open, its slot free again.
+        let (pool, u) = pool_for(port, 2);
+        let past = Instant::now()
+            .checked_sub(BREAKER_OPEN_MAX + Duration::from_secs(1))
+            .unwrap();
+        for _ in 0..BREAKER_FAILURES {
+            u.breaker.failure(past);
+        }
+        assert_eq!(
+            pool.resolve(&request()).await.err().unwrap().cause,
+            Cause::Invalid
+        );
+        assert!(!u.healthy(), "a refused probe doesn't close the breaker");
+        assert!(u.breaker.selectable(Instant::now()), "the probe slot went back");
     }
 
     /// edge.md §6 Health: an open breaker whose time is up takes one probe but stays unhealthy
