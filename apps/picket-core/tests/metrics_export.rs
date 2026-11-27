@@ -791,10 +791,23 @@ async fn every_series_is_exported_with_its_type_and_labels() {
         picket_api::histogram::BUCKETS,
         "every bound and +Inf"
     );
-    // The lanes' depths are read now, once per lane, never also as their last sample.
-    assert_eq!(
-        scrape.value("picket_queue_depth", &[("queue", "light")]),
-        Some(0.0)
+    // The lanes' depths are read now, once per lane, never also as their last sample. The light
+    // lane counts running jobs too, and q9's first self-test (against lookup.invalid) can still
+    // be running at a scrape, so wait for one that sees the lane idle.
+    let light = |s: &prom::Scrape| {
+        s.family("picket_queue_depth")
+            .metric
+            .iter()
+            .filter(|m| prom::labels(m).get("queue").map(String::as_str) == Some("light"))
+            .count()
+    };
+    assert_eq!(light(&scrape), 1, "one light-lane depth per scrape");
+    assert!(
+        eventually(|| async {
+            prom::parse(&fetch().await).value("picket_queue_depth", &[("queue", "light")]) == Some(0.0)
+        })
+        .await,
+        "the light lane never went idle"
     );
     assert_eq!(scrape.value("picket_up", &[]), Some(1.0));
     // Core's histograms are totals since core started: a second sample adds to the first.
