@@ -24,7 +24,7 @@ root="${CI_TOOLS_ROOT:-$HOME/.local}/$tool-$version"
 if [ ! -x "$root/bin/$tool" ]; then
     tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' EXIT HUP INT TERM
-    curl -fsSL --connect-timeout 20 --max-time 180 --retry 2 "$url" -o "$tmp/archive"
+    curl --proto '=https' --proto-redir '=https' -fsSL --connect-timeout 20 --max-time 180 --retry 2 "$url" -o "$tmp/archive"
     echo "$checksum  $tmp/archive" | sha256sum --check --strict
     tar -xf "$tmp/archive" -C "$tmp"
     binary=$(find "$tmp" -type f -name "$tool" -print -quit)

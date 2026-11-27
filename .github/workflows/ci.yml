@@ -216,7 +216,7 @@ jobs:
               "https://pkg.hexops.org/zig/$tarball" \
               "https://zig.linus.dev/zig/$tarball" \
               "https://ziglang.org/download/$ZIG_VERSION/$tarball"; do
-              if curl -sSfL --connect-timeout 20 --retry 2 -o "$tmp/$tarball" "$url" \
+              if curl --proto '=https' --proto-redir '=https' -sSfL --connect-timeout 20 --retry 2 -o "$tmp/$tarball" "$url" \
                 && echo "$ZIG_SHA256  $tmp/$tarball" | sha256sum -c --quiet -; then
                 break
               fi
@@ -340,7 +340,7 @@ jobs:
         run: |
           # The tests make their certificates with the openssl CLI.
           command -v openssl >/dev/null || { apt-get update && apt-get install -y --no-install-recommends openssl; }
-          npm ci --no-audit --no-fund
+          npm ci --ignore-scripts --no-audit --no-fund
           # The image must hold the browsers this @playwright/test expects (its tag follows the
           # version; test/ci.test.ts checks the two match).
           node -e "const { chromium, firefox } = require('@playwright/test'); const fs = require('node:fs'); for (const b of [chromium, firefox]) { if (!fs.existsSync(b.executablePath())) { console.error('the image has no ' + b.executablePath() + ': its tag does not match @playwright/test'); process.exit(1); } }"
@@ -398,7 +398,7 @@ jobs:
       - name: UI lint, typecheck and build
         working-directory: ui
         run: |
-          npm ci --prefer-offline --no-audit --no-fund
+          npm ci --ignore-scripts --prefer-offline --no-audit --no-fund
           npm run lint
           npm run build
 
@@ -429,7 +429,7 @@ jobs:
       - name: UI test shard
         working-directory: ui
         run: |
-          npm ci --prefer-offline --no-audit --no-fund
+          npm ci --ignore-scripts --prefer-offline --no-audit --no-fund
           npm test -- --shard="$SHARD/2"
         env:
           SHARD: ${{ matrix.shard }}
@@ -454,7 +454,7 @@ jobs:
       - name: Extension build, lint, test and reproducible packages
         working-directory: extension
         run: |
-          npm ci --prefer-offline --no-audit --no-fund
+          npm ci --ignore-scripts --prefer-offline --no-audit --no-fund
           npm run build
           npm run lint
           npm test

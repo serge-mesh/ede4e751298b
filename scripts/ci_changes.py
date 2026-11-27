@@ -26,7 +26,8 @@ def classify(paths):
         if path.startswith((".github/workflows/", ".github/actions/")) and suffix in {".yml", ".yaml"}:
             selected["codeql_actions"] = True
         rust = suffix == ".rs" or name in {"Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml"}
-        if rust or path.startswith(".cargo/"):
+        # Crate data, templates and local fixtures can be embedded by Rust builds.
+        if rust or path.startswith((".cargo/", "apps/", "crates/", "build-support/", "fuzz/")):
             selected.update(rust=True, edge=True, deny=True, codeql_rust=True)
         if path.startswith(("fixtures/", "dist/")) or name in {"clippy.toml", "rustfmt.toml"} or path in {
             "scripts/ci-rust-tests.py", "scripts/ci-core-test-seconds.json", "scripts/check-updater-deps.sh"

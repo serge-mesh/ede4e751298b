@@ -21,6 +21,13 @@ class ChangeSelection(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual({k for k, v in classify([path]).items() if v}, {"rust", "edge", "deny", "codeql_rust"})
 
+    def test_embedded_data_and_crate_fixtures_select_rust(self):
+        for path in ("apps/picket-core/data/feed-presets.json", "apps/picket-core/data/public_suffix_list.dat",
+                     "crates/picket-wire/tests/fixtures/response.bin", "build-support/templates/config.json"):
+            with self.subTest(path=path):
+                self.assertTrue(classify([path])["rust"])
+                self.assertTrue(classify([path])["codeql_rust"])
+
     def test_scan_configuration_and_selector_fail_closed(self):
         self.assertTrue(all(classify(["scripts/ci_changes.py"]).values()))
         selection = classify([".github/workflows/codeql.yml"])
