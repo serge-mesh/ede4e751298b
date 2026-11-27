@@ -620,10 +620,10 @@ impl FwClient {
                 Some(_) => self.inflight().remove(&op.key),
                 None => None,
             };
-            if let Some(r) = op.record {
-                if flight.as_ref().map_or(r.reserved, |f| f.reserved) {
-                    sh.release(flight.as_ref().map_or(r.owner, |f| f.owner), op.key.set);
-                }
+            if let Some(r) = op.record
+                && flight.as_ref().map_or(r.reserved, |f| f.reserved)
+            {
+                sh.release(flight.as_ref().map_or(r.owner, |f| f.owner), op.key.set);
             }
             let mut confirmed = *res == OpResult::Ok;
             if confirmed && let Some(r) = op.record {
