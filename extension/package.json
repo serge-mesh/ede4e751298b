@@ -6,11 +6,11 @@
   "license": "UNLICENSED",
   "type": "module",
   "engines": {
-    "node": ">=20.19.0"
+    "node": ">=26.13.1"
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
+    "typecheck": "node node_modules/typescript-native/bin/tsc -p tsconfig.json --noEmit && node node_modules/typescript-native/bin/tsc -p test/tsconfig.json --noEmit && node node_modules/typescript-native/bin/tsc -p tsconfig.node.json --noEmit",
     "lint": "npm run typecheck && eslint --max-warnings 0 . && npm run lint:firefox",
     "lint:firefox": "node scripts/lint-firefox.mjs",
     "test": "vitest run",
@@ -25,15 +25,16 @@
   "devDependencies": {
     "@eslint/js": "10.0.1",
     "@playwright/test": "1.65.1",
-    "@types/node": "24.19.2",
+    "@types/node": "26.6.6",
     "@types/webextension-polyfill": "0.12.6",
     "eslint": "10.15.0",
     "globals": "17.14.0",
-    "jsdom": "29.1.1",
+    "jsdom": "31.0.1",
     "typescript": "6.0.3",
     "typescript-eslint": "8.74.0",
+    "typescript-native": "npm:typescript@7.0.2",
     "vite": "8.3.8",
-    "vitest": "4.1.12",
+    "vitest": "5.1.1",
     "web-ext": "10.8.0"
   }
 }
