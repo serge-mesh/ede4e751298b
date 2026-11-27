@@ -15,6 +15,7 @@ The type-check script uses the TypeScript 7 compiler installed as `typescript-na
 | `npm run build` | builds `dist/brave` (Chromium MV3) and `dist/firefox` (Firefox MV3 ≥ 128 ESR) |
 | `npm run lint` | type-checks, runs ESLint and `web-ext lint` on `dist/firefox` (build first) |
 | `npm test` | runs the Vitest suites (jsdom, a fake WebExtension API) |
+| `npm run test:fuzz` | runs the DoH codec's seeded random tests (`test/dns-fuzz.test.ts`: generated and broken replies, EXTRA-TEXT as the edge writes it) with 100,000 cases each from a random seed (about 2 minutes; not in CI, where `npm test` runs 2,000 from seed 1). A failure prints its seed: `PICKET_FUZZ_SEED=<seed>` repeats it, `PICKET_FUZZ_RUNS` sets the cases |
 | `npm run test:browser` | builds, then runs the real-browser tests in Playwright's Chromium and Firefox, headless (first `npx playwright install chromium firefox`; `PICKET_HEADED=1` shows the browsers) |
 | `npm run test:browser:slow` | builds, then runs the opt-in slow browser tests (several minutes; not in CI): the edge's real TTL and `retry_after_s`, blocked loads after the background went idle, Chromium's dropped connections, and the block page test with 300 loads |
 | `npm run package` | builds, then writes `dist/picket-browser-extension-<ver>-brave.zip` and `-firefox.xpi` with `.sha256` files |

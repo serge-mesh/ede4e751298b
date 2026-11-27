@@ -88,24 +88,6 @@ describe('parseReply', () => {
     const badLabel = Uint8Array.from(good);
     badLabel[12 + q.length - 12 - 11 + 0] = 0x80; // the answer's owner: a reserved label type
     expect(() => parseReply(badLabel, q)).toThrow(DnsError);
-
-    // Mutations of a valid reply never escape as anything but DnsError.
-    let seed = 42;
-    const rand = (n: number): number => {
-      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-      return seed % n;
-    };
-    for (let i = 0; i < 3000; i++) {
-      const m = Uint8Array.from(good);
-      for (let k = 0; k <= rand(4); k++) {
-        m[rand(m.length)] = rand(256);
-      }
-      const cut = rand(3) === 0 ? m.subarray(0, rand(m.length)) : m;
-      try {
-        parseReply(cut, q);
-      } catch (e) {
-        expect(e).toBeInstanceOf(DnsError);
-      }
-    }
+    // Generated and broken replies: dns-fuzz.test.ts.
   });
 });
