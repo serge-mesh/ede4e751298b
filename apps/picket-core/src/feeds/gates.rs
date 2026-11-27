@@ -146,6 +146,18 @@ mod tests {
             reject_gates(&s, true, &parse(5, 5), 5),
             Verdict::Reject { .. }
         ));
+        // Default min_entries (1) rejects empty non-manual runs, while manual feeds skip it.
+        let def = Sanity::default();
+        assert_eq!(def.min_entries, Some(1));
+        assert!(matches!(
+            reject_gates(&def, false, &parse(0, 0), 0),
+            Verdict::Reject { gate: "entries", .. }
+        ));
+        assert_eq!(reject_gates(&def, false, &parse(0, 1), 1), Verdict::Pass);
+        assert_eq!(reject_gates(&def, true, &parse(0, 0), 0), Verdict::Pass);
+        // Explicit null keeps min_entries disabled (e.g. saved feeds or intentional overrides).
+        let explicit_null: Sanity = serde_json::from_str(r#"{"min_entries":null}"#).unwrap();
+        assert_eq!(explicit_null.min_entries, None);
     }
 
     #[test]

@@ -3706,7 +3706,7 @@
               "max_entries": null,
               "max_parse_error_ratio": 0.01,
               "min_change_allowance": 100,
-              "min_entries": null
+              "min_entries": 1
             }
           },
           "system": {
@@ -9363,7 +9363,7 @@
             "type": "integer"
           },
           "min_entries": {
-            "default": null,
+            "default": 1,
             "format": "uint64",
             "minimum": 0,
             "type": [

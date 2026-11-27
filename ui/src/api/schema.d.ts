@@ -3283,7 +3283,7 @@ export interface components {
              *       "max_entries": null,
              *       "max_parse_error_ratio": 0.01,
              *       "min_change_allowance": 100,
-             *       "min_entries": null
+             *       "min_entries": 1
              *     }
              */
             sanity?: components["schemas"]["Sanity"];
@@ -5367,7 +5367,7 @@ export interface components {
             min_change_allowance?: number;
             /**
              * Format: uint64
-             * @default null
+             * @default 1
              */
             min_entries?: number | null;
         };
