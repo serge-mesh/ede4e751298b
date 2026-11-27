@@ -2653,7 +2653,8 @@ export interface components {
             /**
              * @default {
              *       "client_inflight": 64,
-             *       "client_qps": 100
+             *       "client_qps": 100,
+             *       "max_rrset_records": 256
              *     }
              */
             limits?: components["schemas"]["Limits"];
@@ -2781,7 +2782,8 @@ export interface components {
             /**
              * @default {
              *       "client_inflight": 64,
-             *       "client_qps": 100
+             *       "client_qps": 100,
+             *       "max_rrset_records": 256
              *     }
              */
             limits?: components["schemas"]["Limits"];
@@ -3960,6 +3962,15 @@ export interface components {
              * @default 100
              */
             client_qps?: number;
+            /**
+             * Format: uint32
+             * @description The most records one RRset (name, type, class) the edge keeps from an upstream answer may
+             *     hold; an answer over it is refused (`rrset_too_large`, SERVFAIL to the client). 0 = no
+             *     limit beyond picket-wire's 1,024 records per section. Default 256, above BIND's 100,
+             *     which real domains pass.
+             * @default 256
+             */
+            max_rrset_records?: number;
         };
         /** @description One chart line. */
         Line: {

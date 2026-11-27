@@ -242,7 +242,7 @@ fn allocation_budgets() {
     many.extend_from_slice(&[0xC0; 64]);
     let n = count(|| check_query(black_box(&many)).unwrap_err());
     assert_eq!(n, 0, "65,535-question header");
-    let mut answer = vec![0xAB, 0xCD, 0x81, 0x80, 0, 1, 0, 65, 0, 0, 0, 0];
+    let mut answer = vec![0xAB, 0xCD, 0x81, 0x80, 0, 1, 0x04, 0x01, 0, 0, 0, 0];
     answer.extend_from_slice(&[0xC0; 64]);
     let name = picket_wire::name::QName::from_text("example.com").unwrap();
     let sent = SentQuery {
@@ -252,7 +252,7 @@ fn allocation_budgets() {
         qclass: 1,
     };
     let n = count(|| check_answer(black_box(&answer), &sent, &AnswerLimits::default()).unwrap_err());
-    assert_eq!(n, 0, "65-record answer header");
+    assert_eq!(n, 0, "1,025-record answer header");
 
     for (name, budget) in ANSWER_BUDGETS {
         let (query, answer) = recorded(name);

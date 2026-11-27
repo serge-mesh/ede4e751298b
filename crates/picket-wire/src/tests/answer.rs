@@ -65,7 +65,15 @@ fn structure_from_header() {
     // Size cap.
     let s = sent_for(ID, "example.com", rtype::A);
     assert_eq!(
-        check_answer(&m.build(), &s.sent(), &AnswerLimits { max_len: 20 }).unwrap_err(),
+        check_answer(
+            &m.build(),
+            &s.sent(),
+            &AnswerLimits {
+                max_len: 20,
+                ..AnswerLimits::default()
+            }
+        )
+        .unwrap_err(),
         Invalid::TooLarge
     );
     // Not a response, not QUERY.
@@ -94,15 +102,20 @@ fn structure_from_header() {
 
 #[test]
 fn record_counts_checked_before_body() {
-    // 65 answers claimed; the body is garbage: refused on the counts alone.
+    // 1,025 answers claimed; the body is garbage: refused on the counts alone.
     let mut m = Msg::response(ID, "example.com", rtype::A, 0);
     m.raw(&[0xC0; 32]);
-    m.set_counts(1, 65, 0, 0);
+    m.set_counts(1, 1025, 0, 0);
     assert_eq!(
         check(&m, "example.com", rtype::A).unwrap_err(),
         Invalid::TooManyRecords
     );
-    m.set_counts(1, 0, 0, 65);
+    m.set_counts(1, 0, 1025, 0);
+    assert_eq!(
+        check(&m, "example.com", rtype::A).unwrap_err(),
+        Invalid::TooManyRecords
+    );
+    m.set_counts(1, 0, 0, 1025);
     assert_eq!(
         check(&m, "example.com", rtype::A).unwrap_err(),
         Invalid::TooManyRecords
@@ -1090,6 +1103,7 @@ fn counter_names_cover_every_reason() {
             Invalid::OpaqueCompressible => 18,
             Invalid::BadSvcb => 19,
             Invalid::Encode => 20,
+            Invalid::RrsetTooLarge => 21,
         }
     }
     for (i, r) in Invalid::ALL.iter().enumerate() {
@@ -1177,19 +1191,146 @@ fn question_echo_case_and_class() {
 }
 
 /// 64 records in a section is the cap, not over it (edge.md §7 step 1).
+/// An address for record `i` of a large test RRset.
+fn nth_a(i: u16) -> Vec<u8> {
+    let [hi, lo] = i.to_be_bytes();
+    vec![10, 0, hi, lo]
+}
+
+fn check_limited(
+    m: &Msg,
+    name: &str,
+    qtype: u16,
+    max_rrset: u16,
+) -> Result<crate::answer::ScrubbedAnswer, Invalid> {
+    let s = sent_for(ID, name, qtype);
+    let limits = AnswerLimits {
+        max_rrset: Some(max_rrset),
+        ..AnswerLimits::default()
+    };
+    check_answer(&m.build(), &s.sent(), &limits)
+}
+
+/// Issue #16: real answers pass 64 records in a section (large TXT sets, address pools over TCP);
+/// the section bound is 1,024.
 #[test]
-fn sixty_four_records_accepted() {
+fn section_bound_is_1024_records() {
     let mut m = Msg::response(ID, "many.example", rtype::A, 0);
-    for i in 0..64u8 {
-        m.rr(1, &ptr(12), rtype::A, 60, &[10, 0, 0, i]);
+    for i in 0..1024u16 {
+        m.rr(1, &ptr(12), rtype::A, 60, &nth_a(i));
     }
     let s = check(&m, "many.example", rtype::A).unwrap();
-    assert_eq!(s.facts.addrs.len(), 64);
-    m.rr(1, &ptr(12), rtype::A, 60, &a("10.0.1.0"));
+    assert_eq!(s.facts.addrs.len(), 1024);
+    assert_eq!(s.removed.total(), 0);
+    m.rr(1, &ptr(12), rtype::A, 60, &a("10.9.0.0"));
     assert_eq!(
         check(&m, "many.example", rtype::A).unwrap_err(),
         Invalid::TooManyRecords
     );
+}
+
+/// The per-RRset limit counts kept answer records after duplicates are removed; unset (the
+/// default) means no limit beyond the section bound, and 0 means unset.
+#[test]
+fn rrset_limit() {
+    let mut m = Msg::response(ID, "pool.example", rtype::A, 0);
+    for i in 0..300u16 {
+        m.rr(1, &ptr(12), rtype::A, 60, &nth_a(i));
+    }
+    assert_eq!(
+        check(&m, "pool.example", rtype::A).unwrap().facts.addrs.len(),
+        300
+    );
+    assert_eq!(
+        check_limited(&m, "pool.example", rtype::A, 256).unwrap_err(),
+        Invalid::RrsetTooLarge
+    );
+    assert_eq!(
+        check_limited(&m, "pool.example", rtype::A, 299).unwrap_err(),
+        Invalid::RrsetTooLarge
+    );
+    assert_eq!(
+        check_limited(&m, "pool.example", rtype::A, 300)
+            .unwrap()
+            .facts
+            .addrs
+            .len(),
+        300
+    );
+    assert_eq!(
+        check_limited(&m, "pool.example", rtype::A, 0)
+            .unwrap()
+            .facts
+            .addrs
+            .len(),
+        300
+    );
+    assert!(!Invalid::RrsetTooLarge.reason().is_empty());
+    assert!(Invalid::RrsetTooLarge.is_size_limit() && Invalid::TooManyRecords.is_size_limit());
+    assert!(!Invalid::Undecodable.is_size_limit());
+
+    // Duplicates don't count: 200 records, each twice, fit a limit of 200.
+    let mut d = Msg::response(ID, "pool.example", rtype::A, 0);
+    for i in 0..400u16 {
+        d.rr(1, &ptr(12), rtype::A, 60, &nth_a(i % 200));
+    }
+    let s = check_limited(&d, "pool.example", rtype::A, 200).unwrap();
+    assert_eq!(s.facts.addrs.len(), 200);
+    assert_eq!(s.removed.duplicate, 200);
+}
+
+/// Records the scrub drops never count toward the RRset limit: an out-of-bailiwick set in the
+/// answer section, a large authority or additional section.
+#[test]
+fn rrset_limit_counts_only_kept_records() {
+    let mut m = Msg::response(ID, "www.example", rtype::A, 0);
+    m.rr(1, &ptr(12), rtype::A, 60, &a("192.0.2.1"));
+    let other = n("other.example");
+    for i in 0..300u16 {
+        m.rr(1, &other, rtype::A, 60, &nth_a(i));
+    }
+    let s = check_limited(&m, "www.example", rtype::A, 256).unwrap();
+    assert_eq!(s.facts.addrs.len(), 1);
+    assert_eq!(s.removed.out_of_bailiwick, 300);
+
+    // Big authority and additional sections (e.g. many NS and glue): scrubbed, not refused.
+    let mut m = Msg::response(ID, "www.example", rtype::A, 0);
+    m.rr(1, &ptr(12), rtype::A, 60, &a("192.0.2.1"));
+    for i in 0..200u16 {
+        m.rr(2, &n("example"), rtype::NS, 60, &n(&format!("ns{i}.example")));
+    }
+    for i in 0..200u16 {
+        m.rr(3, &n(&format!("ns{i}.example")), rtype::A, 60, &nth_a(i));
+    }
+    m.opt(1232, 0, 0, false, &[]);
+    let s = check_limited(&m, "www.example", rtype::A, 64).unwrap();
+    assert_eq!(s.facts.addrs.len(), 1);
+    assert_eq!(s.removed.authority, 200);
+    assert_eq!(s.removed.additional, 200);
+}
+
+/// Duplicate detection switches from a scan to a hash index past 32 records: the result is the
+/// same either side of the switch, whatever the order and section.
+#[test]
+fn duplicates_found_past_the_scan() {
+    for unique in [1u16, 31, 32, 33, 100, 500] {
+        let mut m = Msg::response(ID, "dup.example", rtype::A, 0);
+        for i in 0..unique {
+            m.rr(1, &ptr(12), rtype::A, 60, &nth_a(i));
+        }
+        // Every record again, in reverse, plus the same data in the additional section (not a
+        // duplicate: another section).
+        for i in (0..unique).rev() {
+            m.rr(1, &ptr(12), rtype::A, 60, &nth_a(i));
+        }
+        for i in 0..unique.min(10) {
+            m.rr(3, &ptr(12), rtype::A, 60, &nth_a(i));
+        }
+        let s = check(&m, "dup.example", rtype::A).unwrap();
+        assert_eq!(s.facts.addrs.len(), usize::from(unique), "{unique}");
+        assert_eq!(s.removed.duplicate, unique, "{unique}");
+        assert_eq!(s.removed.additional, unique.min(10), "{unique}");
+    }
 }
 
 /// A UDP transport retries a truncated answer over TCP before checking it (RFC 7766 §5,

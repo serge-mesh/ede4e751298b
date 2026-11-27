@@ -279,6 +279,8 @@ impl DnsRuntime {
         let limits = Limits {
             client_qps: clamp_u32(cfg.limits.client_qps, bounds::CLIENT_QPS),
             client_inflight: clamp_u32(cfg.limits.client_inflight, bounds::CLIENT_INFLIGHT),
+            // Read by the upstream pool (`UpstreamPool::configure`), not the query path.
+            max_rrset_records: cfg.limits.max_rrset_records,
         };
         Ok(DnsRuntime {
             clients,

@@ -694,6 +694,16 @@ fn edge_rules(m: &Model, o: &mut Out) {
                 "client limits must be above 0".into(),
             );
         }
+        let max_rrset = u32::from(picket_wire::answer::MAX_SECTION_RECORDS);
+        if s.limits.max_rrset_records > max_rrset {
+            o.err(
+                e,
+                id,
+                Some("limits"),
+                "range",
+                format!("limits: max_rrset_records is 0 (no limit) or 1–{max_rrset}"),
+            );
+        }
         // Warn when the sync providers' RAM tiers pass verdict_budget_mib (core.md §4).
         let total: u64 = sync_providers(m)
             .iter()
@@ -2367,6 +2377,28 @@ mod tests {
         );
         assert_eq!(registrable_domain("dns.example.co.uk").unwrap(), "example.co.uk");
         assert_eq!(registrable_domain("dns.google").unwrap(), "dns.google");
+    }
+
+    /// `limits.max_rrset_records` is 0 (no limit) or up to picket-wire's section bound.
+    #[test]
+    fn max_rrset_records_range() {
+        let mut m = Model::default();
+        let issues = |m: &Model| {
+            validate(m)
+                .into_iter()
+                .filter(|i| i.field.as_deref() == Some("limits") && i.message.contains("max_rrset_records"))
+                .count()
+        };
+        for (v, refused) in [(0, false), (1, false), (256, false), (1024, false), (1025, true)] {
+            let mut edge = EdgeDef {
+                id: "e1".into(),
+                name: "e1".into(),
+                ..Default::default()
+            };
+            edge.settings.limits.max_rrset_records = v;
+            m.edges.insert("e1".into(), edge);
+            assert_eq!(issues(&m), usize::from(refused), "{v}");
+        }
     }
 
     /// ER6 (edge.md §16 "Not an open resolver"): a listener on a wildcard address with no
