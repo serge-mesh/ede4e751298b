@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import importlib.util
+import io
+import json
 import pathlib
 import sys
 import unittest
+from contextlib import redirect_stdout
 
 SCRIPT_PATH = pathlib.Path(__file__).resolve().parent / "sonarcloud-to-sarif.py"
 SPEC = importlib.util.spec_from_file_location("sonarcloud_to_sarif", SCRIPT_PATH)
@@ -128,6 +131,24 @@ class VerifyTargetShaTests(unittest.TestCase):
         )
         self.assertFalse(matched)
 
+    def test_does_not_treat_missing_sha_as_match(self) -> None:
+        target = mod.SyncTarget(
+            project_key=PROJECT_KEY,
+            kind="branch",
+            value="main",
+            ref="refs/heads/main",
+            sha=SAMPLE_SHA,
+        )
+        matched, reason = mod.verify_target_sha(
+            target,
+            max_attempts=2,
+            sleep_seconds=0,
+            fetcher=lambda _p, _q, token=None: {"branches": [{"name": "main"}]},
+            sleeper=lambda _: None,
+        )
+        self.assertFalse(matched)
+        self.assertIn("no analyzed commit SHA", reason)
+
 
 class FetchOpenIssuesTests(unittest.TestCase):
     def test_paginates_and_merges_rules(self) -> None:
@@ -157,6 +178,25 @@ class FetchOpenIssuesTests(unittest.TestCase):
         issues, rules = mod.fetch_open_issues(target, fetcher=fake_fetch)
         self.assertEqual([i["key"] for i in issues], ["k1", "k2"])
         self.assertEqual(set(rules.keys()), {"r1", "r2"})
+
+    def test_raises_on_incomplete_export(self) -> None:
+        target = mod.SyncTarget(
+            project_key=PROJECT_KEY,
+            kind="branch",
+            value="main",
+            ref="refs/heads/main",
+            sha=SAMPLE_SHA,
+        )
+
+        def fake_fetch(_path: str, params: dict[str, str], token: str | None = None) -> dict:
+            return {
+                "total": 10001,
+                "issues": [{"key": f"k-{params['p']}", "rule": "r1"}],
+                "rules": [],
+            }
+
+        with self.assertRaises(mod.SonarApiError):
+            mod.fetch_open_issues(target, fetcher=fake_fetch)
 
 
 class BuildSarifTests(unittest.TestCase):
@@ -335,6 +375,74 @@ class BuildSarifTests(unittest.TestCase):
         sarif = mod.build_sarif(target, [], {})
         self.assertEqual(sarif["runs"][0]["results"], [])
         self.assertEqual(sarif["runs"][0]["tool"]["driver"]["rules"], [])
+
+    def test_encodes_special_characters_in_sarif_uris(self) -> None:
+        target = mod.SyncTarget(
+            project_key=PROJECT_KEY,
+            kind="branch",
+            value="main",
+            ref="refs/heads/main",
+            sha=SAMPLE_SHA,
+        )
+        issues = [
+            {
+                "key": "encoded-uri",
+                "rule": "typescript:S1000",
+                "severity": "MINOR",
+                "type": "CODE_SMELL",
+                "component": f"{PROJECT_KEY}:ui/src/a#b c.tsx",
+                "line": 5,
+                "hash": "enc1",
+                "message": "Check filename encoding.",
+                "organization": "serge-mesh",
+                "flows": [
+                    {
+                        "locations": [
+                            {
+                                "component": f"{PROJECT_KEY}:ui/src/rel?x=1.tsx",
+                                "textRange": {"startLine": 2, "endLine": 2},
+                                "msg": "related",
+                            }
+                        ]
+                    }
+                ],
+            }
+        ]
+        sarif = mod.build_sarif(target, issues, {})
+        res = sarif["runs"][0]["results"][0]
+        self.assertEqual(
+            res["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+            "ui/src/a%23b%20c.tsx",
+        )
+        self.assertEqual(
+            res["relatedLocations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+            "ui/src/rel%3Fx%3D1.tsx",
+        )
+
+
+class MainFlowTests(unittest.TestCase):
+    def test_skips_when_analyzed_sha_changes_during_fetch(self) -> None:
+        branch_calls = {"count": 0}
+
+        def fake_fetch(path: str, _params: dict[str, str], token: str | None = None) -> dict:
+            if path == "/api/project_branches/list":
+                branch_calls["count"] += 1
+                sha = SAMPLE_SHA if branch_calls["count"] == 1 else "f" * 40
+                return {"branches": [{"name": "main", "commit": {"sha": sha}}]}
+            if path == "/api/issues/search":
+                return {"total": 0, "issues": [], "rules": []}
+            raise AssertionError(f"Unexpected path {path}")
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = mod.main(
+                ["--project-key", PROJECT_KEY, "--branch", "main"],
+                fetcher=fake_fetch,
+            )
+        self.assertEqual(rc, 0)
+        payload = json.loads(buf.getvalue())
+        self.assertTrue(payload["skip"])
+        self.assertIn("Analysis changed during export", payload["reason"])
 
 
 if __name__ == "__main__":

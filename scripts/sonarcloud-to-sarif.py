@@ -232,10 +232,14 @@ def verify_target_sha(
             token=token,
             fetcher=fetcher,
         )
-        if exists and (analyzed_sha is None or analyzed_sha == target.sha):
+        if exists and analyzed_sha == target.sha:
             return True, "matched"
         if not exists:
             last_reason = f"{target.kind} {target.value!r} not found on SonarQube Cloud"
+        elif analyzed_sha is None:
+            last_reason = (
+                f"{target.kind} {target.value!r} has no analyzed commit SHA on SonarQube Cloud"
+            )
         else:
             last_reason = (
                 f"SonarQube Cloud analyzed {analyzed_sha}, expected {target.sha}"
@@ -254,6 +258,7 @@ def fetch_open_issues(
     issues: list[dict[str, Any]] = []
     rules: dict[str, dict[str, Any]] = {}
     scope_param = "pullRequest" if target.kind == "pull_request" else "branch"
+    reported_total: int | None = None
 
     for page in range(1, MAX_PAGES + 1):
         params = {
@@ -272,11 +277,22 @@ def fetch_open_issues(
             if key:
                 rules[key] = rule
 
-        total = int(payload.get("total", len(issues)))
-        if len(issues) >= total or not page_issues:
+        reported_total = int(payload.get("total", len(issues)))
+        if len(issues) >= reported_total or not page_issues:
             break
 
+    if reported_total is not None and len(issues) < reported_total:
+        raise SonarApiError(
+            f"Incomplete SonarQube Cloud issue export: retrieved {len(issues)} "
+            f"of {reported_total} issues"
+        )
+
     return issues, rules
+
+
+def encode_sarif_uri(rel_path: str) -> str:
+    """Percent-encode a repo-relative POSIX path as a SARIF artifactLocation URI."""
+    return urllib.parse.quote(rel_path, safe="/")
 
 
 def extract_relative_path(component: str, project_key: str) -> str | None:
@@ -464,7 +480,7 @@ def build_related_locations(
                     "id": len(related) + 1,
                     "message": {"text": msg},
                     "physicalLocation": {
-                        "artifactLocation": {"uri": rel_path},
+                        "artifactLocation": {"uri": encode_sarif_uri(rel_path)},
                         "region": region,
                     },
                 }
@@ -532,7 +548,7 @@ def build_sarif(
             "locations": [
                 {
                     "physicalLocation": {
-                        "artifactLocation": {"uri": rel_path},
+                        "artifactLocation": {"uri": encode_sarif_uri(rel_path)},
                         "region": region,
                     }
                 }
@@ -579,9 +595,17 @@ def emit_json(payload: dict[str, Any]) -> None:
     sys.stdout.write(json.dumps(payload, indent=2) + "\n")
 
 
+def emit_skip(reason: str, sarif_only: bool) -> int:
+    print(f"Skipping SonarQube Cloud SARIF export: {reason}", file=sys.stderr)
+    if not sarif_only:
+        emit_json({"skip": True, "reason": reason})
+    return 0
+
+
 def resolve_cli_target(
     args: argparse.Namespace,
     token: str | None,
+    fetcher: Any = sonar_get_json,
 ) -> tuple[SyncTarget | None, str | None]:
     project_key = (
         validate_project_key(args.project_key)
@@ -607,7 +631,7 @@ def resolve_cli_target(
             sha = validate_sha(args.head_sha)
         else:
             exists, analyzed_sha = lookup_analyzed_sha(
-                project_key, "pull_request", pr_number, token=token
+                project_key, "pull_request", pr_number, token=token, fetcher=fetcher
             )
             if not exists or not analyzed_sha:
                 return None, f"Pull request #{pr_number} not found on SonarQube Cloud"
@@ -627,15 +651,14 @@ def resolve_cli_target(
     if args.head_sha:
         sha = validate_sha(args.head_sha)
     else:
-        exists, analyzed_sha = lookup_analyzed_sha(project_key, "branch", branch, token=token)
+        exists, analyzed_sha = lookup_analyzed_sha(
+            project_key, "branch", branch, token=token, fetcher=fetcher
+        )
         if not exists:
             return None, f"Branch {branch!r} not found on SonarQube Cloud"
-        if analyzed_sha:
-            sha = analyzed_sha
-        elif args.fallback_sha:
-            sha = validate_sha(args.fallback_sha)
-        else:
+        if not analyzed_sha:
             return None, f"Branch {branch!r} has no analyzed commit SHA on SonarQube Cloud"
+        sha = analyzed_sha
     return (
         SyncTarget(
             project_key=project_key,
@@ -659,7 +682,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--branch", default="main", help="SonarQube Cloud branch (default: main)")
     parser.add_argument("--pull-request", help="SonarQube Cloud pull request number")
     parser.add_argument("--head-sha", help="Explicit 40-char commit SHA to attach SARIF to")
-    parser.add_argument("--fallback-sha", help="Fallback SHA when SonarQube Cloud omits branch SHA")
     parser.add_argument(
         "--verify-sha",
         action="store_true",
@@ -673,34 +695,31 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, fetcher: Any = sonar_get_json) -> int:
     args = parse_args(argv)
     token = os.environ.get("SONAR_TOKEN") or None
 
-    target, skip_reason = resolve_cli_target(args, token)
+    target, skip_reason = resolve_cli_target(args, token, fetcher=fetcher)
     if target is None:
-        print(f"Skipping SonarQube Cloud SARIF export: {skip_reason}", file=sys.stderr)
-        if not args.sarif_only:
-            emit_json({"skip": True, "reason": skip_reason})
-        return 0
+        return emit_skip(skip_reason or "No sync target resolved", args.sarif_only)
 
     if args.verify_sha:
-        matched, reason = verify_target_sha(target, token=token)
+        matched, reason = verify_target_sha(target, token=token, fetcher=fetcher)
         if not matched:
-            print(f"Skipping SonarQube Cloud SARIF export: {reason}", file=sys.stderr)
-            if not args.sarif_only:
-                emit_json({"skip": True, "reason": reason})
-            return 0
+            return emit_skip(reason, args.sarif_only)
 
     try:
-        issues, rules = fetch_open_issues(target, token=token)
+        issues, rules = fetch_open_issues(target, token=token, fetcher=fetcher)
     except SonarApiError as exc:
         if exc.status == 404:
-            print(f"Skipping SonarQube Cloud SARIF export: {exc}", file=sys.stderr)
-            if not args.sarif_only:
-                emit_json({"skip": True, "reason": str(exc)})
-            return 0
+            return emit_skip(str(exc), args.sarif_only)
         raise
+
+    # Re-check the analyzed SHA after fetching issues to narrow the race window
+    # where SonarQube Cloud finishes a newer analysis mid-pagination.
+    matched, reason = verify_target_sha(target, token=token, max_attempts=1, fetcher=fetcher)
+    if not matched:
+        return emit_skip(f"Analysis changed during export ({reason})", args.sarif_only)
 
     sarif = build_sarif(target, issues, rules, organization=args.organization)
     run = sarif["runs"][0]
