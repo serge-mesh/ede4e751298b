@@ -1217,17 +1217,7 @@ impl FwClient {
         // until it lands), so nothing later grants the old device's allow on this address again
         // (edge.md §12).
         if !moved_allows.is_empty() {
-            let ip_text = ip.to_string();
-            let changed: Vec<crate::allows::StoredAllow> = moved_allows
-                .into_iter()
-                .map(|mut a| {
-                    a.addresses.retain(|x| *x != ip_text);
-                    a
-                })
-                .collect();
-            if let Err(e) = self.allows.change_held(changed) {
-                tracing::warn!("allows.json: {}", crate::diag::cap_chain(&e));
-            }
+            self.allows.remove_address_held(&moved_allows, &ip.to_string());
         }
     }
 
