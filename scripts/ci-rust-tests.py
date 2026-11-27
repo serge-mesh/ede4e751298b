@@ -51,7 +51,7 @@ def main():
             ["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"], cwd=ROOT
         )
     )
-    command = ["cargo", "test", "--locked", "--no-fail-fast", *test_args(args.suite, metadata)]
+    command = ["cargo", "test", "--profile", "ci", "--locked", "--no-fail-fast", *test_args(args.suite, metadata)]
     if args.no_run:
         command.append("--no-run")
     print(shlex.join(command), flush=True)

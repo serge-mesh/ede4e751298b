@@ -9,7 +9,7 @@
   "edge_e2e": 2,
   "edge_protocol": 7,
   "edge_release": 2,
-  "feed_providers": 62,
+  "feed_providers": 8,
   "feed_runs": 11,
   "feed_sqs": 19,
   "feed_stale": 2,

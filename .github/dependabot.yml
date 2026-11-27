@@ -1,50 +1,74 @@
 version: 2
-
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: daily
+      time: 06:00
+      timezone: Australia/Sydney
+    open-pull-requests-limit: 2
     groups:
       actions:
-        patterns: ['*']
-
+        patterns:
+          - '*'
   - package-ecosystem: cargo
-    # The fuzz targets are independent workspaces with their own lockfiles.
     directories:
       - /
       - /fuzz/*
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: daily
+      time: 02:00
+      timezone: Australia/Sydney
+    open-pull-requests-limit: 2
     groups:
       cargo-minor-and-patch:
         applies-to: version-updates
-        patterns: ['*']
-        update-types: [minor, patch]
+        patterns:
+          - '*'
+        update-types:
+          - minor
+          - patch
       cargo-security:
         applies-to: security-updates
-        patterns: ['*']
-
+        patterns:
+          - '*'
+      cargo-major:
+        applies-to: version-updates
+        patterns:
+          - '*'
+        update-types:
+          - major
   - package-ecosystem: npm
     directories:
       - /ui
       - /extension
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: daily
+      time: 04:00
+      timezone: Australia/Sydney
+    open-pull-requests-limit: 2
     groups:
       npm-minor-and-patch:
         applies-to: version-updates
-        patterns: ['*']
-        update-types: [minor, patch]
+        patterns:
+          - '*'
+        update-types:
+          - minor
+          - patch
       npm-security:
         applies-to: security-updates
-        patterns: ['*']
-
+        patterns:
+          - '*'
+      npm-major:
+        applies-to: version-updates
+        patterns:
+          - '*'
+        update-types:
+          - major
   - package-ecosystem: docker
     directory: /dist/docker
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: daily
+      time: 08:00
+      timezone: Australia/Sydney
+    open-pull-requests-limit: 2

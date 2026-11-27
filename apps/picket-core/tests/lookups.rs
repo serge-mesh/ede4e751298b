@@ -155,6 +155,12 @@ impl Setup {
         })
         .await;
         let edge = FakeEdge::registered(&c, "e1").await;
+        // Registering the edge publishes another configuration generation. Drain that
+        // reload before a test deliberately changes rows behind the runtime's snapshot.
+        assert!(
+            c.state.lookups.reloaded(&c.state, Duration::from_secs(10)).await,
+            "the lookups runtime saw the edge registration"
+        );
         Setup {
             c,
             edge,

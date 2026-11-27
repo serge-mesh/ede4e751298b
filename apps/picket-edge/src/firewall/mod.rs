@@ -940,6 +940,17 @@ impl FwClient {
         if keys.is_empty() {
             return Err("the device has no address in the IP's family".into());
         }
+        // A grant can precede the maintenance subscriber's first poll. Remember its
+        // known MAC so startup catch-up can recognise a later move, even if the first
+        // Gained event was missed. Never overwrite ownership already learned by a watch.
+        if let Some(mac) = crate::neighbours::parse_mac(owner_text) {
+            let mut owners = self.addr_owner.lock().unwrap_or_else(|p| p.into_inner());
+            for key in &keys {
+                if let Some(ip) = key.src {
+                    owners.entry(ip).or_insert(mac);
+                }
+            }
+        }
         let now = self.now_s();
         let allow_exp = now + secs;
         let owner = owner_of(owner_text);
@@ -1871,6 +1882,9 @@ impl FwClient {
     /// Prunes the shadow map and keeps `helper_unreachable` current.
     pub async fn run_maintenance(self: Arc<Self>, neighbours: Arc<Neighbours>) -> anyhow::Result<()> {
         let mut events = neighbours.subscribe();
+        // Startup (or a supervisor restart) can happen after a neighbour moved. Such
+        // events precede this subscription and produce no Lagged notification.
+        self.neighbour_catch_up(&neighbours.snapshot());
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         let mut last_prune = Instant::now();
         loop {
@@ -2645,6 +2659,38 @@ mod tests {
         );
         let a1 = c.allows.list().into_iter().find(|s| s.allow_id == "a-1").unwrap();
         assert!(!a1.addresses.contains(&x.to_string()), "{:?}", a1.addresses);
+    }
+
+    #[tokio::test]
+    async fn maintenance_catches_a_move_before_it_subscribes() {
+        let f = fake(Duration::ZERO);
+        let c = client(&f.path);
+        ready(&c).await;
+        let (a, b) = ([0xaa, 0, 0, 0, 0, 1], [0xbb, 0, 0, 0, 0, 2]);
+        let x: IpAddr = "192.168.1.50".parse().unwrap();
+        c.neighbours.replace(&[(x, a)]);
+        // The first Gained event, as well as the later move, predates maintenance.
+        let a_text = crate::neighbours::format_mac(&a);
+        let keys = c
+            .grant_allow(&a_text, &[x], "100.100.100.100".parse().unwrap(), 600)
+            .await
+            .unwrap();
+        let mut stored = crate::allows::tests::allow("early-grant", picket_api::logs::AllowKind::Ip, 600);
+        stored.device = a_text;
+        stored.client = x.to_string();
+        stored.addresses = vec![x.to_string()];
+        c.allows.upsert(stored).unwrap();
+        assert!(c.live_exp(&keys[0]).is_some());
+        // No maintenance receiver exists yet, so this move cannot report channel lag.
+        c.neighbours.replace(&[(x, b)]);
+        let task = tokio::spawn(Arc::clone(&c).run_maintenance(Arc::clone(&c.neighbours)));
+        assert!(
+            until(Duration::from_secs(3), || c.live_exp(&keys[0]).is_none()
+                && f.st().deleted.iter().any(|e| e.src == Some(x)))
+            .await,
+            "startup catch-up revokes the old owner's kernel entry"
+        );
+        task.abort();
     }
 
     #[tokio::test]

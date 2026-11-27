@@ -183,3 +183,18 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 1
+
+# Optimise the data-processing libraries without paying LLVM's optimisation cost
+# for the large application/test binaries. Keep dev assertions and overflow checks.
+[profile.ci]
+inherits = "dev"
+incremental = false
+
+[profile.ci.package.picket-rules]
+opt-level = 1
+
+[profile.ci.package.picket-bundle]
+opt-level = 1
+
+[profile.ci.package.picket-wire]
+opt-level = 1
