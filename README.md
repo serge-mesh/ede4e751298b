@@ -50,7 +50,25 @@ at runtime (`release_keys` in `edge.json` on edges).
 ## CI
 
 `.github/workflows/ci.yml` runs fmt, clippy and tests, and builds the UI and the extension, on
-GitHub Actions (`ubuntu-latest`). The spec's VM integration, binfmt, golden-bundle-on-aarch64,
+GitHub Actions (`ubuntu-latest`). Rust checks run independently from four test jobs: core unit
+tests, two groups of core integration tests, and the remaining workspace. Integration targets
+are discovered from Cargo metadata and balanced using approximate durations in
+`scripts/ci-core-test-seconds.json`; new targets get a default estimate and are included
+automatically. Core doctests run separately; the remaining workspace job includes its doctests.
+
+To reproduce a test job locally:
+
+```sh
+python3 scripts/ci-rust-tests.py core-integration-1  # also: core-unit, core-integration-2, workspace
+cargo test --package picket-core --doc --locked
+```
+
+Rust jobs save their build caches after compilation, before running tests. The ARM job also
+caches its build output; npm downloads are cached for the UI and extension. Chromium and Firefox
+run on separate runners, each with one worker. The combined `rust` and `extension-browsers`
+status checks require every corresponding job to pass.
+
+The spec's VM integration, binfmt, golden-bundle-on-aarch64,
 Valgrind budget, release, signing, image-rebuild and firmware-canary pipelines are not wired up
 here yet.
 

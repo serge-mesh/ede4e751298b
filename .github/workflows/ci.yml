@@ -1,4 +1,4 @@
-# Lean CI on GitHub-hosted Ubuntu runners (pipelines.md §3 describes the full design; the VM,
+# CI on GitHub-hosted Ubuntu runners (pipelines.md §3 describes the full design; the VM,
 # kvm, binfmt, release and signing jobs are not wired up here yet).
 name: ci
 
@@ -21,7 +21,7 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
-  rust:
+  rust-checks:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -29,8 +29,9 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Cache cargo and toolchain
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      - name: Restore cargo, toolchain and build output
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.rustup/toolchains
@@ -39,9 +40,10 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: rust-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-v2-${{ runner.os }}-${{ runner.arch }}-clippy-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
           restore-keys: |
-            rust-${{ hashFiles('rust-toolchain.toml') }}-
+            cargo-v2-${{ runner.os }}-${{ runner.arch }}-clippy-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}-
+            cargo-v2-${{ runner.os }}-${{ runner.arch }}-clippy-${{ hashFiles('rust-toolchain.toml') }}-
 
       - name: Install rustup and the pinned toolchain
         run: |
@@ -64,8 +66,99 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      - name: cargo test
-        run: cargo test --workspace --locked --no-fail-fast
+      # Persist lint artifacts independently of the test jobs.
+      - name: Save cargo, toolchain and build output
+        if: steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+  rust-tests:
+    name: Rust tests (${{ matrix.suite }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [core-unit, core-integration-1, core-integration-2, workspace]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Restore cargo, toolchain and build output
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.suite }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            cargo-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.suite }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}-
+            cargo-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.suite }}-${{ hashFiles('rust-toolchain.toml') }}-
+
+      - name: Install rustup and the pinned toolchain
+        run: |
+          if ! command -v rustup >/dev/null 2>&1 && [ ! -x "$HOME/.cargo/bin/rustup" ]; then
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none --no-modify-path
+          fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup show active-toolchain || rustup toolchain install
+
+      - name: Compile the test suite
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: python3 scripts/ci-rust-tests.py "$SUITE" --no-run
+
+      # Save before executing tests: failures and later cancellations keep compiled output.
+      - name: Save cargo, toolchain and build output
+        if: steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+      - name: Run the test suite
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: python3 scripts/ci-rust-tests.py "$SUITE"
+
+      # The remaining workspace lane runs its own doctests with normal cargo test.
+      - name: Core doctests
+        if: ${{ !cancelled() && matrix.suite == 'core-unit' }}
+        run: cargo test --package picket-core --doc --locked --no-fail-fast
+
+  # Preserve the existing required status check while lint and test jobs run independently.
+  rust:
+    needs: [rust-checks, rust-tests]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every Rust job to pass
+        env:
+          CHECKS: ${{ needs.rust-checks.result }}
+          TESTS: ${{ needs.rust-tests.result }}
+        run: test "$CHECKS" = success && test "$TESTS" = success
 
   # The edge binaries for the gateway, aarch64 against glibc 2.41, and the glibc symbol check
   # (build-and-test.md §3–§4, edge-unifi.md §1).
@@ -90,10 +183,11 @@ jobs:
           path: |
             ~/.local/zig-${{ env.ZIG_VERSION }}
             ~/.local/cargo-zigbuild-${{ env.CARGO_ZIGBUILD_VERSION }}
-          key: zig-${{ env.ZIG_VERSION }}-${{ env.ZIG_SHA256 }}-cargo-zigbuild-${{ env.CARGO_ZIGBUILD_VERSION }}
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ env.ZIG_VERSION }}-${{ env.ZIG_SHA256 }}-cargo-zigbuild-${{ env.CARGO_ZIGBUILD_VERSION }}
 
-      - name: Cache cargo and toolchain
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      - name: Restore cargo, toolchain and build output
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.rustup/toolchains
@@ -101,10 +195,12 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
+            target
             ~/.cache/zig
-          key: edge-aarch64-${{ hashFiles('rust-toolchain.toml') }}-${{ env.ZIG_VERSION }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-v2-${{ runner.os }}-${{ runner.arch }}-edge-aarch64-zig-${{ env.ZIG_VERSION }}-zigbuild-${{ env.CARGO_ZIGBUILD_VERSION }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
           restore-keys: |
-            edge-aarch64-${{ hashFiles('rust-toolchain.toml') }}-${{ env.ZIG_VERSION }}-
+            cargo-v2-${{ runner.os }}-${{ runner.arch }}-edge-aarch64-zig-${{ env.ZIG_VERSION }}-zigbuild-${{ env.CARGO_ZIGBUILD_VERSION }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}-
+            cargo-v2-${{ runner.os }}-${{ runner.arch }}-edge-aarch64-zig-${{ env.ZIG_VERSION }}-zigbuild-${{ env.CARGO_ZIGBUILD_VERSION }}-${{ hashFiles('rust-toolchain.toml') }}-
 
       - name: Install rustup, the pinned toolchain, the aarch64 target and llvm-objdump
         run: |
@@ -157,6 +253,20 @@ jobs:
       - name: Edge binaries for aarch64, glibc floor 2.41 (build-and-test.md §3)
         run: scripts/check-edge-aarch64.sh
 
+      - name: Save cargo, toolchain and build output
+        if: steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+            ~/.cache/zig
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
   # cargo deny: advisories, licences, bans and sources (security.md §6, build-and-test.md §4).
   deny:
     runs-on: ubuntu-latest
@@ -172,7 +282,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.local/cargo-deny-${{ env.CARGO_DENY_VERSION }}
-          key: cargo-deny-${{ env.CARGO_DENY_VERSION }}
+          key: cargo-deny-${{ runner.os }}-${{ runner.arch }}-${{ env.CARGO_DENY_VERSION }}
 
       - name: Cache cargo and toolchain
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -183,9 +293,9 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-          key: deny-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          key: deny-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            deny-${{ hashFiles('rust-toolchain.toml') }}-
+            deny-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}-
 
       - name: Install rustup and the pinned toolchain
         run: |
@@ -221,6 +331,10 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: |
+            ui/package-lock.json
+            extension/package-lock.json
 
       - name: UI lint, build and test
         if: hashFiles('ui/package.json') != ''
@@ -249,9 +363,14 @@ jobs:
   # The extension in real browsers (browser-extension.md §5): Playwright's Chromium and Firefox
   # against a fake edge, in Playwright's image for the pinned @playwright/test (its browsers and
   # their system libraries; the tag must follow extension/package.json, the digest pins it).
-  extension-browsers:
+  extension-browser-tests:
+    name: Extension browser (${{ matrix.browser }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox]
     container:
       image: mcr.microsoft.com/playwright:v1.65.1-noble@sha256:1507cbfc550a63a6b7396791ca4f00df17beb56342d2447b3f106c306f525579
       options: --ipc=host
@@ -269,10 +388,12 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.npm
-          key: extension-npm-${{ hashFiles('extension/package-lock.json') }}
+          key: extension-npm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.node-version') }}-${{ hashFiles('extension/package-lock.json') }}
 
-      - name: Real-browser tests (Chromium, Firefox)
+      - name: Real-browser tests (${{ matrix.browser }})
         working-directory: extension
+        env:
+          BROWSER: ${{ matrix.browser }}
         run: |
           # The tests make their certificates with the openssl CLI.
           command -v openssl >/dev/null || { apt-get update && apt-get install -y --no-install-recommends openssl; }
@@ -282,12 +403,23 @@ jobs:
           node -e "const { chromium, firefox } = require('@playwright/test'); const fs = require('node:fs'); for (const b of [chromium, firefox]) { if (!fs.existsSync(b.executablePath())) { console.error('the image has no ' + b.executablePath() + ': its tag does not match @playwright/test'); process.exit(1); } }"
           # GitHub Actions container jobs run as root with HOME=/github/home (owned by pwuser),
           # which Firefox refuses unless HOME is owned by the current user.
-          HOME=/root npm run test:browser
+          HOME=/root npm run test:browser -- --project="$BROWSER"
 
       - name: Keep the test results of a failed run
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: extension-browser-test-results
+          name: extension-browser-test-results-${{ matrix.browser }}
           path: extension/test-results/
           retention-days: 7
+
+  extension-browsers:
+    needs: extension-browser-tests
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require both browsers to pass
+        env:
+          RESULT: ${{ needs.extension-browser-tests.result }}
+        run: test "$RESULT" = success
