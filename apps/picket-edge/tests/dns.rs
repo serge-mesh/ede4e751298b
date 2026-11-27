@@ -54,6 +54,7 @@ fn tuning(d: &Dirs) -> Tuning {
     let mut t = Tuning {
         platform: Some(picket_edge::paths::HostPlatform::Debian),
         clock: Some(picket_edge::clock::Clock::fixed(true)),
+        neighbours: Some(picket_edge::neighbours::Neighbours::new()),
         update_result: Some(d.result.clone()),
         service: Some(false),
         firmware_file: d.data.join("no-such-version-file"),

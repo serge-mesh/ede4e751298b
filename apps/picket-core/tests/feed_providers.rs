@@ -723,6 +723,8 @@ async fn a_provider_pointed_elsewhere_starts_new_epochs() {
         .await
         .unwrap();
     // A header edit doesn't point elsewhere: the epoch stays.
+    settle(&c, "p").await;
+    let before_header_checks = common::feeds::checks(&c, "p").await;
     let (st, v) = put(
         &c,
         "/feed-providers/p",
@@ -740,7 +742,19 @@ async fn a_provider_pointed_elsewhere_starts_new_epochs() {
         .await,
         1
     );
-    // Another url points elsewhere.
+    // The header edit starts its own asynchronous check. Wait for that edit to reach
+    // the runtime and finish before testing a separate retarget; a short sleep does
+    // not establish either condition on a loaded runner.
+    wait_until("the header edit to reach the runtime", || async {
+        common::feeds::checks(&c, "p").await > before_header_checks
+            && c.state
+                .feeds
+                .provider_def("p")
+                .is_some_and(|p| p.config["headers"]["Accept"] == "text/plain")
+    })
+    .await;
+    settle(&c, "p").await;
+    // Another url points elsewhere. Keep its epoch timestamp distinct.
     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     let (st, v) = put(
         &c,

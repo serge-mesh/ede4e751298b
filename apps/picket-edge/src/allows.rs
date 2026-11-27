@@ -163,6 +163,23 @@ impl AllowsStore {
         Ok(())
     }
 
+    /// Publishes a held update under `write`, retaining it in memory if the file lags.
+    fn save_held(&self, f: AllowsFile) -> bool {
+        let landed = match self.write_file(&f) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(
+                    "{}; the change holds in memory and the write is retried",
+                    crate::diag::cap_chain(&e)
+                );
+                self.dirty.store(true, Ordering::Release);
+                false
+            }
+        };
+        self.current.store(Arc::new(f));
+        landed
+    }
+
     /// Adds or replaces allows and ends others in one write, logging each: `upserts` with their
     /// action (`created` or `changed`), `ends` (by id; unknown ids ignored) with `end_action`, all
     /// with `via`. Returns the ended allows. Nothing changes when the write fails.
@@ -233,19 +250,12 @@ impl AllowsStore {
             return Ok((vec![], true));
         }
         f.version = 1;
-        let landed = match self.write_file(&f) {
-            Ok(()) => true,
-            Err(e) if hold => {
-                tracing::warn!(
-                    "{}; the change holds in memory and the write is retried",
-                    crate::diag::cap_chain(&e)
-                );
-                self.dirty.store(true, Ordering::Release);
-                false
-            }
-            Err(e) => return Err(e),
+        let landed = if hold {
+            self.save_held(f)
+        } else {
+            self.save(f)?;
+            true
         };
-        self.current.store(Arc::new(f));
         for (a, action) in applied {
             if let Some(action) = action {
                 self.log(a, action, via);
@@ -266,6 +276,35 @@ impl AllowsStore {
             self.spawn_flush();
         }
         Ok(())
+    }
+
+    /// Removes a moved address from the current records selected by identity and device.
+    /// Concurrent re-times, other addresses and extra fields survive; ended records stay ended.
+    pub(crate) fn remove_address_held(self: &Arc<Self>, selected: &[StoredAllow], address: &str) {
+        let identities: std::collections::HashSet<(&str, &str)> = selected
+            .iter()
+            .map(|a| (a.allow_id.as_str(), a.device.as_str()))
+            .collect();
+        let landed = {
+            let _g = self.write.lock().unwrap_or_else(|p| p.into_inner());
+            let mut f = AllowsFile::clone(&self.current.load());
+            let mut changed = false;
+            for a in &mut f.allows {
+                if a.kind == AllowKind::Ip && identities.contains(&(a.allow_id.as_str(), a.device.as_str())) {
+                    let before = a.addresses.len();
+                    a.addresses.retain(|ip| ip != address);
+                    changed |= before != a.addresses.len();
+                }
+            }
+            if !changed {
+                return;
+            }
+            f.version = 1;
+            self.save_held(f)
+        };
+        if !landed {
+            self.spawn_flush();
+        }
     }
 
     /// Whether the file lags the memory.
@@ -500,6 +539,39 @@ pub(crate) mod tests {
             addrs(&list),
             "the retried write lands the memory"
         );
+    }
+
+    #[test]
+    fn moved_address_removal_preserves_a_later_retime_and_other_addresses() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("allows.json");
+        let (logs, _rx) = LogProducer::new("b".into(), Arc::default());
+        let s = AllowsStore::load(&p, logs.clone());
+        let mut original = allow("a-1", AllowKind::Ip, 3600);
+        original.addresses = vec!["192.168.1.140".into(), "192.168.1.141".into()];
+        s.upsert(original).unwrap();
+        let selected = s.list();
+        // A policy recheck lands after the move selected its records.
+        let mut latest = selected[0].clone();
+        latest.expires_at = Timestamp::now() + jiff::SignedDuration::from_secs(60);
+        latest.addresses.push("192.168.1.142".into());
+        latest.extra.insert("future".into(), serde_json::json!(true));
+        s.change_held(vec![latest.clone()]).unwrap();
+        s.remove_address_held(&selected, "192.168.1.140");
+        let current = &s.list()[0];
+        assert_eq!(
+            current.expires_at, latest.expires_at,
+            "the older snapshot must not extend access"
+        );
+        assert_eq!(current.addresses, ["192.168.1.141", "192.168.1.142"]);
+        assert_eq!(current.extra, latest.extra);
+        assert_eq!(
+            AllowsStore::load(&p, logs).list()[0].expires_at.as_microsecond(),
+            latest.expires_at.as_microsecond()
+        );
+        s.end(&["a-1".into()], AllowAction::Revoked, "core").unwrap();
+        s.remove_address_held(&selected, "192.168.1.141");
+        assert!(s.list().is_empty(), "a move must not revive a revoked allow");
     }
 
     #[test]
