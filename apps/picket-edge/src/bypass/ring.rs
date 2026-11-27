@@ -57,6 +57,17 @@ pub struct Entry {
     pub profile: Arc<str>,
 }
 
+/// Seconds past the block TTL that `hold` adds: a reload right at the TTL can still find the
+/// browser's cached block answer unexpired, and Firefox then serves it to the extension's second
+/// attempt too, while refreshing it (#15). With the slack the reload finds it expired, and the
+/// second attempt gets the fresh answer.
+pub const HOLD_SLACK_S: u64 = 5;
+
+/// `hold` for a block TTL: max(60 s, TTL + [`HOLD_SLACK_S`]) (edge.md §12 `retry_after_s`).
+pub fn hold_s(ttl: u32) -> u64 {
+    60u64.max(u64::from(ttl) + HOLD_SLACK_S)
+}
+
 impl Entry {
     /// Heap bytes beyond the entry itself (a spilled name, the target).
     fn extra(&self) -> usize {
@@ -67,9 +78,9 @@ impl Entry {
         std::str::from_utf8(&self.block_id).unwrap_or("")
     }
 
-    /// `hold` = max(60 s, block TTL) (edge.md §12 `retry_after_s`).
+    /// `hold` = max(60 s, block TTL + [`HOLD_SLACK_S`]) (edge.md §12 `retry_after_s`).
     pub fn hold_s(&self) -> u64 {
-        60u64.max(u64::from(self.response.ttl))
+        hold_s(self.response.ttl)
     }
 }
 

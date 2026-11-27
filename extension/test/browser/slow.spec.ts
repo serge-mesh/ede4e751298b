@@ -1,7 +1,7 @@
 // Opt-in slow tests (`npm run test:browser:slow`; not in CI), each a minute or more:
 //
 // - Edge-style timing (X1): the block's TTL and `retry_after_s` as the edge sets them
-//   (retry_after_s = block time + max(60 s, TTL) − now; apps/picket-edge bypass `retry_after`),
+//   (retry_after_s = block time + max(60 s, TTL + 5 s) − now; apps/picket-edge bypass `retry_after`),
 //   with no stale answer faked: the browser's own cache must not serve the blocked answer once
 //   the block page has waited retry_after_s, so the page works by retry_after_s + 2 s (the
 //   extension's second attempt) at the latest. Negative answers with the default TTL (10 s) and
@@ -26,13 +26,8 @@ const cases: { name: string; mode: BlockMode; ttl: number }[] = [
 ];
 
 for (const c of cases) {
-  test(`with the edge's TTL and retry_after_s (${c.mode.type}, TTL ${String(c.ttl)} s) the page works by retry_after_s + 2 s`, { tag: '@slow' }, async ({ ext, edge, targets, kind }) => {
+  test(`with the edge's TTL and retry_after_s (${c.mode.type}, TTL ${String(c.ttl)} s) the page works by retry_after_s + 2 s`, { tag: '@slow' }, async ({ ext, edge, targets }) => {
     test.setTimeout(scaled(240_000));
-    // Found by this test (owner decision pending): Firefox keeps serving an expired sinkhole
-    // address past its TTL while it refreshes it. With a TTL over 60 s the reload at
-    // retry_after_s and the attempt 2 s later both get the cached address (the fresh answer
-    // arrives with the second), so the page stays on its error page until the user reloads.
-    test.fail(kind === 'firefox' && c.mode.type === 'custom_ip' && c.ttl > 60, 'Firefox serves the expired sinkhole address to both attempts');
     await setUp(ext, edge);
     edge.blockTtl = c.ttl;
     edge.edgeRetry = true;
@@ -54,7 +49,7 @@ for (const c of cases) {
     const patch = edge.apiCalls('PATCH')[0];
     const t0 = patch?.at ?? 0;
     // As the fake edge served it: block time (its last blocked answer, HTTPS-record queries
-    // included) + max(60 s, TTL) − now.
+    // included) + max(60 s, TTL + 5 s) − now.
     const retryAfter = (patch?.reply as { retry_after_s?: number }[] | undefined)?.find((a) => a.retry_after_s !== undefined)?.retry_after_s ?? -1;
     expect(retryAfter).toBeGreaterThan(50);
     const s = (at: number): string => `${((at - t0) / 1000).toFixed(1)} s`;

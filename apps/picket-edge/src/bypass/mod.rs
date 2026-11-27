@@ -195,7 +195,7 @@ fn view(a: &StoredAllow, retry_after: Option<u64>) -> AllowView {
 }
 
 /// `retry_after_s` (edge.md §12): `max(0, block_time + hold − now)` for a DNS allow,
-/// `hold = max(60 s, block TTL)`; 0 for an IP allow.
+/// `hold = max(60 s, block TTL + 5 s)` ([`ring::hold_s`]); 0 for an IP allow.
 pub fn retry_after(a: &StoredAllow, now: Timestamp) -> u64 {
     if a.kind == AllowKind::Ip {
         return 0;
@@ -203,7 +203,7 @@ pub fn retry_after(a: &StoredAllow, now: Timestamp) -> u64 {
     let (Some(t), Some(ttl)) = (a.block_time, a.block_ttl) else {
         return 0;
     };
-    let hold = SignedDuration::from_secs(60i64.max(i64::from(ttl)));
+    let hold = SignedDuration::from_secs(i64::try_from(ring::hold_s(ttl)).unwrap_or(i64::MAX));
     let end = picket_api::time::saturating_add(t, hold);
     u64::try_from((end - now).as_secs()).unwrap_or(0)
 }
@@ -1559,9 +1559,9 @@ mod tests {
         let mut a = crate::allows::tests::allow("a", AllowKind::Dns, 3600);
         a.block_time = Some(now - jiff::SignedDuration::from_secs(10));
         a.block_ttl = Some(10);
-        assert_eq!(retry_after(&a, now), 50, "hold = max(60, ttl)");
+        assert_eq!(retry_after(&a, now), 50, "hold = max(60, ttl + 5)");
         a.block_ttl = Some(300);
-        assert_eq!(retry_after(&a, now), 290);
+        assert_eq!(retry_after(&a, now), 295);
         a.block_time = Some(now - jiff::SignedDuration::from_secs(400));
         assert_eq!(retry_after(&a, now), 0);
         let ip = crate::allows::tests::allow("b", AllowKind::Ip, 3600);
