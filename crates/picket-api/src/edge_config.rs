@@ -428,6 +428,12 @@ pub struct Upstream {
     pub trust_store: Option<String>,
 }
 
+/// The longest block TTL the edge serves (`block_response.ttl`): just under the shortest allow
+/// (15 min) minus the 5 s hold slack and the 5 s reload margin, so a browser's cached block
+/// answer always expires inside an allow and the reload after it gets the fresh answer. The edge
+/// lowers longer TTLs to this; core accepts them with a warning.
+pub const MAX_BLOCK_TTL_S: u32 = 890;
+
 /// The longest DoH request path.
 pub const MAX_DOH_PATH: usize = 256;
 

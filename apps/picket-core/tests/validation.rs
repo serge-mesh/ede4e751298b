@@ -842,6 +842,30 @@ fn profile_warnings() {
         "{:?}",
         out.warnings
     );
+    // A block TTL over the edge's cap is accepted with a warning (the edge lowers it); one at the
+    // cap gets none.
+    let out = c
+        .create(
+            EntityKind::Profile,
+            json!({"id": "longttl", "name": "l", "block_response": {"type": "nxdomain", "ttl": 3600}}),
+        )
+        .unwrap();
+    assert!(
+        out.warnings.iter().any(|w| w.code == "block_ttl_capped"),
+        "{:?}",
+        out.warnings
+    );
+    let out = c
+        .create(
+            EntityKind::Profile,
+            json!({"id": "capttl", "name": "c", "block_response": {"type": "nxdomain", "ttl": picket_api::edge_config::MAX_BLOCK_TTL_S}}),
+        )
+        .unwrap();
+    assert!(
+        !out.warnings.iter().any(|w| w.code == "block_ttl_capped"),
+        "{:?}",
+        out.warnings
+    );
     // The validator profile admits only core: no warning for it.
     let issues =
         picket_core::config::validate::validate(&picket_core::config::store::load_model(&c.conn).unwrap());
