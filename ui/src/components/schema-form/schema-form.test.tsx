@@ -89,6 +89,23 @@ describe("SchemaForm: module Config schemas", () => {
 });
 
 describe("SchemaForm: entity schemas from the OpenAPI document", () => {
+  it("shows a nullable number's schema default while it is omitted, and Not set once cleared to null", async () => {
+    const user = userEvent.setup();
+    const root: SchemaRoot = {
+      components: { schemas: {} },
+    } as unknown as SchemaRoot;
+    const schema = {
+      type: "object",
+      properties: { min_entries: { type: ["integer", "null"], default: 1 }, max_entries: { type: ["integer", "null"], default: null } },
+    };
+    render(<Harness schema={schema as never} root={root} initial={{}} />);
+    const min = screen.getByLabelText("Min entries");
+    expect(min).toHaveAttribute("placeholder", "1");
+    expect(screen.getByLabelText("Max entries")).toHaveAttribute("placeholder", "Not set");
+    await user.type(min, "5");
+    await user.clear(min);
+    expect(min).toHaveAttribute("placeholder", "Not set");
+  });
   it("edits a list of strings as tags", async () => {
     const user = userEvent.setup();
     const onValue = vi.fn();

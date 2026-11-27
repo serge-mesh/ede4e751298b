@@ -3702,11 +3702,11 @@
             "$ref": "#/components/schemas/Sanity",
             "default": {
               "confirm_after": "1h",
-              "max_change_ratio": 0.2,
+              "max_change_ratio": 0.5,
               "max_entries": null,
               "max_parse_error_ratio": 0.01,
               "min_change_allowance": 100,
-              "min_entries": null
+              "min_entries": 1
             }
           },
           "system": {
@@ -9354,7 +9354,7 @@
             "default": "1h"
           },
           "max_change_ratio": {
-            "default": 0.2,
+            "default": 0.5,
             "format": "double",
             "type": "number"
           },
@@ -9379,7 +9379,7 @@
             "type": "integer"
           },
           "min_entries": {
-            "default": null,
+            "default": 1,
             "format": "uint64",
             "minimum": 0,
             "type": [

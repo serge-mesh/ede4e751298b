@@ -598,9 +598,9 @@ pub struct Sanity {
 impl Default for Sanity {
     fn default() -> Self {
         Self {
-            min_entries: None,
+            min_entries: Some(1),
             max_entries: None,
-            max_change_ratio: 0.20,
+            max_change_ratio: 0.50,
             min_change_allowance: 100,
             confirm_after: DurationStr::hours(1),
             max_parse_error_ratio: 0.01,

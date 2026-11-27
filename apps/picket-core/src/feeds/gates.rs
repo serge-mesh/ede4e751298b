@@ -146,12 +146,24 @@ mod tests {
             reject_gates(&s, true, &parse(5, 5), 5),
             Verdict::Reject { .. }
         ));
+        // Default min_entries (1) rejects empty non-manual runs, while manual feeds skip it.
+        let def = Sanity::default();
+        assert_eq!(def.min_entries, Some(1));
+        assert!(matches!(
+            reject_gates(&def, false, &parse(0, 0), 0),
+            Verdict::Reject { gate: "entries", .. }
+        ));
+        assert_eq!(reject_gates(&def, false, &parse(0, 1), 1), Verdict::Pass);
+        assert_eq!(reject_gates(&def, true, &parse(0, 0), 0), Verdict::Pass);
+        // Explicit null keeps min_entries disabled (e.g. saved feeds or intentional overrides).
+        let explicit_null: Sanity = serde_json::from_str(r#"{"min_entries":null}"#).unwrap();
+        assert_eq!(explicit_null.min_entries, None);
     }
 
     #[test]
     fn change_ratio() {
-        let s = Sanity::default(); // 0.20, allowance 100
-        assert_eq!(allowance(&s, 10_000), 2_000);
+        let s = Sanity::default(); // 0.50, allowance 100
+        assert_eq!(allowance(&s, 10_000), 5_000);
         assert_eq!(allowance(&s, 10), 100);
         let prev = TypeCounts {
             dns: 10_000,
@@ -159,10 +171,10 @@ mod tests {
             browser: 0,
         };
         let mut c = Changes::default();
-        c.added.dns = 1_500;
-        c.removed.dns = 500;
+        c.added.dns = 3_500;
+        c.removed.dns = 1_500;
         assert_eq!(change_gate(&s, &c, &prev), None);
-        c.removed.dns = 501;
+        c.removed.dns = 1_501;
         assert!(change_gate(&s, &c, &prev).unwrap().contains("dns"));
         // allowance 0 leaves only the ratio
         let s0 = Sanity {
