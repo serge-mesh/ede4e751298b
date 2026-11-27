@@ -55,7 +55,9 @@ Valgrind budget, release, signing, image-rebuild and firmware-canary pipelines a
 here yet.
 
 CodeQL scans Rust, JavaScript/TypeScript and GitHub Actions on PRs, pushes to `main` and weekly.
-Dependency review rejects newly introduced high/critical vulnerabilities on PRs. Dependabot
-opens weekly update PRs for Cargo (including fuzz workspaces), npm, Actions and the Docker base
-image; those PRs run the same CI. See [CI security](docs/ci-security.md) for coverage and the
-repository settings needed for Dependabot alerts and security updates.
+SonarQube Cloud findings (vulnerabilities, bugs, and code smells) are synced into GitHub Code
+Scanning via `.github/workflows/sonar-sarif.yml`. Dependency review rejects newly introduced
+high/critical vulnerabilities on PRs. Dependabot opens weekly update PRs for Cargo (including
+fuzz workspaces), npm, Actions and the Docker base image; those PRs run the same CI. See
+[CI security](docs/ci-security.md) for coverage and the repository settings needed for Dependabot
+alerts and security updates.
