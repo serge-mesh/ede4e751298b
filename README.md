@@ -56,4 +56,10 @@ See `docs/development.md` and the spec's pipelines.md §9.
 `.github/workflows/ci.yml` runs fmt, clippy and tests, and builds the UI and the extension, on
 GitHub Actions (`ubuntu-latest`). The spec's VM integration, binfmt, golden-bundle-on-aarch64,
 Valgrind budget, release, signing, image-rebuild and firmware-canary pipelines are not wired up
-here yet. See `docs/status.md` for what is and isn't implemented.
+here yet.
+
+CodeQL scans Rust, JavaScript/TypeScript and GitHub Actions on PRs, pushes to `main` and weekly.
+Dependency review rejects newly introduced high/critical vulnerabilities on PRs. Dependabot
+opens weekly update PRs for Cargo (including fuzz workspaces), npm, Actions and the Docker base
+image; those PRs run the same CI. See [CI security](docs/ci-security.md) for coverage and the
+repository settings needed for Dependabot alerts and security updates.
