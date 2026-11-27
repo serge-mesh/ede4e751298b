@@ -93,10 +93,13 @@ export async function setUp(ext: Session, edge: FakeEdge, opts: { coreUrl?: stri
   await ext.preGrant('https://127.0.0.1/*');
   const options = await ext.openExtensionTab('options.html');
   const page = options.surface();
+  // Initial getState populates these inputs asynchronously after navigation completes.
+  // Wait for it before typing so it cannot replace the URL before Save.
+  await page.waitFor(() => document.querySelector('#settings-status')?.textContent ?? '', null);
   await page.fill('#edge-url', edge.origin);
   await page.fill('#core-url', opts.coreUrl ?? '');
   await page.click('#save');
-  await page.waitFor(() => document.querySelector('#settings-status')?.textContent.startsWith('Connected.') ?? false, null);
+  await page.waitFor(() => document.querySelector('#settings-status')?.textContent.startsWith('Connected.') === true && document.querySelector('#settings-status')?.textContent, null);
   if (opts.detection === true) {
     await ext.preGrant('<all_urls>');
     await page.click('#detection');

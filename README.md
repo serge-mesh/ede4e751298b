@@ -50,12 +50,43 @@ at runtime (`release_keys` in `edge.json` on edges).
 ## CI
 
 `.github/workflows/ci.yml` runs fmt, clippy and tests, and builds the UI and the extension, on
-GitHub Actions (`ubuntu-latest`). The spec's VM integration, binfmt, golden-bundle-on-aarch64,
+GitHub Actions (`ubuntu-latest`). Rust checks run independently from four test jobs: core unit
+tests, two groups of core integration tests, and the remaining workspace. Integration targets
+are discovered from Cargo metadata and balanced using approximate durations in
+`scripts/ci-core-test-seconds.json`; new targets get a default estimate and are included
+automatically. Core doctests run separately; the remaining workspace job includes its doctests.
+
+To reproduce a test job locally:
+
+```sh
+python3 scripts/ci-rust-tests.py core-integration-1  # also: core-unit, core-integration-2, workspace
+cargo test --profile ci --package picket-core --doc --locked
+```
+
+The `ci` test profile optimises the rules, bundle and wire crates. Application crates keep dev
+optimisation settings; debug assertions and overflow checks stay enabled. Native jobs share
+compiled objects through `sccache`; Cargo download archives have one
+writer on `main`. They cache neither complete `target` directories nor toolchains. The ARM job
+uses a pruned dependency cache. Cache keys follow compiler/dependency inputs rather than commit
+SHAs. Compatible finished compilations can be reused across jobs; simultaneous cold misses
+can still compile the same dependency. Tool binaries are downloaded at pinned versions and
+verified against pinned SHA-256 sums.
+
+UI lint/build, two UI test shards, extension packaging, and the two browser projects run
+independently. The UI typecheck runs once in the build job; each browser uses two workers.
+PRs run only the components and CodeQL languages selected by their changed files; pushes to
+`main` run all components. The combined `rust`, `ui`, `extension-browsers` and `CodeQL` checks
+fail if a selected job fails or change selection fails, and allow intentionally unselected jobs.
+
+The spec's VM integration, binfmt, golden-bundle-on-aarch64,
 Valgrind budget, release, signing, image-rebuild and firmware-canary pipelines are not wired up
 here yet.
 
-CodeQL scans Rust, JavaScript/TypeScript and GitHub Actions on PRs, pushes to `main` and weekly.
+CodeQL scans affected languages on PRs, and all three languages on `main`, weekly and manual runs.
 Dependency review rejects newly introduced high/critical vulnerabilities on PRs. Dependabot
-opens weekly update PRs for Cargo (including fuzz workspaces), npm, Actions and the Docker base
-image; those PRs run the same CI. See [CI security](docs/ci-security.md) for coverage and the
+checks for version updates daily at staggered times for Cargo (including fuzz workspaces), npm,
+Actions and the Docker base image, with at most two open version-update PRs per ecosystem.
+Minor/patch and major groups are separate; security updates remain alert-driven. Dependabot's
+Rust test matrix runs at most two lanes concurrently; other PRs can run all four.
+See [CI security](docs/ci-security.md) for coverage and the
 repository settings needed for Dependabot alerts and security updates.

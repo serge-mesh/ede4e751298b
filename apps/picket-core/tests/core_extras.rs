@@ -88,8 +88,8 @@ async fn extension_builds_are_served_open_with_their_sums() {
 async fn core_samples_its_resources_and_job_durations() {
     let c = common::start_core(Some(json!({"web": {"tls": "off"}}))).await;
     let base = picket_core::metrics::resources::CpuBase::default();
-    c.state.metrics.jobs.record("compile", 1200);
-    c.state.metrics.jobs.record("compile", 40);
+    c.state.metrics.jobs.record("resource_test", 1200);
+    c.state.metrics.jobs.record("resource_test", 40);
     picket_core::metrics::resources::write(&c.state, &base).await;
     picket_core::metrics::resources::write(&c.state, &base).await;
     let points = |n: &'static str| {
@@ -117,22 +117,33 @@ async fn core_samples_its_resources_and_job_durations() {
     ] {
         assert!(points(n).await >= 1, "{n}");
     }
-    let rows: i64 = c
-        .state
-        .metrics_db
-        .read(|db| {
-            Ok::<_, anyhow::Error>(db.query_row(
-                "SELECT count(*) FROM histograms h JOIN series s ON s.id = h.series_id WHERE s.name = 'job_ms'",
-                [],
-                |r| r.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        rows, 1,
-        "one row per kind and sample, with the jobs since the previous one"
-    );
+    // Startup jobs and the live sampler run concurrently. Count only this test's
+    // jobs across all samples: a background drain may split the two observations.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let (count, sum): (i64, f64) = c
+            .state
+            .metrics_db
+            .read(|db| {
+                Ok::<_, anyhow::Error>(db.query_row(
+                    "SELECT coalesce(sum(h.count), 0), coalesce(sum(h.sum), 0)
+                     FROM histograms h JOIN series s ON s.id = h.series_id
+                     WHERE s.name = 'job_ms' AND json_extract(s.labels_json, '$.kind') = 'resource_test'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?)
+            })
+            .await
+            .unwrap();
+        if (count, sum) == (2, 1240.0) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "two jobs must be stored exactly once, totaling 1240 ms: count={count}, sum={sum}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
     // The UI charts them.
     let (st, v) = get(
         &c,
@@ -143,7 +154,7 @@ async fn core_samples_its_resources_and_job_durations() {
     let series = v["series"].as_array().unwrap();
     let p99 = series
         .iter()
-        .find(|l| l["name"] == json!("job_ms.p99") && l["labels"]["kind"] == json!("compile"))
+        .find(|l| l["name"] == json!("job_ms.p99") && l["labels"]["kind"] == json!("resource_test"))
         .unwrap_or_else(|| panic!("{v}"));
     let max = p99["points"]
         .as_array()
