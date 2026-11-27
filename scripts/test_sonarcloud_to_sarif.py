@@ -198,6 +198,34 @@ class FetchOpenIssuesTests(unittest.TestCase):
         with self.assertRaises(mod.SonarApiError):
             mod.fetch_open_issues(target, fetcher=fake_fetch)
 
+    def test_raises_when_total_changes_or_keys_repeat_across_pages(self) -> None:
+        target = mod.SyncTarget(
+            project_key=PROJECT_KEY,
+            kind="branch",
+            value="main",
+            ref="refs/heads/main",
+            sha=SAMPLE_SHA,
+        )
+        changing_pages = {
+            "1": {"total": 2, "issues": [{"key": "k1", "rule": "r1"}], "rules": []},
+            "2": {"total": 1, "issues": [], "rules": []},
+        }
+        with self.assertRaises(mod.SonarApiError):
+            mod.fetch_open_issues(
+                target,
+                fetcher=lambda _p, params, token=None: changing_pages[params["p"]],
+            )
+
+        duplicate_pages = {
+            "1": {"total": 2, "issues": [{"key": "k1", "rule": "r1"}], "rules": []},
+            "2": {"total": 2, "issues": [{"key": "k1", "rule": "r1"}], "rules": []},
+        }
+        with self.assertRaises(mod.SonarApiError):
+            mod.fetch_open_issues(
+                target,
+                fetcher=lambda _p, params, token=None: duplicate_pages[params["p"]],
+            )
+
 
 class BuildSarifTests(unittest.TestCase):
     def test_maps_vulnerabilities_bugs_smells_flows_and_duplicate_hashes(self) -> None:
@@ -360,8 +388,17 @@ class BuildSarifTests(unittest.TestCase):
 
         smell_result = results[3]
         self.assertEqual(smell_result["level"], "note")
-        self.assertTrue(
-            smell_result["partialFingerprints"]["primaryLocationLineHash"].endswith(":issue-smell")
+        self.assertEqual(
+            smell_result["partialFingerprints"]["primaryLocationLineHash"],
+            "sonar-key:issue-smell",
+        )
+
+        # Moving a hashless keyed issue to another line must preserve its fingerprint.
+        moved_smell = dict(issues[3], line=42)
+        moved_sarif = mod.build_sarif(target, [moved_smell], rules)
+        self.assertEqual(
+            moved_sarif["runs"][0]["results"][0]["partialFingerprints"]["primaryLocationLineHash"],
+            "sonar-key:issue-smell",
         )
 
     def test_empty_issues_still_produces_valid_sarif(self) -> None:

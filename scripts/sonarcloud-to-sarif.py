@@ -249,16 +249,16 @@ def verify_target_sha(
     return False, last_reason
 
 
-def fetch_open_issues(
+def _fetch_open_issues_once(
     target: SyncTarget,
-    token: str | None = None,
-    fetcher: Any = sonar_get_json,
+    token: str | None,
+    fetcher: Any,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
-    """Fetch all unresolved issues and associated rule metadata for a target."""
     issues: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
     rules: dict[str, dict[str, Any]] = {}
     scope_param = "pullRequest" if target.kind == "pull_request" else "branch"
-    reported_total: int | None = None
+    expected_total: int | None = None
 
     for page in range(1, MAX_PAGES + 1):
         params = {
@@ -271,23 +271,50 @@ def fetch_open_issues(
         }
         payload = fetcher("/api/issues/search", params, token=token)
         page_issues = payload.get("issues") or []
-        issues.extend(page_issues)
+        page_total = int(payload.get("total", len(issues) + len(page_issues)))
+
+        if expected_total is None:
+            expected_total = page_total
+        elif page_total != expected_total:
+            raise SonarApiError(
+                f"SonarQube Cloud issue total changed during pagination "
+                f"({expected_total} -> {page_total})"
+            )
+
+        for issue in page_issues:
+            issue_key = str(issue.get("key") or "")
+            if issue_key:
+                if issue_key in seen_keys:
+                    raise SonarApiError(
+                        f"Duplicate SonarQube Cloud issue key {issue_key!r} encountered during pagination"
+                    )
+                seen_keys.add(issue_key)
+            issues.append(issue)
+
         for rule in payload.get("rules") or []:
             key = rule.get("key")
             if key:
                 rules[key] = rule
 
-        reported_total = int(payload.get("total", len(issues)))
-        if len(issues) >= reported_total or not page_issues:
+        if len(issues) >= expected_total or not page_issues:
             break
 
-    if reported_total is not None and len(issues) < reported_total:
+    if expected_total is not None and len(issues) < expected_total:
         raise SonarApiError(
             f"Incomplete SonarQube Cloud issue export: retrieved {len(issues)} "
-            f"of {reported_total} issues"
+            f"of {expected_total} issues"
         )
 
     return issues, rules
+
+
+def fetch_open_issues(
+    target: SyncTarget,
+    token: str | None = None,
+    fetcher: Any = sonar_get_json,
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Fetch all unresolved issues and associated rule metadata for a target."""
+    return _fetch_open_issues_once(target, token=token, fetcher=fetcher)
 
 
 def encode_sarif_uri(rel_path: str) -> str:
@@ -527,18 +554,19 @@ def build_sarif(
             full_message = message_text
 
         base_hash = str(issue.get("hash") or "")
-        if not base_hash:
-            start_col = region.get("startColumn", 0)
-            digest_input = (
-                f"{rule_id}\0{rel_path}\0{region['startLine']}\0{start_col}\0{message_text}"
-            )
-            base_hash = hashlib.sha256(digest_input.encode("utf-8")).hexdigest()[:32]
         # Pair Sonar's line hash with its immutable issue key so identical lines
         # stay distinct and resolving one issue never shifts another's fingerprint.
+        # If hash is absent on a keyed issue, use the immutable key alone so line
+        # shifts don't alter the fingerprint.
         if issue_key:
-            fingerprint = f"{base_hash}:{issue_key}"
+            fingerprint = f"{base_hash}:{issue_key}" if base_hash else f"sonar-key:{issue_key}"
         else:
             start_col = region.get("startColumn", 0)
+            if not base_hash:
+                digest_input = (
+                    f"{rule_id}\0{rel_path}\0{region['startLine']}\0{start_col}\0{message_text}"
+                )
+                base_hash = hashlib.sha256(digest_input.encode("utf-8")).hexdigest()[:32]
             fingerprint = f"{base_hash}:{region['startLine']}:{start_col}"
 
         result: dict[str, Any] = {
