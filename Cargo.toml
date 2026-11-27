@@ -117,7 +117,7 @@ netlink-sys = "0.9"
 netlink-packet-core = "0.9"
 netlink-packet-route = "0.34"
 rtnetlink = "0.24"
-notify = "8.2"
+notify = "9.0"
 sd-notify = "0.5"
 rustix = { version = "1.1", features = ["fs", "process", "system", "net"] }
 
