@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use picket_api::edge_config::FwMode;
 use picket_api::helper::{
     ApplyRequest, ApplyResponse, CatchAllFinding, Conditions, HelperError, LocalDst, MAX_LOCAL_DST_NETS,
-    RedirectCheck, RulesRepaired, SetStatus, error_code, sets,
+    MAX_LOCAL_DST_TOTAL, RedirectCheck, RulesRepaired, SetStatus, error_code, sets,
 };
 use tokio::sync::oneshot;
 
@@ -694,6 +694,7 @@ impl<B: Backend> Engine<B> {
                 unavailable: res.err(),
             });
         }
+        within_budget(&mut out);
         out
     }
 
@@ -850,6 +851,8 @@ impl<B: Backend> Engine<B> {
             dnsfilter_filter |= layout::dnsfilter_active(&table);
             let first = plan::plan(&table, &want);
             let mut last = first.clone();
+            // Whether `last` describes the table as it is: not after a write whose read-back failed.
+            let mut verified = true;
             // Write, then read back to verify: UniFi may have changed the chain in between.
             for _ in 0..2 {
                 let Some(text) = last.restore.clone() else { break };
@@ -868,6 +871,7 @@ impl<B: Backend> Engine<B> {
                     Ok(t) => last = plan::plan(&t, &want),
                     Err(code) => {
                         rep.pending.push(format!("save{}:{code}", f.digit()));
+                        verified = false;
                         break;
                     }
                 }
@@ -902,17 +906,22 @@ impl<B: Backend> Engine<B> {
                     self.last_ok.insert(internal_key(f, o, target), now);
                 }
             }
-            let local = self.local_dst(f, &last.findings);
-            for l in &local {
-                let before = self
-                    .local_dst
-                    .get(&f)
-                    .and_then(|v| v.iter().find(|p| p.interface == l.interface));
-                if l.unavailable.is_some() && before.is_none_or(|p| p.unavailable != l.unavailable) {
-                    tracing::info!(interface = %l.interface, family = f.label(), reason = l.unavailable.as_deref(), "UniFi's local networks can't be read; every destination counts as blockable");
+            if verified {
+                let local = self.local_dst(f, &last.findings);
+                for l in &local {
+                    let before = self
+                        .local_dst
+                        .get(&f)
+                        .and_then(|v| v.iter().find(|p| p.interface == l.interface));
+                    if l.unavailable.is_some() && before.is_none_or(|p| p.unavailable != l.unavailable) {
+                        tracing::info!(interface = %l.interface, family = f.label(), reason = l.unavailable.as_deref(), "UniFi's local networks can't be read; every destination counts as blockable");
+                    }
                 }
+                self.local_dst.insert(f, local);
+            } else {
+                // The layout the local networks rest on is unknown until a table read succeeds.
+                self.local_dst.remove(&f);
             }
-            self.local_dst.insert(f, local);
             self.findings.insert(f, last.findings.clone());
             self.shadowed.insert(f, last.shadowed);
         }
@@ -1025,5 +1034,82 @@ pub fn run<B: Backend>(mut engine: Engine<B>, rx: Receiver<Cmd>) {
                 return;
             }
         }
+    }
+}
+
+/// Keeps one family's entries within [`MAX_LOCAL_DST_TOTAL`] networks together, in order: an
+/// entry that would pass it is reported `too_large` and carries none, so every message carrying
+/// the conditions fits a frame.
+fn within_budget(entries: &mut [LocalDst]) {
+    let mut total = 0usize;
+    for e in entries {
+        if e.unavailable.is_some() {
+            continue;
+        }
+        if total + e.nets.len() > MAX_LOCAL_DST_TOTAL {
+            e.nets = Vec::new();
+            e.unavailable = Some("too_large".into());
+        } else {
+            total += e.nets.len();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(iface: &str, n: usize) -> LocalDst {
+        LocalDst {
+            interface: iface.into(),
+            family: "ipv4".into(),
+            set: "UBIOS_local_zoned_subnets".into(),
+            nets: (0..n)
+                .map(|i| format!("10.{}.{}.0/24", i / 256, i % 256))
+                .collect(),
+            unavailable: None,
+        }
+    }
+
+    /// Every interface's entry repeats its set, so a family's entries share one budget: past
+    /// it, an entry is `too_large` rather than part of a frame too big to send.
+    #[test]
+    fn entries_past_the_family_budget_are_too_large() {
+        let per = MAX_LOCAL_DST_TOTAL / MAX_LOCAL_DST_NETS;
+        let mut v: Vec<LocalDst> = (0..=per)
+            .map(|i| entry(&format!("br{i}"), MAX_LOCAL_DST_NETS))
+            .collect();
+        let mut gone = entry("br99", 0);
+        gone.unavailable = Some("read:no_set".into());
+        v.insert(1, gone);
+        v.push(entry("small", 0));
+        within_budget(&mut v);
+        let usable = v.iter().filter(|e| e.unavailable.is_none()).count();
+        assert_eq!(usable, per + 1, "the first {per} full ones and the empty one");
+        let over = &v[per + 1];
+        assert_eq!(
+            (over.unavailable.as_deref(), over.nets.len()),
+            (Some("too_large"), 0)
+        );
+        assert_eq!(v[1].unavailable.as_deref(), Some("read:no_set"), "left as it was");
+        assert!(v.iter().map(|e| e.nets.len()).sum::<usize>() <= MAX_LOCAL_DST_TOTAL);
+        // The whole conditions message fits a frame even with IPv6's longest networks.
+        let long = "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ff00/120".to_string();
+        let mut c = Conditions::default();
+        for fam in ["ipv4", "ipv6"] {
+            for i in 0..=per {
+                let mut e = entry(&format!("br{i}"), 0);
+                e.family = fam.into();
+                e.nets = vec![long.clone(); MAX_LOCAL_DST_NETS];
+                c.local_dst.push(e);
+            }
+        }
+        let (v4, v6): (Vec<_>, Vec<_>) = c.local_dst.into_iter().partition(|e| e.family == "ipv4");
+        let (mut v4, mut v6) = (v4, v6);
+        within_budget(&mut v4);
+        within_budget(&mut v6);
+        c.local_dst = v4.into_iter().chain(v6).collect();
+        let bytes = serde_json::to_vec(&c).unwrap().len();
+        assert!(bytes < picket_api::helper::MAX_FRAME / 2, "{bytes} bytes");
     }
 }

@@ -208,8 +208,8 @@ export async function startPopup(env: PopupEnv = defaultEnv()): Promise<void> {
     // Until Brave has passed a request (or restarted), an empty list may only mean it doesn't
     // report requests yet: say so rather than list nothing. What it did report is listed.
     const waiting = (): void => {
-      blocksHint.hidden = false;
-      blocksActions.hidden = true;
+      // No rows from an earlier load beside the hint.
+      renderBlocks([]);
       setText(blocksHint, DETECTION_ON_AFTER_RESTART);
     };
     if (tabId === null) {

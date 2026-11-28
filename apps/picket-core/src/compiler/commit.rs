@@ -28,6 +28,26 @@ pub async fn commit(state: &SharedState, bundle: &str, ctx: Ctx, started: std::t
     let b = bundle.to_string();
     let alerts = state.alerts.clone();
     let members = ctx.spec.members.clone();
+    // The feeds and rule types whose rules this bundle compiles as blocks: the only ones a
+    // public-suffix hit can come from (#49).
+    let psl_members: super::guard::PslMembers =
+        if ctx.spec.action == crate::config::model::BundleAction::Block {
+            ctx.spec
+                .members
+                .iter()
+                .map(|m| {
+                    let types = ctx
+                        .spec
+                        .compiled_types(m)
+                        .iter()
+                        .map(|t| t.as_str().to_owned())
+                        .collect();
+                    (m.feed.clone(), types)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
     let runs_json = super::spec::runs_json(&ctx.runs);
     let def_hash = ctx.spec.def_hash.clone();
     // Replay reads each member feed as this version took it (core.md §6 step 1).
@@ -323,7 +343,7 @@ pub async fn commit(state: &SharedState, bundle: &str, ctx: Ctx, started: std::t
                 params![b, runs_json, def_hash, head_id2, now, stats_s, state_s],
             )?;
             // Alerts.
-            super::guard::apply(&tx, &alerts, &b, &members, &findings, &mut ch)?;
+            super::guard::apply(&tx, &alerts, &b, &members, &psl_members, &findings, &mut ch)?;
             alerts.resolve_in(
                 &tx,
                 &format!("bundle_build_failed:{b}"),

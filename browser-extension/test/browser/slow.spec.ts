@@ -84,9 +84,13 @@ async function allowRecovers(c: Case, resolver: string, { ext, edge, targets }: 
     expect(edge.lookups().length).toBeGreaterThan(0);
   }
   const firstLoad = loads.find((e) => e.event === 'onBeforeNavigate')?.at ?? 0;
-  expect((firstLoad - t0) / 1000).toBeGreaterThanOrEqual(retryAfter - 1);
+  // The reload comes at retry_after_s, not before and not much after.
+  expect((firstLoad - t0) / 1000, note).toBeGreaterThanOrEqual(retryAfter - 1);
+  expect((firstLoad - t0) / 1000, note).toBeLessThanOrEqual(retryAfter + 1.5);
   expect(fresh, note).toBeDefined();
   expect(((fresh ?? 0) - firstLoad) / 1000, note).toBeLessThanOrEqual(2 + 1.5);
+  // The page works by retry_after_s + 2 s (the second attempt), plus a load's slack.
+  expect((done - t0) / 1000, note).toBeLessThanOrEqual(retryAfter + 2 + 3);
 }
 
 for (const c of cases) {

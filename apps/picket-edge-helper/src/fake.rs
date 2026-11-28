@@ -243,6 +243,9 @@ pub struct FakeState {
     pub save_errors: VecDeque<ExecError>,
     /// Tables whose reads keep failing.
     pub save_fail: Vec<(Family, TableName)>,
+    /// Families whose filter-table reads start failing after their next restore (a failed
+    /// read-back).
+    pub fail_reads_after_restore: Vec<Family>,
     pub restores: Vec<(Family, String)>,
     /// Every set created, in order.
     pub created: Vec<String>,
@@ -294,6 +297,7 @@ impl FakeBackend {
                 restore_errors: VecDeque::new(),
                 save_errors: VecDeque::new(),
                 save_fail: Vec::new(),
+                fail_reads_after_restore: Vec::new(),
                 restores: Vec::new(),
                 created: Vec::new(),
                 write_fail: false,
@@ -612,6 +616,10 @@ impl Backend for FakeBackend {
             return Err(e);
         }
         st.restores.push((f, text.to_string()));
+        if let Some(i) = st.fail_reads_after_restore.iter().position(|x| *x == f) {
+            st.fail_reads_after_restore.remove(i);
+            st.save_fail.push((f, TableName::Filter));
+        }
         let sets = st.sets.clone();
         let table = st.tables.entry((f, TableName::Filter)).or_default();
         table.apply(text, &sets).map_err(|stderr| ExecError::Failed {

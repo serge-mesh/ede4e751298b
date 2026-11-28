@@ -1625,10 +1625,15 @@ impl FwClient {
             cur.push((condition_kind::HELPER_DISABLED.into(), None, None));
         }
         self.conditions.sync_kinds(Source::Helper, &HELPER_KINDS, &cur);
-        let mut st = HelperState::clone(&self.state.load());
-        st.conditions = c.clone();
-        st.local_dst = LocalNets::of(&c.local_dst);
-        self.state.store(Arc::new(st));
+        let local = LocalNets::of(&c.local_dst);
+        // A read-modify-write that a concurrent update (a heartbeat's `status`, a control
+        // event) can't undo.
+        self.state.rcu(|cur| {
+            let mut st = HelperState::clone(cur);
+            st.conditions = c.clone();
+            st.local_dst = local.clone();
+            st
+        });
     }
 
     fn note_fill(&self, sets_: &[picket_api::helper::SetStatus]) {
@@ -1930,9 +1935,11 @@ impl FwClient {
                 }
                 Err(e) => {
                     tracing::warn!("helper control connection: {e}");
-                    let mut st = HelperState::clone(&self.state.load());
-                    st.connected = false;
-                    self.state.store(Arc::new(st));
+                    self.state.rcu(|cur| {
+                        let mut st = HelperState::clone(cur);
+                        st.connected = false;
+                        st
+                    });
                     self.note_reachable(false);
                 }
             }
@@ -2037,9 +2044,11 @@ impl FwClient {
                     .request(kind::APPLY, &v.apply, self.tuning.apply_timeout, &mut on_event)
                     .await?;
                 applied = true;
-                let mut st = HelperState::clone(&self.state.load());
-                st.rules_ok = r.rules_ok;
-                self.state.store(Arc::new(st));
+                self.state.rcu(|cur| {
+                    let mut st = HelperState::clone(cur);
+                    st.rules_ok = r.rules_ok;
+                    st
+                });
                 self.apply_conditions(&r.conditions);
             }
             tokio::select! {
@@ -2285,9 +2294,12 @@ impl FwClient {
             let mrj = self.mon_rejects.fetch_add(s.mon_rejects, Relaxed) + s.mon_rejects;
             self.apply_conditions(&s.conditions);
             self.note_fill(&s.sets);
-            let mut st2 = HelperState::clone(&st);
-            st2.rules_ok = s.rules_ok;
-            self.state.store(Arc::new(st2));
+            // From the state as it is now: `st` predates the conditions just applied.
+            self.state.rcu(|cur| {
+                let mut st2 = HelperState::clone(cur);
+                st2.rules_ok = s.rules_ok;
+                st2
+            });
             fw = Some(FwStats {
                 entries: s.sets.iter().map(|x| x.entries).sum(),
                 max: s.sets.iter().map(|x| x.max).sum(),

@@ -1307,6 +1307,30 @@ fn a_table_that_can_not_be_read_drops_that_familys_local_networks() {
     assert_eq!(c[0].family, "ipv6");
 }
 
+/// A write whose read-back fails leaves the table unknown: that family's local networks go
+/// until a read succeeds again, rather than resting on the read from before the write.
+#[test]
+fn a_failed_read_back_after_a_write_drops_that_familys_local_networks() {
+    let mut g = unifi("filter-block-all-reject.rules");
+    local_sets(&g.b);
+    g.apply(&lan());
+    assert_eq!(g.e.pass(Mode::Reassert).conditions.local_dst.len(), 2);
+    // UniFi rewrote the table without Picket's objects: the pass writes them back, and the read
+    // that should verify the write fails.
+    g.b.set_table(
+        Family::V4,
+        TableName::Filter,
+        &fx("filter-block-all-reject.rules"),
+    );
+    g.b.st().fail_reads_after_restore.push(Family::V4);
+    let c = g.e.pass(Mode::Reassert).conditions.local_dst;
+    assert_eq!(c.len(), 1, "{c:#?}");
+    assert_eq!(c[0].family, "ipv6");
+    g.b.st().save_fail.clear();
+    let c = g.e.pass(Mode::Reassert).conditions.local_dst;
+    assert_eq!(c.len(), 2, "back once a read succeeds: {c:#?}");
+}
+
 #[test]
 fn debian_reports_no_local_networks() {
     let mut g = env(
