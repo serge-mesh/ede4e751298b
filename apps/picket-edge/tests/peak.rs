@@ -1,8 +1,9 @@
 //! Activation peak RAM (edge.md §17; bundles.md §6 "Activation": one part extra, "if memory is
 //! short"): a config replacing one large bundle with another of the same size, under a
-//! `bundle_budget_mib` that fits one of them, never holds both whole. The bundle it drops is
-//! unloaded once the new one no longer fits beside it, so the heap peaks near the budget plus
-//! the part being built, not at both bundles.
+//! `bundle_budget_mib` that fits one of them, never holds both whole. The running config's bundle
+//! stays loaded until a replacement is live (#70), so the new one is refused at stage `budget`
+//! once it no longer fits beside it: the heap peaks near the budget plus the part being built,
+//! not at both bundles. A budget that fits both lets the same change through.
 //!
 //! Measured, not accounted: the live heap (every allocation the process makes, counted by the
 //! global allocator) is sampled every millisecond while the config activates. One test in its own
@@ -112,7 +113,7 @@ fn config(up: &FakeUpstream, bundle: &str, head: &str, budget_mib: usize) -> Val
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn replacing_a_large_bundle_never_holds_both() {
+async fn replacing_a_large_bundle_never_holds_both_and_keeps_the_running_one() {
     let n = 200_000;
     let (bx, by) = (bundle("x", 7, n), bundle("y", 11, n));
     assert!(bx.head.shards.len() >= 8, "{} shards", bx.head.shards.len());
@@ -166,15 +167,26 @@ async fn replacing_a_large_bundle_never_holds_both() {
     let sampler = Sampler::start();
     let cfg2 = core.set_config(&config(&up, "y", &idy, budget_mib));
     core.changed(&cfg2);
+    let refused = || {
+        core.with(|s| {
+            s.logs
+                .iter()
+                .any(|l| l["kind"] == "activation_failed" && l["bundle"] == "y" && l["stage"] == "budget")
+        })
+    };
     assert!(
-        wait_until(T, || edge.active().object_id.as_deref() == Some(cfg2.as_str())
-            && edge.active().bundles.get("x").is_none())
-        .await,
-        "the new config goes live; convergence {:?}",
+        wait_until(T, refused).await,
+        "refused at stage budget; convergence {:?}",
         edge.convergence.load()
     );
     let peak = sampler.finish();
-    let my = edge.active().bundles.get("y").unwrap().memory_usage();
+    assert_eq!(edge.active().object_id.as_deref(), Some(cfg1.as_str()));
+    assert!(
+        edge.active().bundles.get("x").is_some(),
+        "x stays for the running config"
+    );
+    assert!(edge.active().bundles.get("y").is_none());
+    let my = mx; // y never loads whole here: built from as many names as x, so about its size
     let extra = (peak - base).max(0) as usize;
     eprintln!(
         "x {} KiB, y {} KiB, budget {budget_mib} MiB: the heap peaked {} KiB above where it stood with x",
@@ -187,6 +199,16 @@ async fn replacing_a_large_bundle_never_holds_both() {
         "the heap rose {} KiB while replacing a {} KiB bundle under a {budget_mib} MiB budget: both were held",
         extra >> 10,
         mx >> 10
+    );
+    // A budget that fits both: the change goes through.
+    let cfg3 = core.set_config(&config(&up, "y", &idy, (mx * 3).div_ceil(MIB) + 1));
+    core.changed(&cfg3);
+    assert!(
+        wait_until(T, || edge.active().object_id.as_deref() == Some(cfg3.as_str())
+            && edge.active().bundles.get("x").is_none())
+        .await,
+        "the new config goes live; convergence {:?}",
+        edge.convergence.load()
     );
     r.shutdown().await;
 }

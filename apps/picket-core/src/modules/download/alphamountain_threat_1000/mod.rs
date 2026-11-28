@@ -176,8 +176,11 @@ impl DownloadModule for Module {
         super::schema_of::<Config>()
     }
 
+    /// The URL as [`super::http`] keys one (host case, default port and fragment don't count),
+    /// so equivalent spellings are one source.
     fn location(&self, cfg: &Value) -> String {
-        cfg.get("url").and_then(Value::as_str).unwrap_or(DEFAULT_URL).to_string()
+        let url = cfg.get("url").and_then(Value::as_str).unwrap_or(DEFAULT_URL);
+        url::Url::parse(url).map_or_else(|_| url.to_string(), |u| super::http::url_key(&u))
     }
 
     fn check_file(&self, _cfg: &Value, file: &str, _pattern: bool) -> Result<(), String> {

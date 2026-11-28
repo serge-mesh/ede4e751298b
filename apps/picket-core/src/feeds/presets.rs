@@ -126,9 +126,9 @@ fn id_of(v: &Value) -> CoreResult<String> {
 
 /// True when `cur` (a provider with a preset provider's id) reads the preset's source: the same
 /// module and the same normalized source identity, the module's `epoch_key` (GitHub: owner and
-/// repository, case-insensitively, and the branch, `HEAD` for the default branch when none is
-/// set, so an explicit branch matches only the same explicit branch; `http`: the canonical URL).
-/// Names, credentials, headers and the selection are the admin's and never count.
+/// repository, case-insensitively, and the branch: the default branch when none is set, which no
+/// explicit branch matches, not even `HEAD`; `http`: the canonical URL). Names, credentials,
+/// headers and the selection are the admin's and never count.
 pub fn same_source(preset: &FeedProviderDef, cur: &FeedProviderDef) -> bool {
     cur.module == preset.module
         && crate::modules::download::builtin()
@@ -442,6 +442,19 @@ mod tests {
         assert!(!same_source(
             &on_main,
             &gh(serde_json::json!({"owner": "o", "repo": "r"}))
+        ));
+        // An explicit `HEAD` is a branch of that name, not the default branch.
+        assert!(!same_source(
+            &gh(serde_json::json!({"owner": "hagezi", "repo": "dns-blocklists"})),
+            &gh(serde_json::json!({"owner": "hagezi", "repo": "dns-blocklists", "branch": "HEAD"}))
+        ));
+        // alphamountain: its URL keyed as http keys one.
+        let am = |c: Value| provider("alphamountain_threat_1000", c);
+        assert!(same_source(
+            &am(serde_json::json!({})),
+            &am(
+                serde_json::json!({"url": "https://FILES.ALPHAMOUNTAIN.AI:443/alphaMountain-community-threat-1000.csv"})
+            )
         ));
         // http: the canonical URL (host case and the default port don't count, the path does).
         let http = |u: &str| provider("http", serde_json::json!({"url": u}));

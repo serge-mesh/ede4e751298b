@@ -659,6 +659,11 @@ fn config_checks() {
         m.epoch_key(&json!({"owner": "o", "repo": "r", "branch": "dev"})),
         "another branch points elsewhere"
     );
+    assert_ne!(
+        m.epoch_key(&json!({"owner": "o", "repo": "r"})),
+        m.epoch_key(&json!({"owner": "o", "repo": "r", "branch": "HEAD"})),
+        "the default branch isn't a branch named HEAD"
+    );
     assert!(m.lists_files());
     assert!(m.check_file(&json!({}), "adblock/*.txt", true).is_ok());
     assert!(m.check_file(&json!({}), "../x", false).is_err());

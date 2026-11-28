@@ -1,8 +1,8 @@
 //! The firewall client against the real picket-edge-helper engine in process (edge.md §9;
 //! edge-firewall.md §3–§5; build-and-test.md §5 "Independence", "Edge pipeline"): seeding from a
 //! dump, `apply` once the config is active, answers' addresses in the sets before the reply, the
-//! reconcile, a recreated set refilled, a config without the helper replacing one with it, and an
-//! unreachable helper.
+//! reconcile, a recreated set refilled, a config without the helper replacing one with it, an
+//! unreachable helper, and restarts with a healthy and an incompatible helper (#69).
 
 #![allow(
     clippy::unwrap_used,
@@ -98,6 +98,10 @@ fn config(up: &FakeUpstream, interfaces: Value) -> Value {
 }
 
 async fn start(d: &Dirs, t: Tuning) -> Running {
+    try_start(d, t).await.unwrap()
+}
+
+async fn try_start(d: &Dirs, t: Tuning) -> anyhow::Result<Running> {
     service::start(
         Options {
             config: Some(d.config.clone()),
@@ -108,7 +112,6 @@ async fn start(d: &Dirs, t: Tuning) -> Running {
         |_| {},
     )
     .await
-    .unwrap()
 }
 
 async fn live(r: &Running, id: &str) {
@@ -308,4 +311,148 @@ async fn an_unreachable_helper_holds_its_condition_and_dns_keeps_answering() {
     assert_eq!(m.rcode, 0);
     assert!(r.edge.metrics.snapshot().fw_ack_late >= 1);
     r.shutdown().await;
+}
+
+/// A helper answering `hello` with another protocol version (and everything else plainly).
+fn mismatched_helper(path: &std::path::Path) -> tokio::task::JoinHandle<()> {
+    use bytes::Bytes;
+    use futures_util::{SinkExt, StreamExt};
+    use picket_api::helper::{Frame, PROTO_VERSION};
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let l = tokio::net::UnixListener::bind(path).unwrap();
+    tokio::spawn(async move {
+        while let Ok((sock, _)) = l.accept().await {
+            tokio::spawn(async move {
+                let mut io =
+                    tokio_util::codec::Framed::new(sock, tokio_util::codec::LengthDelimitedCodec::new());
+                while let Some(Ok(b)) = io.next().await {
+                    let f: Frame = serde_json::from_slice(&b).unwrap();
+                    let data = match f.kind.as_str() {
+                        kind::HELLO => json!({"proto_version": PROTO_VERSION + 1, "rules_ok": true,
+                                              "helper_version": "9.9.9"}),
+                        kind::DUMP => json!({"entries": []}),
+                        _ => json!({"ok": true, "rules_ok": true}),
+                    };
+                    let out = Frame {
+                        kind: f.kind.clone(),
+                        id: f.id,
+                        data,
+                    };
+                    if io
+                        .send(Bytes::from(serde_json::to_vec(&out).unwrap()))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+    })
+}
+
+fn state_json(d: &Dirs) -> Value {
+    serde_json::from_slice(&std::fs::read(d.data.join("state.json")).unwrap()).unwrap()
+}
+
+/// #69: restarts with a stored config that needs the helper. A healthy helper is seeded at once
+/// (the firewall tasks start before startup waits for the seed, so the 5 s `seed_wait` never
+/// runs out). A helper speaking another protocol stops the start before any listener, session or
+/// `ready_version`, its `helper_protocol_mismatch` event going to the spool; core gets it once a
+/// compatible start drains the spool.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn restarts_seed_a_healthy_helper_at_once_and_refuse_an_incompatible_one() {
+    let h = helperkit::start();
+    let up = FakeUpstream::plain(ok_upstream()).await;
+    let core = MockCore::start().await;
+    let d = dirs();
+    write_edge_json(&d.config, Some(&core), json!({}));
+    let id = core.set_config(&config(&up, json!([{"name": "br0", "mode": "enforce"}])));
+    let t = || {
+        let t = tuning(&d, h.path.clone());
+        assert_eq!(t.firewall.seed_wait, Duration::from_secs(5), "the default wait");
+        t
+    };
+    let r = start(&d, t()).await;
+    live(&r, &id).await;
+    r.shutdown().await;
+
+    // A healthy restart: seeded before `start` returns, well within the wait.
+    let t0 = std::time::Instant::now();
+    let r = start(&d, t()).await;
+    let took = t0.elapsed();
+    assert!(took < Duration::from_secs(3), "start took {took:?}");
+    assert!(r.edge.fw.state.load().connected, "seeded during start");
+    live(&r, &id).await;
+    r.shutdown().await;
+
+    // An incompatible helper, with core refusing logs so the record must go through the spool.
+    let bad = d.run.join("mismatched.sock");
+    let _bad = mismatched_helper(&bad);
+    core.with(|s| s.log_default = 503);
+    let hellos = core.with(|s| s.hellos.len());
+    let t0 = std::time::Instant::now();
+    let e = try_start(&d, tuning(&d, bad.clone()))
+        .await
+        .err()
+        .expect("start refused");
+    let msg = format!("{e:#}");
+    assert!(
+        msg.contains("incompatible") && msg.contains("9.9.9 speaks protocol"),
+        "{msg}"
+    );
+    assert!(t0.elapsed() < Duration::from_secs(4), "{:?}", t0.elapsed());
+    assert!(state_json(&d)["ready_version"].is_null(), "{}", state_json(&d));
+    assert_eq!(core.with(|s| s.hellos.len()), hellos, "no session was started");
+    let spooled = walk(&d.data.join("spool"))
+        .iter()
+        .any(|p| std::fs::read(p).is_ok_and(|b| contains(&gunzip(&b), b"helper_protocol_mismatch")));
+    assert!(spooled, "the event is in the spool");
+
+    // A compatible start again: the spool drains and core stores the event.
+    core.with(|s| s.log_default = 200);
+    let r = start(&d, t()).await;
+    live(&r, &id).await;
+    assert!(
+        wait_until(T, || core.with(|s| s.logs.iter().any(|l| l["t"] == "event"
+            && l["kind"] == picket_api::logs::event_kind::HELPER_PROTOCOL_MISMATCH
+            && l["helper_version"] == "9.9.9"
+            && l["connection"].is_string())))
+        .await,
+        "the spooled event reaches core"
+    );
+    assert_eq!(
+        state_json(&d)["ready_version"].as_str(),
+        Some(picket_api::VERSION)
+    );
+    r.shutdown().await;
+}
+
+fn walk(dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                out.extend(walk(&p));
+            } else {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+/// A spool segment's records (gzip members), or the bytes as they are.
+fn gunzip(b: &[u8]) -> Vec<u8> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    match flate2::read::MultiGzDecoder::new(b).read_to_end(&mut out) {
+        Ok(_) => out,
+        Err(_) => b.to_vec(),
+    }
+}
+
+fn contains(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
 }

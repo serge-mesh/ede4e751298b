@@ -29,6 +29,10 @@ pub enum Ready {
     Except(Vec<String>),
     /// The edge never touches `state.json`.
     Silent,
+    /// These versions find the helper speaking another protocol (#69): each start writes
+    /// `ready_version: null` (its starts counted), refuses to run and exits; systemd starts it
+    /// again every `RestartSec` (5 s), and it never says ready. Other versions report ready.
+    Incompatible(Vec<String>),
 }
 
 #[derive(Debug)]
@@ -58,6 +62,8 @@ pub struct State {
     /// Crash at the nth (1-based) time this checkpoint is reached.
     pub crash_at: Option<(String, u32)>,
     pub checkpoint_hits: HashMap<String, u32>,
+    /// Restarts of an edge refusing to run ([`Ready::Incompatible`]) after its first start.
+    pub refused_starts: u32,
     /// Checkpoints that return an error.
     pub fail_checkpoint: BTreeSet<String>,
     pub sysusers_conflict: bool,
@@ -107,6 +113,7 @@ impl FakeSystem {
                 mountinfo: DEFAULT_MOUNTINFO.into(),
                 crash_at: None,
                 checkpoint_hits: HashMap::new(),
+                refused_starts: 0,
                 fail_checkpoint: BTreeSet::new(),
                 sysusers_conflict: false,
                 runtime_masked: BTreeSet::new(),
@@ -266,8 +273,8 @@ impl FakeSystem {
         Ok(())
     }
 
-    /// What the edge does at start: `ready_version` null, then its version once ready.
-    fn edge_started(&self) {
+    /// What the edge does at start: `ready_version` null, then its version once ready (true).
+    fn edge_started(&self) -> bool {
         let (bin, data, ready) = {
             let st = self.st.borrow();
             (st.bin_dir.clone(), st.data_dir.clone(), st.ready.clone())
@@ -276,12 +283,12 @@ impl FakeSystem {
             .ok()
             .and_then(|t| t.file_name().map(|n| n.to_string_lossy().into_owned()));
         if matches!(ready, Ready::Silent) {
-            return;
+            return false;
         }
         let ok = match (&ready, &version) {
             (_, None) | (Ready::Silent, _) => false,
             (Ready::All, Some(_)) => true,
-            (Ready::Except(v), Some(ver)) => !v.contains(ver),
+            (Ready::Except(v) | Ready::Incompatible(v), Some(ver)) => !v.contains(ver),
         };
         let state = match (ok, version) {
             (true, Some(v)) => format!("{{\"ready_version\": \"{v}\", \"other\": [1, 2]}}"),
@@ -291,6 +298,7 @@ impl FakeSystem {
         if dir.is_dir() {
             let _ = std::fs::write(dir.join("state.json"), state);
         }
+        ok
     }
 
     /// A reboot: a new boot ID, every unit reloaded, enabled units (and what they pull in)
@@ -550,8 +558,18 @@ impl System for FakeSystem {
 
     fn sleep(&self, d: Duration) {
         let mut st = self.st.borrow_mut();
+        let before = st.clock;
         st.clock += d;
         drop(st.release_on_sleep.take());
+        // An edge refusing to run is restarted by systemd every 5 s, each start writing
+        // `state.json` again.
+        let restarts = matches!(st.ready, Ready::Incompatible(_))
+            && st.active.get(units::EDGE).is_some_and(|a| a == "active")
+            && before.as_secs() / 5 != st.clock.as_secs() / 5;
+        drop(st);
+        if restarts && !self.edge_started() {
+            self.st.borrow_mut().refused_starts += 1;
+        }
     }
 
     fn boot_id(&self) -> io::Result<String> {

@@ -3315,3 +3315,37 @@ async fn a_running_scan_keeps_the_counted_answers_it_holds() {
         "the scan's answers were counted before it read them"
     );
 }
+
+/// #71 (review of #89): a config restore overtaking a batch between its events and its lookups
+/// leaves the lookup step committing nothing (no queued call, no verdict) and the batch is
+/// retried; the retry goes through.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restore_before_the_lookup_step_commits_no_lookup() {
+    use picket_core::logs::ingest::IngestPoint;
+    let s = Setup::new(
+        http_json(json!({})),
+        json!({"id": "kids", "name": "Kids", "lookup_providers": [{"provider": "q9", "mode": "async"}]}),
+        by_name(),
+    )
+    .await;
+    let lines = vec![s.query("bad.restore.example")];
+    let r = crate::edge_protocol::store_across_a_restore(&s.c, &s.edge, &lines, IngestPoint::AfterEvents).await;
+    assert!(crate::edge_protocol::is_retryable(&r), "{r:?}");
+    let touched = "SELECT (SELECT count(*) FROM lookup_queue) + (SELECT count(*) FROM lookup_verdicts \
+                   WHERE name = 'bad.restore.example')";
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(q::<i64>(&s.c, touched).await, 0, "nothing of the batch's lookups committed");
+    wait_for("the lookups runtime to see the restored config", 10, || async {
+        s.c.state.lookups.model().lookup_providers.contains_key("q9")
+    })
+    .await;
+    let r = s
+        .c
+        .state
+        .logs
+        .store_batch(&s.c.state, &s.edge.id, &s.edge.fingerprint, crate::edge_protocol::batch_of(&lines))
+        .await
+        .unwrap();
+    assert_eq!(r.stored, 1, "{r:?}");
+    wait_for("the retry's lookup", 20, || async { q::<i64>(&s.c, touched).await > 0 }).await;
+}
