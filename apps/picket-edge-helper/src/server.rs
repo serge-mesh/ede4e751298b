@@ -24,7 +24,7 @@ use std::io;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::SyncSender;
+use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -456,10 +456,13 @@ impl<B: Backend> Server<B> {
             }
             Request::Apply(d) => {
                 let (tx, rx) = oneshot::channel();
-                if self.shared.put_apply(d, tx) {
-                    // A full queue means the engine is busy and looks for the apply after the
-                    // command in hand, so a lost wake costs nothing.
-                    let _ = self.engine.try_send(Cmd::ApplyPending);
+                // A full queue means the engine is busy and looks for the apply after the command
+                // in hand, so a lost wake costs nothing. With the engine gone nobody would take
+                // the apply: free it, which answers every caller waiting on it at once.
+                if self.shared.put_apply(d, tx)
+                    && let Err(TrySendError::Disconnected(_)) = self.engine.try_send(Cmd::ApplyPending)
+                {
+                    drop(self.shared.take_apply());
                 }
                 match timeout(self.cfg.engine_timeout, rx).await {
                     Ok(Ok(r)) => frame(kind::APPLY, id, &r),
@@ -764,5 +767,89 @@ mod apply_tests {
         stop.store(true, Ordering::Relaxed);
         refill.join().unwrap();
         assert!(r.expect("the disable waited behind the applies").is_ok());
+    }
+
+    #[tokio::test]
+    async fn queued_wakes_do_not_count_as_the_command_between_applies() {
+        let b = Arc::new(FakeBackend::new());
+        let shared = Shared::new();
+        let (tx, rx) = sync_channel(engine::CMD_QUEUE);
+        let desired = || match parse_request(&apply("br0")) {
+            Ok((_, Request::Apply(d))) => d,
+            other => panic!("{other:?}"),
+        };
+        shared.put_apply(desired(), oneshot::channel().0);
+        // A burst of wakes (UniFi's state file, `ensure`s, lost apply wakes) ahead of the disable.
+        for i in 0..engine::CMD_QUEUE - 1 {
+            tx.send(if i % 2 == 0 {
+                Cmd::Trigger
+            } else {
+                Cmd::ApplyPending
+            })
+            .unwrap();
+        }
+        let (dtx, drx) = oneshot::channel();
+        tx.send(Cmd::Disable(dtx)).unwrap();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let taken = Arc::new(AtomicUsize::new(0));
+        let refill = std::thread::spawn({
+            let (shared, stop, taken) = (shared.clone(), stop.clone(), taken.clone());
+            let d = desired();
+            move || {
+                while !stop.load(Ordering::Relaxed) {
+                    if shared.put_apply(d.clone(), oneshot::channel().0) {
+                        taken.fetch_add(1, Ordering::Relaxed);
+                    }
+                    std::thread::yield_now();
+                }
+            }
+        });
+        let engine = Engine::new(b.clone(), shared.clone(), Platform::Debian);
+        std::thread::spawn(move || engine::run(engine, rx));
+        let r = timeout(Duration::from_secs(2), drx).await;
+        let applies = taken.load(Ordering::Relaxed);
+        stop.store(true, Ordering::Relaxed);
+        refill.join().unwrap();
+        assert!(r.expect("the disable was not answered").is_ok());
+        // One apply per wake ahead of it would be 16.
+        assert!(applies < 6, "{applies} applies ran before the disable");
+    }
+
+    #[tokio::test]
+    async fn an_apply_gives_up_at_once_when_the_engine_is_gone() {
+        let b = Arc::new(FakeBackend::new());
+        let shared = Shared::new();
+        let (tx, rx) = sync_channel(engine::CMD_QUEUE);
+        let fast = fast::spawn(b.clone(), shared.clone(), tx.clone()).unwrap();
+        let s = Server::new(b.clone(), shared.clone(), tx, fast, ServerConfig::default());
+        // The engine thread ends (here: it panics) with an apply waiting in the slot.
+        let waiting = tokio::spawn({
+            let s = s.clone();
+            async move { call(&s, &apply("br0")).await }
+        });
+        timeout(Duration::from_secs(2), async {
+            while shared.apply_waiters() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let dead = std::thread::spawn({
+            let shared = shared.clone();
+            move || {
+                let _close = engine::CloseOnExit::new(rx, shared);
+                panic!("engine panic");
+            }
+        });
+        assert!(dead.join().is_err());
+        for r in [
+            timeout(Duration::from_secs(1), waiting).await.unwrap().unwrap(),
+            timeout(Duration::from_secs(1), call(&s, &apply("br1")))
+                .await
+                .unwrap(),
+        ] {
+            assert_eq!(r["type"], "error", "{r}");
+        }
+        assert_eq!(shared.apply_waiters(), 0);
     }
 }
