@@ -45,14 +45,18 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      # Which jobs a change needs. PRs: the PR's diff against its base. Pushes to main: the diff
-      # since the commit before the push. Weekly and manual runs select everything (below).
-      # Changing this workflow selects every job.
+      # Which jobs a change needs. PRs: the PR's diff against its base. Pushes to main: exactly the
+      # pushed range, by SHA (by branch name, paths-filter would read origin/main, which a later
+      # push may already have moved). Weekly and manual runs select everything (below), so they
+      # skip this. Changing this workflow selects every job.
       - name: Select jobs by changed paths
         id: filter
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           token: ''  # git diff, not the GitHub API
+          base: ${{ github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000' && github.event.before || '' }}
+          ref: ${{ github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000' && github.sha || '' }}
           predicate-quantifier: some-with-excludes
           filters: |
             rust:
@@ -127,6 +131,8 @@ jobs:
               - '.github/workflows/**'
               - .github/dependabot.yml
               - .github/zizmor.yml
+              # It installs zizmor.
+              - scripts/install-ci-tool.sh
             codeql_rust:
               - '**/*.rs'
               - '**/Cargo.toml'
@@ -243,6 +249,7 @@ jobs:
         run: cargo doc --profile ci --workspace --no-deps --locked
 
       - name: Tests (all but the edge side)
+        id: tests
         run: |
           set -f
           exclude=""
@@ -250,8 +257,9 @@ jobs:
           # shellcheck disable=SC2086 # one word per flag
           cargo nextest run --profile ci --cargo-profile ci --locked --workspace $exclude
 
+      # Also after failing tests, but not after an earlier step failed (the tests didn't run).
       - name: Doctests
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
         run: cargo test --profile ci --workspace --doc --locked
 
   edge-arm64:
