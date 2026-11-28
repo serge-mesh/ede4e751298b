@@ -318,12 +318,13 @@ async fn other_lanca_zones_and_bad_references_reject_the_whole_document() {
         .unwrap()
         .push(json!({"id": "old", "name": "Old", "module": "http", "enabled": false,
                      "config": {"base_url": "https://lists.example/"},
-                     "files": [{"match": "a.txt", "feed": {"format": "plain"}}]}));
+                     "files": [{"match": "response", "feed": {"format": "plain"}}]}));
     let r = restore(&b, &old).await;
     let st = r.status();
     let body = r.text().await.unwrap();
     assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-    assert!(body.contains("old"), "names the provider: {body}");
+    assert!(body.contains("\"old\""), "names the provider: {body}");
+    assert!(body.contains("base_url"), "names the field: {body}");
     // Nothing changed.
     assert_eq!(
         q_i64(&b, "SELECT count(*) FROM profiles WHERE id = 'keep'").await,

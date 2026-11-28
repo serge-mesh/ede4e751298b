@@ -98,7 +98,7 @@ pub struct PresetView {
 pub struct Installed {
     /// The provider it installed (null for a manual preset).
     pub provider: Option<String>,
-    /// Its feeds that exist now (each in the bundle).
+    /// Its feeds that exist now (each in the bundle, unless `pending` says why not).
     pub feeds: Vec<String>,
     /// The provider or manual feed was created.
     pub created: bool,
@@ -329,15 +329,16 @@ pub fn complete_in(tx: &rusqlite::Transaction<'_>, provider: &str) -> anyhow::Re
                 .filter(|i| i.severity == Severity::Error && i.entity == "bundle" && i.id == want.bundle)
                 .collect()
         };
-        let had = errors(&model).len();
+        let had = errors(&model);
         model.bundles.insert(want.bundle.clone(), bundle.clone());
         let now = errors(&model);
-        if now.len() > had {
+        if now.len() > had.len() {
+            // Name an error the attachment brings, not one the bundle already had.
             stop_in(
                 tx,
                 provider,
                 PendingState::Refused,
-                now.first().map(|i| i.message.as_str()),
+                now.iter().find(|i| !had.contains(i)).map(|i| i.message.as_str()),
             )?;
             return Ok(vec![]);
         }
@@ -513,11 +514,34 @@ pub async fn install(state: &SharedState, id: &str, actor: Actor) -> CoreResult<
                     let (step, changed) = provider_step(tx, &pv, &def2, &a)?;
                     let added = complete_in(tx, &def2.id).map_err(CoreError::Other)?;
                     let waiting = pending(tx, &def2.id).map_err(|e| CoreError::Other(e.into()))?;
-                    Ok((step, changed || !added.is_empty(), !added.is_empty(), waiting))
+                    // Its feeds from the same snapshot as `waiting`, so the two agree.
+                    let mut st =
+                        tx.prepare("SELECT id, file FROM feeds WHERE provider_id = ?1 ORDER BY id")?;
+                    let rows = st.query_map([&def2.id], |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+                    })?;
+                    let mut feeds = Vec::new();
+                    for row in rows {
+                        let (id, file) = row?;
+                        if def2
+                            .files
+                            .iter()
+                            .any(|x| file.as_deref() == Some(x.pattern.as_str()))
+                        {
+                            feeds.push(id);
+                        }
+                    }
+                    Ok((
+                        step,
+                        changed || !added.is_empty(),
+                        !added.is_empty(),
+                        (waiting, feeds),
+                    ))
                 },
                 |(_, changed, _, _)| *changed,
             )
             .await?;
+        let (waiting, feeds) = waiting;
         match step {
             ProviderStep::Created => out.created = true,
             ProviderStep::Present => {}
@@ -533,7 +557,6 @@ pub async fn install(state: &SharedState, id: &str, actor: Actor) -> CoreResult<
             .get(&pid)
             .map(|x| x.name.clone())
             .unwrap_or_default();
-        let mut feeds = Vec::new();
         for f in model
             .feeds
             .values()
@@ -546,7 +569,6 @@ pub async fn install(state: &SharedState, id: &str, actor: Actor) -> CoreResult<
             else {
                 continue;
             };
-            feeds.push(f.id.clone());
             let preset_name = entry
                 .feed
                 .as_ref()

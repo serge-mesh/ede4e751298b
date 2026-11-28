@@ -2185,4 +2185,36 @@ async fn github_presets_complete_or_say_why_not() {
     // Deleting the provider drops its intent.
     delete_provider(&c, "oisd-big").await;
     assert_eq!(preset_pending(&c, "oisd-big").await, Value::Null);
+    // The bundle deleted, and one made again with its id, before the listing: the intent ends
+    // with the deletion, so nothing joins the new bundle.
+    let bundle = |id: &str| json!({"id": id, "name": "Stand-in", "action": "block", "feeds": []});
+    let r = ui(&c, Method::POST, "/bundles").json(&bundle("standin")).send().await.unwrap();
+    assert_eq!(r.status(), StatusCode::CREATED, "{}", r.text().await.unwrap());
+    repo.lock().unwrap().down = true;
+    let (st, v) = install_preset(&c, "oisd-big").await;
+    assert_eq!((st, v["pending"]["state"].clone()), (StatusCode::OK, json!("waiting")), "{v}");
+    c.state
+        .db
+        .write(|db| {
+            db.execute(
+                "UPDATE preset_pending SET bundle_id = 'standin' WHERE provider_id = 'oisd-big'",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .unwrap();
+    let r = ui(&c, Method::DELETE, "/bundles/standin").json(&json!({})).send().await.unwrap();
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    assert_eq!(preset_pending(&c, "oisd-big").await["state"], "bundle_missing");
+    let r = ui(&c, Method::POST, "/bundles").json(&bundle("standin")).send().await.unwrap();
+    assert_eq!(r.status(), StatusCode::CREATED, "{}", r.text().await.unwrap());
+    repo.lock().unwrap().down = false;
+    common::feeds::check_provider(&c, "oisd-big").await;
+    wait_until("the listing's feed", || async {
+        provider_feed_ids(&c, "oisd-big").len() == 1 && !c.state.feeds.is_checking("oisd-big")
+    })
+    .await;
+    assert_eq!(get_json(&c, "/bundles/standin").await["feeds"], json!([]));
+    assert_eq!(preset_pending(&c, "oisd-big").await["state"], "bundle_missing");
 }
