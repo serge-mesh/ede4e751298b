@@ -13,6 +13,7 @@
     )
 )]
 
+mod apply;
 pub mod backend;
 pub mod cli;
 pub mod dump;

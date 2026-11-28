@@ -85,28 +85,10 @@ pub struct Series {
     pub kind: Kind,
     /// The label keys every value of the series carries (`edge` included where it has one).
     pub labels: &'static [&'static str],
-    /// The name the export uses instead of `name` (before `_total` for a counter), where the
-    /// stored name doesn't suit Prometheus; stored rows and charts keep `name`.
-    pub export: Option<&'static str>,
 }
 
 const fn s(name: &'static str, kind: Kind, labels: &'static [&'static str]) -> Series {
-    Series {
-        name,
-        kind,
-        labels,
-        export: None,
-    }
-}
-
-impl Series {
-    /// The series exported under another name ([`Series::export`]).
-    pub const fn exported_as(self, export: &'static str) -> Series {
-        Series {
-            export: Some(export),
-            ..self
-        }
-    }
+    Series { name, kind, labels }
 }
 
 const E: &[&str] = &["edge"];
@@ -198,9 +180,9 @@ pub const CORE_SERIES: &[Series] = &[
     s("feed_checks", CoreCounter, &["feed", "result"]),
     s("feed_records_added", CoreCounter, FEED_TYPE),
     s("feed_records_deleted", CoreCounter, FEED_TYPE),
-    // Stored and charted as `feed_records_total` (README §2 Compatibility); a gauge, so exported
-    // without `_total`, which Prometheus keeps for counters.
-    s("feed_records_total", CoreGauge, FEED_TYPE).exported_as("feed_records"),
+    // A gauge, so exported without `_total` (`picket_feed_records`), which Prometheus keeps for
+    // counters.
+    s("feed_records", CoreGauge, FEED_TYPE),
     s("feed_parse_errors", CoreCounter, FEED),
     s("feed_held_runs", CoreCounter, FEED),
     // core.md §7, §10: async lookups on core, per provider
@@ -772,13 +754,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn feed_records_keeps_its_stored_name_and_exports_without_total() {
-        // README §2 Compatibility: stored rows and the UI's chart keep the series' name; only the
-        // Prometheus family drops `_total`, which Prometheus keeps for counters.
-        let s = series("feed_records_total").expect("registered under its stored name");
+    fn feed_records_is_one_name_and_exports_without_total() {
+        // Issue 74: stored rows, the UI's chart and the Prometheus family share the gauge's name;
+        // a gauge's family has no `_total`, which Prometheus keeps for counters.
+        let s = series("feed_records").expect("registered");
         assert_eq!(s.kind, Kind::CoreGauge);
         assert_eq!(export::family(s), "picket_feed_records");
-        assert!(series("feed_records").is_none());
+        assert!(series("feed_records_total").is_none());
+        // Counters still end in `_total`.
+        assert_eq!(
+            export::family(series("feed_records_added").unwrap()),
+            "picket_feed_records_added_total"
+        );
     }
 
     /// A call site that records a series with other label keys than the registry's would split

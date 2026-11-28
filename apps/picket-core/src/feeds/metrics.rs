@@ -10,9 +10,9 @@ use crate::state::AppState;
 pub const CHECKS: &str = "feed_checks";
 pub const ADDED: &str = "feed_records_added";
 pub const DELETED: &str = "feed_records_deleted";
-/// The records in a feed's applied run per rule type: a gauge, stored and charted under this name
-/// (README §2 Compatibility) and exported as `picket_feed_records` (`metrics::CORE_SERIES`).
-pub const TOTAL: &str = "feed_records_total";
+/// The records in a feed's applied run per rule type: a gauge, exported as `picket_feed_records`
+/// (`metrics::CORE_SERIES`).
+pub const TOTAL: &str = "feed_records";
 pub const PARSE_ERRORS: &str = "feed_parse_errors";
 pub const HELD: &str = "feed_held_runs";
 

@@ -426,10 +426,17 @@ impl HeavyLane {
     /// Puts a partly done job back for its next step; its wait starts again now, so the time
     /// its step ran doesn't age it. A supersedable job is dropped instead when a newer one of
     /// its kind and target is queued (false).
+    /// A closed lane takes nothing back: the entry is dropped (after the lock, as in
+    /// [`HeavyLane::close`]).
     fn requeue(&self, mut e: Entry) -> bool {
         let Ok(mut q) = self.inner.queue.lock() else {
             return false;
         };
+        if self.inner.closed.load(Ordering::Acquire) {
+            drop(q);
+            drop(e);
+            return false;
+        }
         if e.job.supersedable() && q.iter().any(|x| !x.started && x.key() == e.key()) {
             return false;
         }
@@ -447,10 +454,16 @@ impl HeavyLane {
     pub async fn run(self, shutdown: CancellationToken) {
         loop {
             let entry = loop {
+                // A stop that came as a step ended starts no other job.
+                if shutdown.is_cancelled() {
+                    self.close();
+                    return;
+                }
                 if let Some(e) = self.pick() {
                     break e;
                 }
                 tokio::select! {
+                    biased;
                     _ = shutdown.cancelled() => {
                         self.close();
                         return;
@@ -474,11 +487,12 @@ impl HeavyLane {
             // A panicking step costs its job, never the lane (README §2: a bad item never stalls
             // the receiver).
             let r = tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => None,
                 r = AssertUnwindSafe(entry.job.step()).catch_unwind() => Some(match r {
                     Ok(r) => r,
                     Err(_) => Err(anyhow::anyhow!("the job panicked")),
                 }),
-                _ = shutdown.cancelled() => None,
             };
             let Some(r) = r else {
                 // Stopped mid-step: closed first, so the running job's drop queues nothing.
@@ -1570,6 +1584,43 @@ mod tests {
         drop(state);
         drop(lane);
         assert!(weak.upgrade().is_none(), "the queued job released the owner");
+    }
+
+    /// A stop that comes while a step finishes (the step itself cancels, then asks for another
+    /// step) ends the lane there: no other queued job starts, the partly done job isn't put back,
+    /// and nothing stays queued.
+    #[tokio::test]
+    async fn a_stop_as_a_step_ends_starts_nothing_more() {
+        struct StopsThenMore(CancellationToken, Arc<Mutex<Vec<String>>>);
+        impl HeavyJob for StopsThenMore {
+            fn kind(&self) -> &str {
+                "stops"
+            }
+            fn target(&self) -> &str {
+                "a"
+            }
+            fn step(&mut self) -> BoxFuture<'_, anyhow::Result<Step>> {
+                Box::pin(async move {
+                    self.1.lock().unwrap().push("stops".into());
+                    self.0.cancel();
+                    Ok(Step::More)
+                })
+            }
+        }
+        let lane = HeavyLane::new(10, Duration::from_secs(600));
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let stop = CancellationToken::new();
+        lane.submit(Priority::P0, Box::new(StopsThenMore(stop.clone(), log.clone())));
+        lane.submit(Priority::P3, job("next", "b", 1, &log));
+        let worker = tokio::spawn(lane.clone().run(stop.clone()));
+        tokio::time::timeout(Duration::from_secs(2), worker)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(log.lock().unwrap().clone(), vec!["stops"]);
+        assert_eq!(lane.depth(), 0);
+        assert!(lane.is_closed());
+        assert_eq!(lane.stats().running, None);
     }
 
     /// After shutdown the lane admits nothing, reserved places included; a job dropped by the

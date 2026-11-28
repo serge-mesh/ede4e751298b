@@ -30,8 +30,8 @@
 //!   expiry (and is skipped for a key revoked or lapsed since), a `delete` is skipped for a key
 //!   live again or with an answer's `ensure` out.
 //! - **Startup** (edge-firewall.md §5): `hello` on both connections (protocol version checked:
-//!   no `ensure` goes out on a connection that hasn't passed it; a mismatch on the control
-//!   connection makes the edge refuse to run, §4), then a paged `dump` of
+//!   no `ensure` goes out on a connection that hasn't passed it; a mismatch on either connection
+//!   makes the edge refuse to run, §4: see **Incompatible helper**), then a paged `dump` of
 //!   the four timed sets seeds the shadow map (each expiry capped at now + the largest
 //!   `ttl.max + grace_s`), then, once the clock is synchronised, active IP allows from
 //!   `allows.json` are re-sent where the kernel lacks them or holds them for less, then a
@@ -53,7 +53,17 @@
 //!   helper: no connection, entries, seeding, reconcile or helper conditions. It replaces a config
 //!   that used the helper only once the helper acks an `apply` with no interfaces.
 //! - **Helper unreachable:** answers go out after `ack_wait_ms` (new IPs then hit the firewall,
-//!   failing closed) and `helper_unreachable` holds while the helper can't be reached.
+//!   failing closed) and `helper_unreachable` holds while the helper can't be reached. It is
+//!   temporary: the connections retry with backoff, a config still goes live after `seed_wait`
+//!   ([`Seeding::Pending`]) and seeding happens once the helper answers.
+//! - **Incompatible helper** (#69): the first connection whose `hello` shows another protocol
+//!   version records why (once: the journal, a `helper_protocol_mismatch` event naming the
+//!   connection) and ends its task, which as a critical task stops the edge. Waiting for the seed
+//!   ends at once with [`Seeding::Incompatible`]: startup returns that error before binding
+//!   anything ([`HelperIncompatible`]), and [`FwClient::prepare`] refuses the config, so a
+//!   config that needs the helper never goes live and `ready_version` is never written
+//!   ([`FwClient::incompatible`] guards that write too). A config without the helper never talks
+//!   to it, so it runs whatever the helper speaks.
 
 pub mod conn;
 pub mod local_dst;
@@ -373,6 +383,9 @@ pub struct FwClient {
     rejects: AtomicU64,
     mon_rejects: AtomicU64,
     seeded: AtomicBool,
+    /// The fast connection's first `hello` matched: with `seeded`, startup may count the helper
+    /// as seeded (a mismatch there must stop startup whichever connection answers first).
+    fast_hello: AtomicBool,
     seed_done: Notify,
     reconcile_now: Notify,
     apply_now: Notify,
@@ -389,7 +402,25 @@ pub struct FwClient {
     dropped_ops: AtomicU64,
     /// The helper speaks another protocol (edge-firewall.md §4): nothing goes to it.
     mismatch: AtomicBool,
+    /// Why, as the first connection to see it put it.
+    mismatch_reason: Mutex<Option<String>>,
 }
+
+/// What waiting for the shadow map's seed came to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Seeding {
+    Seeded,
+    /// Not within `seed_wait`: the helper is unreachable or slow, which is temporary; seeding
+    /// happens once it answers.
+    Pending,
+    /// The helper speaks another protocol: the edge refuses to run (edge-firewall.md §4).
+    Incompatible(String),
+}
+
+/// Startup's seed found the helper speaking another protocol (#69): the edge refuses to start.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct HelperIncompatible(pub String);
 
 impl FwClient {
     pub fn new(
@@ -419,6 +450,7 @@ impl FwClient {
             rejects: AtomicU64::new(0),
             mon_rejects: AtomicU64::new(0),
             seeded: AtomicBool::new(false),
+            fast_hello: AtomicBool::new(false),
             seed_done: Notify::new(),
             reconcile_now: Notify::new(),
             apply_now: Notify::new(),
@@ -433,6 +465,7 @@ impl FwClient {
             allows,
             dropped_ops: AtomicU64::new(0),
             mismatch: AtomicBool::new(false),
+            mismatch_reason: Mutex::new(None),
         })
     }
 
@@ -512,8 +545,10 @@ impl FwClient {
                 self.view.store(Arc::new(View::of(cfg)));
             }
             self.set_needed(true);
-            self.wait_seeded().await;
-            return Ok(());
+            return match self.wait_seeded().await {
+                Seeding::Incompatible(reason) => Err(reason),
+                Seeding::Seeded | Seeding::Pending => Ok(()),
+            };
         }
         if !self.needed() {
             self.view.store(Arc::new(View::of(cfg)));
@@ -555,17 +590,74 @@ impl FwClient {
         }
     }
 
-    async fn wait_seeded(&self) {
-        if self.seeded.load(Relaxed) {
-            return;
+    /// Waits up to `seed_wait` for the seed; an incompatible helper ends the wait at once.
+    async fn wait_seeded(&self) -> Seeding {
+        let deadline = tokio::time::Instant::now() + self.tuning.seed_wait;
+        loop {
+            let n = self.seed_done.notified();
+            tokio::pin!(n);
+            n.as_mut().enable();
+            if let Some(s) = self.seeding() {
+                return s;
+            }
+            // One connection's news may leave the other's outstanding: wait on, to the deadline.
+            if tokio::time::timeout_at(deadline, n).await.is_err() {
+                return self.seeding().unwrap_or(Seeding::Pending);
+            }
         }
-        let n = self.seed_done.notified();
-        tokio::pin!(n);
-        n.as_mut().enable();
-        if self.seeded.load(Relaxed) {
-            return;
+    }
+
+    /// Incompatible (which wins), seeded once both connections' first `hello` matched and the
+    /// control connection's seed finished, or neither yet.
+    fn seeding(&self) -> Option<Seeding> {
+        if let Some(reason) = self.incompatible() {
+            return Some(Seeding::Incompatible(reason));
         }
-        let _ = tokio::time::timeout(self.tuning.seed_wait, n).await;
+        (self.seeded.load(Relaxed) && self.fast_hello.load(Relaxed)).then_some(Seeding::Seeded)
+    }
+
+    /// Why the helper is incompatible, once a connection found it speaking another protocol.
+    pub fn incompatible(&self) -> Option<String> {
+        if !self.mismatch.load(Relaxed) {
+            return None;
+        }
+        let r = self
+            .mismatch_reason
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        Some(r.unwrap_or_else(|| "picket-edge-helper speaks another protocol".into()))
+    }
+
+    /// A `hello` on `connection` answered with another protocol version: the first to see it
+    /// records the reason, logs it and emits `helper_protocol_mismatch`; seed waiters wake.
+    /// Returns the recorded reason.
+    fn note_mismatch(&self, hello: &HelloResponse, connection: &'static str) -> String {
+        let reason = {
+            let mut g = self.mismatch_reason.lock().unwrap_or_else(|p| p.into_inner());
+            if g.is_none() {
+                let helper_version = crate::diag::truncate(&hello.helper_version, 64);
+                let msg = format!(
+                    "picket-edge-helper {helper_version} speaks protocol {} (this edge: {PROTO_VERSION}); refusing to run",
+                    hello.proto_version
+                );
+                tracing::error!("{msg} (seen on the {connection} connection)");
+                self.logs.event(
+                    event_kind::HELPER_PROTOCOL_MISMATCH,
+                    fields(&[
+                        ("helper_proto", hello.proto_version.into()),
+                        ("edge_proto", PROTO_VERSION.into()),
+                        ("helper_version", helper_version.into()),
+                        ("connection", connection.into()),
+                    ]),
+                );
+                *g = Some(msg);
+            }
+            g.clone().unwrap_or_default()
+        };
+        self.mismatch.store(true, Relaxed);
+        self.seed_done.notify_waiters();
+        reason
     }
 
     // ------------------------------------------------------------------------------------------
@@ -1929,9 +2021,11 @@ impl FwClient {
                 Err(e) if self.mismatch.load(Relaxed) => {
                     // edge-firewall.md §4: a version mismatch → the edge refuses to start (a
                     // broken install or an update half-way; the updater's readiness wait then
-                    // rolls the update back). Exiting is how this critical task refuses.
+                    // rolls the update back). Exiting is how this critical task refuses. The
+                    // reason is the one recorded first, even when the fast connection saw it and
+                    // this session then failed otherwise.
                     self.fail_queued(&mut rx);
-                    anyhow::bail!("{e}");
+                    anyhow::bail!("{}", self.incompatible().unwrap_or_else(|| e.to_string()));
                 }
                 Err(e) => {
                     tracing::warn!("helper control connection: {e}");
@@ -1980,27 +2074,9 @@ impl FwClient {
         if hello.proto_version != PROTO_VERSION {
             // The edge, helper and updater ship together (edge.md §14): a mismatch means a broken
             // install or an update half-way. The edge refuses to run (edge-firewall.md §4) and
-            // reports it: the journal, an event in the spool, and core's `edge_crash_loop` as
-            // systemd restarts it.
-            self.mismatch.store(true, Relaxed);
-            let msg = format!(
-                "picket-edge-helper {} speaks protocol {} (this edge: {PROTO_VERSION}); refusing to run",
-                crate::diag::truncate(&hello.helper_version, 64),
-                hello.proto_version
-            );
-            tracing::error!("{msg}");
-            self.logs.event(
-                "helper_protocol_mismatch",
-                fields(&[
-                    ("helper_proto", hello.proto_version.into()),
-                    ("edge_proto", PROTO_VERSION.into()),
-                    (
-                        "helper_version",
-                        crate::diag::truncate(&hello.helper_version, 64).into(),
-                    ),
-                ]),
-            );
-            return Err(ConnError::Invalid(msg));
+            // reports it: the journal and an event in the spool (delivered once a compatible
+            // edge runs; until then core sees only silence, see `logs::ingest`).
+            return Err(ConnError::Invalid(self.note_mismatch(&hello, "control")));
         }
         self.state.store(Arc::new(HelperState {
             connected: true,
@@ -2120,12 +2196,18 @@ impl FwClient {
                         )
                         .await;
                     match hello {
-                        Ok(h) if h.proto_version == PROTO_VERSION => Some(c),
-                        Ok(_) => {
-                            // Never an `ensure` to a helper speaking another protocol; the
-                            // control connection reports it and stops the edge.
-                            self.mismatch.store(true, Relaxed);
-                            None
+                        Ok(h) if h.proto_version == PROTO_VERSION => {
+                            if !self.fast_hello.swap(true, Relaxed) {
+                                self.seed_done.notify_waiters();
+                            }
+                            Some(c)
+                        }
+                        Ok(h) => {
+                            // Never an `ensure` to a helper speaking another protocol: the edge
+                            // refuses to run, whichever connection sees it first (§4).
+                            let reason = self.note_mismatch(&h, "fast");
+                            self.fail_ops(&mut held, &mut rx);
+                            anyhow::bail!("{reason}");
                         }
                         Err(_) => None,
                     }
@@ -2418,18 +2500,25 @@ impl HelperProbe for FwHelperHooks {
     }
 }
 
-#[async_trait]
-impl HelperSeed for FwHelperHooks {
-    async fn seed(&self, _edge: &Edge, config: &EdgeConfig) -> anyhow::Result<()> {
+impl FwHelperHooks {
+    /// Startup step 2 for `config`: seeded, not yet (temporary), or [`HelperIncompatible`].
+    pub async fn seed_config(&self, config: &EdgeConfig) -> anyhow::Result<()> {
         let mut v = View::of(config);
         v.active = false;
         self.0.view.store(Arc::new(v));
         self.0.set_needed(true);
-        self.0.wait_seeded().await;
-        if !self.0.seeded.load(Relaxed) {
-            anyhow::bail!("the helper didn't answer in time; seeding when it does");
+        match self.0.wait_seeded().await {
+            Seeding::Seeded => Ok(()),
+            Seeding::Pending => anyhow::bail!("the helper didn't answer in time; seeding when it does"),
+            Seeding::Incompatible(reason) => Err(HelperIncompatible(reason).into()),
         }
-        Ok(())
+    }
+}
+
+#[async_trait]
+impl HelperSeed for FwHelperHooks {
+    async fn seed(&self, _edge: &Edge, config: &EdgeConfig) -> anyhow::Result<()> {
+        self.seed_config(config).await
     }
 }
 
@@ -2494,6 +2583,14 @@ mod tests {
         delay: Duration,
         /// The protocol version it answers `hello` with (0: this edge's).
         proto: u32,
+        /// The version it answers a `hello` without events (the fast connection) with, when set.
+        fast_proto: Option<u32>,
+        /// `hello`s answered.
+        hellos: usize,
+        /// Hold every `dump` until notified.
+        pause_dump: Option<Arc<Notify>>,
+        /// Hold the fast connection's `hello` until notified.
+        pause_fast_hello: Option<Arc<Notify>>,
         /// `dump` pages per set name.
         dump: HashMap<String, Vec<picket_api::helper::SetEntry>>,
         ensured: Vec<picket_api::helper::SetEntry>,
@@ -2592,14 +2689,28 @@ mod tests {
                         let data = match f.kind.as_str() {
                             kind::HELLO => {
                                 let r: HelloRequest = f.parse_data().unwrap();
+                                let pause = st.lock().unwrap().pause_fast_hello.clone();
+                                if let (false, Some(p)) = (r.events, pause) {
+                                    p.notified().await;
+                                }
                                 let mut g = st.lock().unwrap();
+                                g.hellos += 1;
                                 if r.events {
                                     g.events.push(etx.clone());
                                 }
                                 let proto = if g.proto == 0 { PROTO_VERSION } else { g.proto };
-                                serde_json::json!({"proto_version": proto, "rules_ok": true})
+                                let proto = if r.events {
+                                    proto
+                                } else {
+                                    g.fast_proto.unwrap_or(proto)
+                                };
+                                serde_json::json!({"proto_version": proto, "rules_ok": true, "helper_version": "0.0.9"})
                             }
                             kind::DUMP => {
+                                let pause = st.lock().unwrap().pause_dump.clone();
+                                if let Some(p) = pause {
+                                    p.notified().await;
+                                }
                                 let r: DumpRequest = f.parse_data().unwrap();
                                 let mut g = st.lock().unwrap();
                                 g.dumps += 1;
@@ -2699,7 +2810,34 @@ mod tests {
         path: &std::path::Path,
         adjust: impl FnOnce(&mut FwTuning),
     ) -> (Arc<FwClient>, tokio::task::JoinHandle<anyhow::Result<()>>) {
-        let (logs, _rx) = LogProducer::new("b".into(), Arc::default());
+        let w = client_w(path, adjust);
+        (w.c, w.ctl)
+    }
+
+    /// A client, both its tasks and what it logs.
+    struct Wired {
+        c: Arc<FwClient>,
+        ctl: tokio::task::JoinHandle<anyhow::Result<()>>,
+        fast: tokio::task::JoinHandle<anyhow::Result<()>>,
+        logs: crate::logs::ProducerRx,
+    }
+
+    impl Wired {
+        /// The `helper_protocol_mismatch` events logged so far.
+        fn mismatch_events(&mut self) -> Vec<serde_json::Value> {
+            let mut out = Vec::new();
+            while let Ok(e) = self.logs.rx.try_recv() {
+                let v: serde_json::Value = serde_json::from_str(&e.line).unwrap();
+                if v["kind"] == event_kind::HELPER_PROTOCOL_MISMATCH {
+                    out.push(v);
+                }
+            }
+            out
+        }
+    }
+
+    fn client_w(path: &std::path::Path, adjust: impl FnOnce(&mut FwTuning)) -> Wired {
+        let (logs, rx) = LogProducer::new("b".into(), Arc::default());
         let d = tempfile::tempdir().unwrap();
         let mut tuning = FwTuning {
             socket: path.to_path_buf(),
@@ -2717,9 +2855,14 @@ mod tests {
             Clock::fixed(true),
             AllowsStore::load(&d.keep().join("allows.json"), logs),
         );
-        let h = tokio::spawn(Arc::clone(&c).run_control());
-        tokio::spawn(Arc::clone(&c).run_fast());
-        (c, h)
+        let ctl = tokio::spawn(Arc::clone(&c).run_control());
+        let fast = tokio::spawn(Arc::clone(&c).run_fast());
+        Wired {
+            c,
+            ctl,
+            fast,
+            logs: rx,
+        }
     }
 
     fn cfg(ack_wait_ms: u32) -> EdgeConfig {
@@ -4202,7 +4345,12 @@ mod tests {
         let f = fake(Duration::ZERO);
         f.st().proto = PROTO_VERSION + 1;
         let (c, ctl) = client_h(&f.path);
-        let _ = c.prepare(&cfg(50)).await;
+        // #69: the config is refused (it never goes live), at once rather than after seed_wait.
+        let t0 = Instant::now();
+        let r = c.prepare(&cfg(50)).await;
+        assert!(r.as_ref().is_err_and(|e| e.contains("speaks protocol")), "{r:?}");
+        assert!(t0.elapsed() < Duration::from_millis(400), "{:?}", t0.elapsed());
+        assert!(c.incompatible().is_some());
         c.config_active(&cfg(50));
         let fw = ProfileFirewall::default();
         let _ = ensure(&c, &fw, "4.4.4.4", 300).await;
@@ -4215,6 +4363,144 @@ mod tests {
         // edge-firewall.md §4: a mismatch makes the edge refuse to start (a critical task ends).
         let r = tokio::time::timeout(Duration::from_secs(5), ctl).await;
         assert!(matches!(r, Ok(Ok(Err(_)))), "{r:?}");
+    }
+
+    /// #69: the control connection seeing the mismatch records it once, with its reason, and
+    /// startup's seed reports it as [`HelperIncompatible`].
+    #[tokio::test]
+    async fn a_control_connection_mismatch_is_reported_once_and_stops_startup() {
+        let f = fake(Duration::ZERO);
+        f.st().proto = PROTO_VERSION + 1;
+        f.st().fast_proto = Some(PROTO_VERSION);
+        let mut w = client_w(&f.path, |t| t.seed_wait = Duration::from_secs(5));
+        let r = FwHelperHooks(Arc::clone(&w.c)).seed_config(&cfg(50)).await;
+        let e = r.unwrap_err();
+        assert!(e.downcast_ref::<HelperIncompatible>().is_some(), "{e:#}");
+        let reason = tokio::time::timeout(Duration::from_secs(5), &mut w.ctl)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err()
+            .to_string();
+        assert!(reason.contains("0.0.9 speaks protocol"), "{reason}");
+        assert_eq!(w.c.incompatible().as_deref(), Some(reason.as_str()));
+        let ev = w.mismatch_events();
+        assert_eq!(ev.len(), 1, "{ev:?}");
+        assert_eq!(ev[0]["connection"], "control");
+        assert_eq!(ev[0]["helper_proto"], PROTO_VERSION + 1);
+        assert_eq!(ev[0]["edge_proto"], PROTO_VERSION);
+        assert_eq!(ev[0]["helper_version"], "0.0.9");
+    }
+
+    /// #69: the fast connection seeing the mismatch first (the control connection still seeding)
+    /// keeps the useful reason: it stops the edge with it, logs the event naming itself, and a
+    /// config waiting for the seed is refused at once.
+    #[tokio::test]
+    async fn a_fast_connection_mismatch_keeps_its_reason_and_refuses_the_config() {
+        let f = fake(Duration::ZERO);
+        f.st().fast_proto = Some(PROTO_VERSION + 1);
+        let hold = Arc::new(Notify::new());
+        f.st().pause_dump = Some(Arc::clone(&hold));
+        let mut w = client_w(&f.path, |t| t.seed_wait = Duration::from_secs(5));
+        let t0 = Instant::now();
+        let r = w.c.prepare(&cfg(50)).await;
+        assert!(r.as_ref().is_err_and(|e| e.contains("speaks protocol")), "{r:?}");
+        assert!(t0.elapsed() < Duration::from_secs(2), "{:?}", t0.elapsed());
+        let fast = tokio::time::timeout(Duration::from_secs(5), &mut w.fast)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err()
+            .to_string();
+        assert!(fast.contains("0.0.9 speaks protocol"), "{fast}");
+        let ev = w.mismatch_events();
+        assert_eq!(ev.len(), 1, "{ev:?}");
+        assert_eq!(ev[0]["connection"], "fast");
+        // The control session then failing for another reason still ends with the same reason.
+        f.stop();
+        let ctl = tokio::time::timeout(Duration::from_secs(5), &mut w.ctl)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err()
+            .to_string();
+        assert_eq!(ctl, fast);
+        assert!(w.mismatch_events().is_empty(), "reported once");
+        hold.notify_waiters();
+    }
+
+    /// #69: the control connection seeding first doesn't make the helper seeded while the fast
+    /// connection's `hello` is outstanding; its mismatch then still refuses the config.
+    #[tokio::test]
+    async fn a_late_fast_connection_mismatch_still_refuses_the_config() {
+        let f = fake(Duration::ZERO);
+        f.st().fast_proto = Some(PROTO_VERSION + 1);
+        let hold = Arc::new(Notify::new());
+        f.st().pause_fast_hello = Some(Arc::clone(&hold));
+        let mut w = client_w(&f.path, |t| t.seed_wait = Duration::from_secs(5));
+        let c = Arc::clone(&w.c);
+        let prep = tokio::spawn(async move { c.prepare(&cfg(50)).await });
+        assert!(until(Duration::from_secs(5), || w.c.seeded.load(Relaxed)).await);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!prep.is_finished(), "not seeded until the fast hello answers");
+        hold.notify_waiters();
+        let r = tokio::time::timeout(Duration::from_secs(5), prep)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(r.as_ref().is_err_and(|e| e.contains("speaks protocol")), "{r:?}");
+        let ev = w.mismatch_events();
+        assert_eq!(ev.len(), 1, "{ev:?}");
+        assert_eq!(ev[0]["connection"], "fast");
+    }
+
+    /// #69: an unreachable helper is temporary, not incompatible: the wait runs out, the config
+    /// goes ahead, and seeding happens once the helper answers.
+    #[tokio::test]
+    async fn an_unreachable_helper_is_pending_and_seeds_once_it_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("late.sock");
+        let mut w = client_w(&path, |t| t.seed_wait = Duration::from_millis(200));
+        let r = FwHelperHooks(Arc::clone(&w.c)).seed_config(&cfg(50)).await;
+        let e = r.unwrap_err();
+        assert!(e.downcast_ref::<HelperIncompatible>().is_none(), "{e:#}");
+        assert_eq!(w.c.wait_seeded().await, Seeding::Pending);
+        w.c.prepare(&cfg(50)).await.unwrap();
+        assert!(w.c.incompatible().is_none());
+        let st = Arc::new(Mutex::new(FakeState::default()));
+        let tasks = Arc::new(Mutex::new(Vec::new()));
+        serve_fake(
+            &path,
+            &st,
+            &Arc::new(AtomicUsize::new(0)),
+            &Arc::new(AtomicUsize::new(0)),
+            &tasks,
+        );
+        assert!(until(Duration::from_secs(5), || w.c.seeded.load(Relaxed)).await);
+        assert_eq!(w.c.wait_seeded().await, Seeding::Seeded);
+        assert!(w.mismatch_events().is_empty());
+        assert!(!w.ctl.is_finished() && !w.fast.is_finished());
+        for t in tasks.lock().unwrap().drain(..) {
+            t.abort();
+        }
+    }
+
+    /// #69: a config without the helper never talks to it, so a helper speaking another
+    /// protocol doesn't stop it.
+    #[tokio::test]
+    async fn a_config_without_the_helper_runs_whatever_the_helper_speaks() {
+        let f = fake(Duration::ZERO);
+        f.st().proto = PROTO_VERSION + 1;
+        let mut w = client_w(&f.path, |_| {});
+        let none: EdgeConfig = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(!none.needs_helper());
+        w.c.prepare(&none).await.unwrap();
+        w.c.config_active(&none);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(f.st().hellos, 0);
+        assert!(w.c.incompatible().is_none());
+        assert!(w.mismatch_events().is_empty());
+        assert!(!w.ctl.is_finished() && !w.fast.is_finished());
     }
 
     #[tokio::test]

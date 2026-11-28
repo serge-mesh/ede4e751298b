@@ -589,6 +589,151 @@ async fn guardrails_raise_once_and_resolve() {
     assert!(open_alerts(&c, "broad_block", "fhb").await.is_empty());
 }
 
+/// The open cross-feed cancellation warnings of `bundle`, by rule.
+async fn cancellations(c: &Core, bundle: &str) -> BTreeMap<String, picket_core::alerts::Alert> {
+    open_alerts(c, "bundle_warning", bundle)
+        .await
+        .into_iter()
+        .filter(|a| a.details["warning"] == "cross_feed_cancellation")
+        .map(|a| (a.details["rule"].as_str().unwrap_or_default().to_string(), a))
+        .collect()
+}
+
+/// After a skipped scan, the next incremental scan meets every key: an exception pattern that
+/// stayed was never scanned against the keys that didn't change.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_scan_after_a_skipped_one_meets_every_key() {
+    let c = core().await;
+    manual_feed(&c, "sa", json!({})).await;
+    manual_feed(&c, "sb", json!({})).await;
+    put_entity(
+        &c,
+        "bundles",
+        "sk1",
+        json!({"id": "sk1", "name": "sk1", "feeds": [{"feed": "sa"}, {"feed": "sb"}]}),
+    )
+    .await;
+    save(&c, "sa", "||zz1.example^\n").await;
+    let many: String = (0..=picket_core::compiler::guard::MAX_CANCELLERS)
+        .map(|i| format!("@@||e{i:05}.test^|\n"))
+        .collect();
+    save(&c, "sb", &format!("{many}@@/^zz1\\.example$/\n")).await;
+    build(&c, "sk1").await.unwrap();
+    let (state, _) = alert(&c, "bundle_warning:sk1:cancel_scan").await.expect("skipped");
+    assert_eq!(state, "open");
+    assert!(cancellations(&c, "sk1").await.is_empty());
+    // The keyed exceptions leave; the pattern and the key it cancels don't change.
+    save(&c, "sb", "@@/^zz1\\.example$/\n").await;
+    build(&c, "sk1").await.unwrap();
+    let (state, _) = alert(&c, "bundle_warning:sk1:cancel_scan").await.unwrap();
+    assert_eq!(state, "resolved");
+    let found = cancellations(&c, "sk1").await;
+    let w = &found[r"@@/^zz1\.example$/"];
+    assert_eq!(w.details["cancelled"], 1, "{}", w.details);
+    assert_eq!(w.details["exhaustive"], true, "{}", w.details);
+}
+
+/// #87: an exception pattern meets every keyed block it may cancel, not a sample of the changed
+/// keys, whichever chunk of cancellers it falls in; an exception pattern added later meets the
+/// unchanged keys too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn exception_patterns_meet_every_key_of_other_feeds() {
+    let c = core().await;
+    manual_feed(&c, "pa", json!({})).await;
+    manual_feed(&c, "pb", json!({})).await;
+    put_entity(
+        &c,
+        "bundles",
+        "pk1",
+        json!({"id": "pk1", "name": "pk1", "feeds": [{"feed": "pa"}, {"feed": "pb"}]}),
+    )
+    .await;
+    // More changed keys than the old 2000-key sample; the cancelled block sorts after them all.
+    let mut blocks: String = (0..2500).map(|i| format!("||k{i:04}.example^\n")).collect();
+    blocks.push_str("||zz1.example^\n");
+    save(&c, "pa", &blocks).await;
+    save(&c, "pb", "@@/^zz1\\.example$/\n").await;
+    build(&c, "pk1").await.unwrap();
+    let found = cancellations(&c, "pk1").await;
+    let w = &found["@@/^zz1\\.example$/"].details;
+    assert_eq!(w["proven"], true, "{w}");
+    assert_eq!(w["exhaustive"], true, "{w}");
+    assert_eq!(w["cancelled"], 1, "{w}");
+    assert!(alert(&c, "bundle_warning:pk1:cancel_scan_incomplete").await.is_none());
+
+    // An exception pattern added when the block it cancels is unchanged (an incremental build
+    // whose changed keys don't include it), after more than a chunk of other cancellers; and a
+    // pattern standing for a key, which meets the rules at its key.
+    let keyed: String = (0..1200).map(|i| format!("@@||e{i:04}.other^\n")).collect();
+    let pats = "@@/^zz1\\.example$/\n@@/^k0007\\.example$/\n@@||k0011.example^|\n";
+    save(&c, "pb", &format!("{keyed}{pats}")).await;
+    build(&c, "pk1").await.unwrap();
+    let found = cancellations(&c, "pk1").await;
+    assert_eq!(found.len(), 3, "{:?}", found.keys());
+    let w = &found["@@/^k0007\\.example$/"].details;
+    assert_eq!((w["proven"].clone(), w["cancelled"].clone()), (json!(true), json!(1)), "{w}");
+    assert_eq!(w["sample"], json!(["||k0007.example^ (pa)"]));
+    assert_eq!(found["@@||k0011.example^|"].details["cancelled"], 1);
+
+    // The same inputs moved to another chunk, with an exception pattern added so the scan runs
+    // again: the standing warnings stay, raised once, and the new one is found.
+    save(&c, "pb", &format!("{pats}@@/^k0013\\.example$/\n{keyed}")).await;
+    build(&c, "pk1").await.unwrap();
+    let found = cancellations(&c, "pk1").await;
+    assert_eq!(found.len(), 4, "{:?}", found.keys());
+    assert!(found.values().all(|a| a.count == 1), "{found:?}");
+    let w = &found["@@/^k0013\\.example$/"].details;
+    assert_eq!((w["exhaustive"].clone(), w["cancelled"].clone()), (json!(true), json!(1)), "{w}");
+    assert!(alert(&c, "bundle_warning:pk1:cancel_scan_incomplete").await.is_none());
+}
+
+/// #87: candidates the scan cuts show as an incomplete scan, never as a complete count, and the
+/// warning resolves once a scan is complete again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cut_scan_says_so_and_resolves_when_complete() {
+    let c = core().await;
+    manual_feed(&c, "qa", json!({})).await;
+    manual_feed(&c, "qb", json!({})).await;
+    put_entity(
+        &c,
+        "bundles",
+        "qk1",
+        json!({"id": "qk1", "name": "qk1", "feeds": [{"feed": "qa"}, {"feed": "qb"}]}),
+    )
+    .await;
+    let blocks: String = (0..1500).map(|i| format!("||k{i:04}.example.org^\n")).collect();
+    save(&c, "qa", &blocks).await;
+    // More keys below it than the scan reads per subdomain-wide exception.
+    save(&c, "qb", "@@||example.org^\n").await;
+    build(&c, "qk1").await.unwrap();
+    let found = cancellations(&c, "qk1").await;
+    let w = &found["@@||example.org^"];
+    assert_eq!(w.details["proven"], true);
+    assert_eq!(w.details["exhaustive"], false, "{}", w.details);
+    assert!(w.title.contains("at least"), "{}", w.title);
+    let (state, d) = alert(&c, "bundle_warning:qk1:cancel_scan_incomplete")
+        .await
+        .expect("an incomplete scan warns");
+    assert_eq!(state, "open");
+    assert_eq!(d["reasons"], json!(["below_cap"]), "{d}");
+    // The exception leaves: the scan is complete again.
+    save(&c, "qb", "@@||elsewhere.test^\n").await;
+    build(&c, "qk1").await.unwrap();
+    assert!(cancellations(&c, "qk1").await.is_empty());
+    let (state, _) = alert(&c, "bundle_warning:qk1:cancel_scan_incomplete").await.unwrap();
+    assert_eq!(state, "resolved");
+    // A `$badfilter` rule meets only its own key: the keys below it aren't read, nor cut.
+    save(&c, "qa", &format!("{blocks}||example.org^\n")).await;
+    save(&c, "qb", "||example.org^$badfilter\n").await;
+    build(&c, "qk1").await.unwrap();
+    let found = cancellations(&c, "qk1").await;
+    let w = &found["||example.org^$badfilter"];
+    assert_eq!(w.details["exhaustive"], true, "{}", w.details);
+    assert_eq!(w.details["cancelled"], 1, "{}", w.details);
+    let (state, _) = alert(&c, "bundle_warning:qk1:cancel_scan_incomplete").await.unwrap();
+    assert_eq!(state, "resolved");
+}
+
 /// The raw rules of a bundle's open `broad_block` alerts, sorted.
 async fn broad_rules(c: &Core, bundle: &str) -> Vec<String> {
     let mut r: Vec<String> = open_alerts(c, "broad_block", bundle)

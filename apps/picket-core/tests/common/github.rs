@@ -1,5 +1,6 @@
 //! A fake of github.com (`ls-refs`), api.github.com (trees, contents, commits) and
-//! raw.githubusercontent.com for one repository, `o/r`, whose head and files tests change.
+//! raw.githubusercontent.com for one repository, `o/r`, whose head and files tests change. Any
+//! other owner and repository answer the same (a preset's repository, say).
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -24,6 +25,8 @@ pub struct Repo {
     pub walkable: bool,
     /// Tree answers wait this long (a check in flight).
     pub slow_trees: Option<std::time::Duration>,
+    /// Every answer is a 503 (GitHub down).
+    pub down: bool,
 }
 
 pub fn blob_sha(body: &str) -> String {
@@ -61,18 +64,31 @@ impl Repo {
     }
 }
 
+/// `path` past its first `n` segments (`/repos/o/r/x/y`, 3: `x/y`).
+fn past(path: &str, n: usize) -> &str {
+    path.trim_start_matches('/')
+        .splitn(n + 1, '/')
+        .nth(n)
+        .unwrap_or("")
+}
+
 fn handle(r: &Repo, s: &Seen) -> Reply {
+    if r.down {
+        return Reply::status(503);
+    }
     match s.host.as_str() {
         "github.com" => {
+            // `main` and `gh-pages` (a preset's branch) at the head.
             let answer = format!(
-                "{}{}0000",
+                "{}{}{}0000",
                 pkt(&format!("{} HEAD symref-target:refs/heads/main\n", r.head)),
+                pkt(&format!("{} refs/heads/gh-pages\n", r.head)),
                 pkt(&format!("{} refs/heads/main\n", r.head))
             );
             Reply::ok(answer).header("content-type", "application/x-git-upload-pack-result")
         }
         "api.github.com" => {
-            let rest = s.path.trim_start_matches("/repos/o/r/");
+            let rest = past(&s.path, 3);
             if rest == "commits" {
                 return Reply::ok(serde_json::to_string(&r.commits).unwrap())
                     .header("content-type", "application/json");
@@ -133,7 +149,7 @@ fn handle(r: &Repo, s: &Seen) -> Reply {
             }
         }
         "raw.githubusercontent.com" => {
-            let rest = s.path.trim_start_matches("/o/r/");
+            let rest = past(&s.path, 2);
             let (commit, path) = rest.split_once('/').unwrap_or_default();
             match r.trees.get(commit).and_then(|t| t.get(path)) {
                 Some(b) => Reply::ok(b.clone()),

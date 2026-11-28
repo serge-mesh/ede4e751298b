@@ -423,15 +423,18 @@ pub async fn apply(
     apply_within(state, edge, queries, records, None).await
 }
 
-/// [`apply`] for a log batch that started under config restore generation `restore`: its
-/// transaction commits nothing once a restore committed since ([`crate::logs::ingest`]), and
-/// fails with [`crate::logs::ingest::RestoreOvertook`] instead.
+/// True once a config restore overtook a log batch ([`crate::logs::ingest`]).
+pub type Stale = std::sync::Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// [`apply`] for a log batch a config restore may overtake (`stale`): its transaction and its
+/// metric increments commit nothing once `stale` holds, and it fails with
+/// [`crate::logs::ingest::RestoreOvertook`] instead.
 pub async fn apply_within(
     state: &AppState,
     edge: &str,
     queries: Vec<QueryInfo>,
     records: Vec<LookupRecord>,
-    restore: Option<u64>,
+    stale: Option<Stale>,
 ) -> anyhow::Result<Applied> {
     let model = state.lookups.model();
     if model.lookup_providers.is_empty() {
@@ -483,11 +486,11 @@ pub async fn apply_within(
     let holds = state.lookups.scan_holds.clone();
     let edge_s = edge.to_string();
     let m2 = model.clone();
-    let gate = state.restore.clone();
+    let st = stale.clone();
     let (applied, ch, admitted, blocks_changed, new_rules, dropped) = state
         .db
         .write(move |c| {
-            if restore.is_some_and(|g| !gate.is_current(g)) {
+            if st.as_ref().is_some_and(|s| s()) {
                 return Err(crate::logs::ingest::RestoreOvertook.into());
             }
             let tx = c.transaction()?;
@@ -666,7 +669,10 @@ pub async fn apply_within(
             n as f64,
         ));
     }
-    state.metrics.count(&state.metrics_db, metrics).await;
+    let guard = stale.map(|s| -> crate::metrics::store::WriteGuard { std::sync::Arc::new(move || !s()) });
+    if !state.metrics.count_if(&state.metrics_db, metrics, guard).await {
+        return Err(crate::logs::ingest::RestoreOvertook.into());
+    }
     if woke {
         state.lookups.queue.wake.notify_one();
     }

@@ -1801,7 +1801,11 @@ pub fn svcb_rdata(priority: u16, target: &str, params: &[(String, String)]) -> O
                         _ => None,
                     })
                     .collect();
-                (SvcParamKey::Mandatory, SvcParamValue::Mandatory(Mandatory(keys?)))
+                // In increasing order too (RFC 9460 §8; hickory encodes them as given), duplicates
+                // kept so a repeated key is still refused.
+                let mut keys = keys?;
+                keys.sort();
+                (SvcParamKey::Mandatory, SvcParamValue::Mandatory(Mandatory(keys)))
             }
             _ => return None,
         };
@@ -2090,5 +2094,23 @@ mod tests {
         assert!(svcb_rdata(1, ".", &p(&[("port", "1"), ("alpn", "h2"), ("port", "2")])).is_none());
         assert!(svcb_rdata(1, ".", &p(&[("alpn", "h2"), ("port", "x")])).is_none());
         assert!(svcb_rdata(1, ".", &p(&[("mandatory", "bogus"), ("alpn", "h2")])).is_none());
+        // `mandatory`'s own keys go in increasing order too (4 3 1 written: 1 3 4 sent, which
+        // the RDATA check accepts); a repeated one is still refused.
+        let all = |m: &str| {
+            svcb_rdata(
+                1,
+                ".",
+                &p(&[
+                    ("alpn", "h2"),
+                    ("ipv4hint", "192.0.2.1"),
+                    ("mandatory", m),
+                    ("port", "443"),
+                ]),
+            )
+        };
+        let d = all("ipv4hint,port,alpn").unwrap();
+        assert_eq!(wire_keys(&d), vec![0, 1, 3, 4]);
+        assert!(all("port,alpn").is_some());
+        assert!(all("alpn,alpn").is_none());
     }
 }

@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router"
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { Text } from "@codemirror/state";
 import { toast } from "sonner";
-import { DownloadIcon, FileDownIcon, InfoIcon, Loader2Icon, RotateCcwIcon, SaveIcon, SearchIcon, TriangleAlertIcon, UploadIcon } from "lucide-react";
+import { DownloadIcon, FileDownIcon, InfoIcon, Loader2Icon, PencilIcon, RotateCcwIcon, SaveIcon, SearchIcon, TriangleAlertIcon, UploadIcon } from "lucide-react";
 import { KeyValue, PageHeader, Section, Stat } from "@/components/common/page";
 import { useDraft } from "@/components/common/drafts";
 import { ErrorState, LoadingState, QueryView, RefetchError } from "@/components/common/states";
@@ -15,7 +15,7 @@ import { AppendRuleButton } from "@/components/common/append-rule";
 import { InfoTip } from "@/components/common/info-tip";
 import { WindowPicker } from "@/components/common/window-picker";
 import { MetricPanel } from "@/components/charts/metric-panel";
-import { FieldShell } from "@/components/schema-form/schema-form";
+import { blockOverride, type FieldOverride, type FieldRenderProps } from "@/components/schema-form/schema-form";
 import { RulePolicyControls } from "@/components/common/rule-policy";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -31,7 +31,6 @@ import { nextOrder } from "@/api/order";
 import { client, download, request, unwrap } from "@/api/http";
 import { ApiError, NO_SUCH_ENDPOINT, errorMessage, hasIssues } from "@/api/errors";
 import type { FeedDef, FeedFile, FeedStatus, Imported, JobEvent, QueryParams, RunRow } from "@/api/types";
-import { fieldDescription } from "@/lib/openapi";
 import { formatBytes, formatNumber, formatSeconds, formatTime } from "@/lib/format";
 import { escapeControl, utf8Length } from "@/lib/text";
 import { deepEqual } from "@/lib/merge";
@@ -53,6 +52,8 @@ function FeedDetail({ feedId }: { feedId: string }) {
   const bundles = useEntities("bundles");
   const [importing, setImporting] = React.useState(false);
   const [toBundle, setToBundle] = React.useState(false);
+  /** Rename asked for: the Settings tab's Name field takes focus (with its text selected) once, then this clears. */
+  const [renaming, setRenaming] = React.useState(false);
   const qc = useQueryClient();
   /** The saves of a manual feed this page knows of (manual-line.ts): kept across its tabs, dropped with the page. */
   const [line] = React.useState(createLine);
@@ -106,6 +107,15 @@ function FeedDetail({ feedId }: { feedId: string }) {
         }
         actions={
           <>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setRenaming(true);
+                if (tab !== "settings") void navigate({ to: ".", search: { tab: "settings" }, replace: true });
+              }}
+            >
+              <PencilIcon /> Rename
+            </Button>
             <Button variant="outline" onClick={() => setToBundle(true)}>
               Add to bundle…
             </Button>
@@ -149,7 +159,13 @@ function FeedDetail({ feedId }: { feedId: string }) {
           <FeedMetrics feedId={f.id ?? ""} />
         </TabsContent>
         <TabsContent value="settings">
-          <FeedSettings feed={f} bundleNames={inBundles.map((b) => b.id ?? "")} onDeleted={() => void navigate({ to: "/feeds" })} />
+          <FeedSettings
+            feed={f}
+            bundleNames={inBundles.map((b) => b.id ?? "")}
+            focusName={renaming}
+            onNameFocused={() => setRenaming(false)}
+            onDeleted={() => void navigate({ to: "/feeds" })}
+          />
         </TabsContent>
       </Tabs>
       {importing && <ImportIntoDialog feed={f} line={line} onClose={() => setImporting(false)} />}
@@ -1031,10 +1047,11 @@ export function RunResult({ run, slow, retryAt, running }: { run: RunRow | null;
         {(run.parse?.notices?.BroadBrowser ?? 0) > 0 && (
           <div>
             <h4 className="mb-1 text-sm font-medium">
-              {formatNumber(run.parse?.notices?.BroadBrowser ?? 0)} broad browser rules kept
+              {formatNumber(run.parse?.notices?.BroadBrowser ?? 0)} broad browser rules {run.status === "applied" ? "kept" : "in this run"}
             </h4>
             <p className="mb-1 text-xs text-muted-foreground">
-              Browser rules with no domain restriction and a pattern that matches most requests. They are kept and go to the browser lists built from this feed; set the feed&apos;s browser mode to drop to leave its browser rules out.
+              Browser rules with no domain restriction and a pattern that matches most requests.{" "}
+              {run.status === "applied" ? "They are kept and go to the browser lists built from this feed" : "This run wasn't applied; an applied run keeps them for the browser lists built from this feed"}; set the feed&apos;s browser mode to drop to leave its browser rules out.
             </p>
             {run.parse?.notice_samples && run.parse.notice_samples.length > 0 && (
               <ul className="space-y-1 text-xs">
@@ -1453,7 +1470,7 @@ function FeedMetrics({ feedId }: { feedId: string }) {
         <WindowPicker value={window} onChange={setWindow} allowed={allowed} />
       </div>
       <div className="grid gap-4 xl:grid-cols-2">
-        <MetricPanel title="Entries per rule type" series={["feed_records_total"]} window={window} edge="all" transform={filter as never} specs={[{ match: () => true, label: (l) => l.labels?.type ?? "total" }]} />
+        <MetricPanel title="Entries per rule type" series={["feed_records"]} window={window} edge="all" transform={filter as never} specs={[{ match: () => true, label: (l) => l.labels?.type ?? "total" }]} />
         <MetricPanel
           title="Records added and deleted"
           series={["feed_records_added", "feed_records_deleted"]}
@@ -1506,21 +1523,66 @@ function ReplaceWarning({ feed }: { feed: FeedDef }) {
   );
 }
 
-function FeedSettings({ feed, bundleNames, onDeleted }: { feed: FeedDef; bundleNames: string[]; onDeleted: () => void }) {
+/** The Name field, with what a rename keeps; takes focus with its text selected when Rename asks. */
+function FeedNameField({ field, focus, onFocused }: { field: FieldRenderProps; focus: boolean; onFocused: () => void }) {
+  const { id } = field;
+  React.useEffect(() => {
+    if (!focus) return;
+    const input = document.getElementById(id);
+    if (input instanceof HTMLInputElement && !input.disabled) {
+      input.focus();
+      input.select();
+      input.scrollIntoView?.({ block: "center" });
+    }
+    onFocused();
+  }, [focus, id, onFocused]);
+  return (
+    <div className="space-y-1">
+      {field.renderDefault()}
+      <p className="text-xs text-muted-foreground">Changing the display name keeps the feed ID, source and bundle memberships.</p>
+    </div>
+  );
+}
+
+function FeedSettings({
+  feed,
+  bundleNames,
+  focusName,
+  onNameFocused,
+  onDeleted,
+}: {
+  feed: FeedDef;
+  bundleNames: string[];
+  focusName: boolean;
+  onNameFocused: () => void;
+  onDeleted: () => void;
+}) {
   const manual = !feed.provider;
+  // The latest callback, so the overrides (and the form's context) keep their identity across renders.
+  const focused = React.useRef(onNameFocused);
+  React.useEffect(() => {
+    focused.current = onNameFocused;
+  });
+  const onFocused = React.useCallback(() => focused.current(), []);
+  // Name comes first (the form pins id and name), then the rule policy switches.
+  const overrides = React.useMemo<Record<string, FieldOverride>>(
+    () => ({
+      name: (p) => <FeedNameField field={p} focus={focusName} onFocused={onFocused} />,
+      rule_policy: blockOverride(({ value, onChange, form, disabled }) => (
+        <RulePolicyControls value={value as FeedDef["rule_policy"]} manual={manual} browserMode={(form as FeedDef).modes?.browser?.mode ?? "drop"} disabled={disabled} onChange={onChange} />
+      )),
+    }),
+    [focusName, onFocused, manual],
+  );
   return (
     <Section title="Feed settings" description={manual ? "A manual feed's settings; its file is edited on the File tab." : "The provider and file are fixed: the provider's files decide them."}>
       <EntityForm
         kind="feeds"
         id={feed.id}
-        hidden={["rule_policy"]}
+        overrides={overrides}
         readOnly={["provider", "file"]}
-        order={["enabled", "format", "category", "provider", "file", "modes", "format_options", "warn_on", "sanity"]}
-        header={(v, set) => (
-          <FieldShell id="rule-policy" label="Rule policy" name="rule_policy" description={fieldDescription("FeedDef", "rule_policy")} block>
-            <RulePolicyControls value={v.rule_policy} manual={manual} browserMode={v.modes?.browser?.mode ?? "drop"} onChange={(rp) => set({ ...v, rule_policy: rp })} />
-          </FieldShell>
-        )}
+        labels={{ rule_policy: "Rule policy" }}
+        order={["rule_policy", "enabled", "format", "category", "provider", "file", "modes", "format_options", "warn_on", "sanity"]}
         footer={(v, saved) =>
           saved && replacesEntries(v, saved) ? (
             <Alert variant="warning">

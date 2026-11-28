@@ -325,12 +325,17 @@ impl<B: Backend> Engine<B> {
             code: error_code::INVALID.into(),
             message,
         })?;
+        Ok(self.apply_desired(d))
+    }
+
+    /// Socket requests have already been validated, without retaining their decoded strings.
+    fn apply_desired(&mut self, d: Desired) -> ApplyResponse {
         self.desired = d;
         self.has_rules = true;
         self.persist_due = true;
         self.prune();
         let rep = self.pass(Mode::Apply);
-        Ok(self.response(rep))
+        self.response(rep)
     }
 
     /// `disable`: save the flag, remove the jumps; sets and chains stay.
@@ -858,6 +863,9 @@ impl<B: Backend> Engine<B> {
                 let Some(text) = last.restore.clone() else { break };
                 if let Err(e) = self.b.restore(f, &text) {
                     rep.pending.push(format!("restore{}:{}", f.digit(), e.code()));
+                    // A failed restore (a timeout, say) may still have committed: the layout is
+                    // unknown until the next pass reads it.
+                    verified = false;
                     tracing::warn!(family = f.label(), error = %e, "iptables-restore failed; retrying at the next re-assert");
                     break;
                 }
@@ -973,10 +981,9 @@ impl<B: Backend> Engine<B> {
 
 /// Requests to the engine thread.
 pub enum Cmd {
-    Apply(
-        Box<ApplyRequest>,
-        oneshot::Sender<Result<ApplyResponse, HelperError>>,
-    ),
+    /// A socket `apply` is waiting in [`Shared::take_apply`]: only a wake, since the engine
+    /// also looks there before every command.
+    ApplyPending,
     Disable(oneshot::Sender<ApplyResponse>),
     Enable(oneshot::Sender<ApplyResponse>),
     /// Run a pass soon (inotify on UniFi's state file, or an `ensure` that found no set).
@@ -991,13 +998,32 @@ pub fn run<B: Backend>(mut engine: Engine<B>, rx: Receiver<Cmd>) {
     let mut follow_up: Option<Instant> = None;
     let mut last_end = Instant::now();
     loop {
-        let deadline = follow_up.map_or(next, |f| f.min(next));
-        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-            Ok(Cmd::Apply(req, tx)) => {
-                let _ = tx.send(engine.apply(&req));
+        // The newest socket apply, ahead of the next command: when the queue was full its wake
+        // was dropped, and the commands still queued bring the engine back here.
+        let applied = match engine.shared.take_apply() {
+            Some(p) => {
+                let response = engine.apply_desired(*p.desired);
+                for w in p.waiters {
+                    let _ = w.send(response.clone());
+                }
                 last_end = Instant::now();
                 next = last_end + REASSERT;
+                true
             }
+            None => false,
+        };
+        // After an apply, take at most one queued command without waiting before looking at the
+        // slot again: applies arriving back to back can't hold off a `disable` or a shutdown.
+        let wait = if applied {
+            Duration::ZERO
+        } else {
+            follow_up
+                .map_or(next, |f| f.min(next))
+                .saturating_duration_since(Instant::now())
+        };
+        match rx.recv_timeout(wait) {
+            Ok(Cmd::ApplyPending) => {}
+            Err(RecvTimeoutError::Timeout) if applied => {}
             Ok(Cmd::Disable(tx)) => {
                 let _ = tx.send(engine.disable());
                 last_end = Instant::now();
@@ -1016,6 +1042,7 @@ pub fn run<B: Backend>(mut engine: Engine<B>, rx: Receiver<Cmd>) {
                 follow_up = Some(soon + Duration::from_secs(1));
             }
             Ok(Cmd::Shutdown(tx)) => {
+                drop(engine.shared.take_apply());
                 engine.shutdown();
                 let _ = tx.send(());
                 return;
@@ -1030,6 +1057,7 @@ pub fn run<B: Backend>(mut engine: Engine<B>, rx: Receiver<Cmd>) {
                 next = (start + REASSERT).max(last_end + MIN_GAP);
             }
             Err(RecvTimeoutError::Disconnected) => {
+                drop(engine.shared.take_apply());
                 engine.shutdown();
                 return;
             }

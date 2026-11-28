@@ -820,7 +820,7 @@ async fn the_emmc_copy_is_kept_until_the_ssd_holds_everything_and_a_failed_move_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_config_replacing_one_bundle_with_another_fits_the_budget_alone() {
+async fn a_replacement_that_fits_only_alone_waits_for_a_budget_that_fits_both() {
     let up = FakeUpstream::plain(ok_upstream()).await;
     let core = MockCore::start().await;
     let d = dirs();
@@ -854,19 +854,119 @@ async fn a_config_replacing_one_bundle_with_another_fits_the_budget_alone() {
         mx <= 1 << 20 && 2 * mx > 1 << 20,
         "x takes {mx} bytes: each bundle fits 1 MiB alone, both don't"
     );
-    // Replace x with y: y alone fits the budget core checked.
+    // Replace x with y: y alone fits, but the running config keeps using x until the new one is
+    // live (#70), so the activation is refused with a budget reason and x stays.
     let mut c2 = config(&up, json!({"y": idy}));
     c2["profiles"]["default"]["block"] = json!(["y"]);
     c2["memory"] = mem;
     let cfg2 = core.set_config(&c2);
     core.changed(&cfg2);
-    wait_live(&r, &cfg2).await;
+    assert!(
+        wait_until(T, || events(&core, "activation_failed")
+            .iter()
+            .any(|e| e["bundle"] == "y" && e["stage"] == "budget"))
+        .await,
+        "refused at stage budget; convergence {:?}",
+        r.edge.convergence.load()
+    );
+    let reason = events(&core, "activation_failed")
+        .into_iter()
+        .find(|e| e["bundle"] == "y" && e["stage"] == "budget")
+        .map(|e| e["reason"].as_str().unwrap_or_default().to_owned())
+        .unwrap_or_default();
+    assert!(
+        reason.contains("keeps using x") && reason.contains("bundle_budget_mib"),
+        "an actionable reason: {reason}"
+    );
     let name = |l: &str| l.trim_start_matches("||").trim_end_matches('^').to_owned();
+    assert_eq!(r.edge.active().object_id.as_deref(), Some(cfg1.as_str()));
+    assert!(blocked(&r, &name(&lx[7])).await, "x still blocks");
+    // A budget that fits both: the swap goes through and x is unloaded.
+    let mut c3 = c2.clone();
+    c3["memory"]["bundle_budget_mib"] = json!(4);
+    let cfg3 = core.set_config(&c3);
+    core.changed(&cfg3);
+    wait_live(&r, &cfg3).await;
     assert!(blocked(&r, &name(&ly[7])).await);
     assert!(!blocked(&r, &name(&lx[7])).await);
     assert!(
         r.edge.active().bundles.get("x").is_none(),
         "x unloaded after the swap"
+    );
+    r.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_activation_gives_back_the_bundles_it_loaded() {
+    let up = FakeUpstream::plain(ok_upstream()).await;
+    let core = MockCore::start().await;
+    let d = dirs();
+    write_edge_json(&d.config, Some(&core), json!({}));
+    let lines = |p: &str, n: usize| {
+        let mut x: u64 = if p == "x" { 7 } else { 13 };
+        (0..n)
+            .map(|i| {
+                x = x
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                format!("||{p}{}-{:012x}.example^", i, x >> 16)
+            })
+            .collect::<Vec<_>>()
+    };
+    fn refs(l: &[String]) -> Vec<&str> {
+        l.iter().map(String::as_str).collect()
+    }
+    let (lx, ly1, ly2) = (lines("x", 45_000), lines("y1", 20), lines("y2", 45_000));
+    let bx = build_bundle("x", &refs(&lx), None);
+    let by1 = build_bundle("y1", &refs(&ly1), None);
+    let by2 = build_bundle("y2", &refs(&ly2), None);
+    let idx = publish(&core, &bx.head, &bx.blobs);
+    let idy1 = publish(&core, &by1.head, &by1.blobs);
+    let idy2 = publish(&core, &by2.head, &by2.blobs);
+    let mem = json!({"bundle_budget_mib": 1, "overlay_budget_mib": 4});
+    let mut c1 = config(&up, json!({"x": idx}));
+    c1["profiles"]["default"]["block"] = json!(["x"]);
+    c1["memory"] = mem.clone();
+    let cfg1 = core.set_config(&c1);
+    let r = start(&d, tuning(&d, true)).await;
+    wait_live(&r, &cfg1).await;
+    // y1 (small) loads beside x; y2 (as large as x) can't, with x kept for the running config.
+    let mut c2 = config(&up, json!({"y1": idy1, "y2": idy2}));
+    c2["profiles"]["default"]["block"] = json!(["y1", "y2"]);
+    c2["memory"] = mem;
+    let cfg2 = core.set_config(&c2);
+    core.changed(&cfg2);
+    let refused = || {
+        events(&core, "activation_failed")
+            .iter()
+            .any(|e| e["bundle"] == "y2" && e["stage"] == "budget")
+    };
+    assert!(
+        wait_until(T, refused).await,
+        "y2 refused at stage budget; convergence {:?}",
+        r.edge.convergence.load()
+    );
+    assert!(
+        events(&core, "activated").iter().any(|e| e["bundle"] == "y1"),
+        "y1 loaded first"
+    );
+    let edge = Arc::clone(&r.edge);
+    assert!(
+        wait_until(T, || edge.active().bundles.get("y1").is_none()).await,
+        "y1, loaded only for the refused config, is unloaded"
+    );
+    assert_eq!(edge.active().object_id.as_deref(), Some(cfg1.as_str()));
+    assert!(edge.active().bundles.get("x").is_some());
+    let n = core.with(|s| s.heartbeats.len());
+    assert!(
+        wait_until(T, || core.with(|s| s.heartbeats.len() > n + 1)).await,
+        "heartbeats go on"
+    );
+    let hb = core.with(|s| s.heartbeats.last().cloned().unwrap());
+    assert!(
+        hb.have.in_progress.bundles.is_empty(),
+        "nothing reported in progress after the refusal: {:?}",
+        hb.have.in_progress
     );
     r.shutdown().await;
 }
@@ -1429,94 +1529,213 @@ async fn a_page_file_still_bad_is_not_downloaded_again_by_rare_reads() {
     r.shutdown().await;
 }
 
-/// A config that needs the room of a bundle it drops, and then fails, gives that bundle back to
-/// the running config (bundles.md §6 "if memory is short"; edge.md §13: a config that doesn't go
-/// live leaves the running one as it was).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_bundle_unloaded_to_make_room_comes_back_when_the_config_fails() {
-    let up = FakeUpstream::plain(ok_upstream()).await;
-    let core = MockCore::start().await;
-    let d = dirs();
-    write_edge_json(&d.config, Some(&core), json!({}));
-    let lines = |p: &str| {
-        let mut x: u64 = if p == "x" { 7 } else { 11 };
-        (0..45_000)
-            .map(|i| {
-                x = x
-                    .wrapping_mul(6364136223846793005)
-                    .wrapping_add(1442695040888963407);
-                format!("||{p}{}-{:012x}.example^", i, x >> 16)
-            })
-            .collect::<Vec<_>>()
-    };
-    let build = |name: &str, l: &[String]| {
-        let refs: Vec<&str> = l.iter().map(String::as_str).collect();
-        let mut o =
-            picket_bundle::compile::BuildOptions::new(name, picket_rules::matcher::BundleAction::Block);
-        o.max_shard_keys = 6_000;
-        picket_bundle::compile::build(&compile(&refs), &o).unwrap()
-    };
-    let (lx, ly) = (lines("x"), lines("y"));
-    let (bx, by) = (build("x", &lx), build("y", &ly));
-    assert!(by.head.shards.len() >= 4, "{} shards", by.head.shards.len());
-    let idx = publish(&core, &bx.head, &bx.blobs);
-    let idy = publish(&core, &by.head, &by.blobs);
-    // y's last shard can't be fetched: its load fails after x had to make room.
-    let last = by.head.shards.iter().max_by_key(|s| s.shard).unwrap();
-    let m = picket_bundle::head::Manifest::from_bytes(&by.blobs[&last.base]).unwrap();
-    let fst = m.files[picket_bundle::head::DOMAINS_FST].blake3.clone();
-    core.with(|st| st.objects.remove(&format!("blobs/{fst}")));
-    let mem = json!({"bundle_budget_mib": 1, "overlay_budget_mib": 4});
-    let mut c1 = config(&up, json!({"x": idx}));
-    c1["profiles"]["default"]["block"] = json!(["x"]);
-    c1["memory"] = mem.clone();
-    let cfg1 = core.set_config(&c1);
-    let r = start(&d, tuning(&d, true)).await;
-    wait_live(&r, &cfg1).await;
-    let mx = r.edge.active().bundles.get("x").unwrap().memory_usage();
-    assert!(mx <= 1 << 20 && 2 * mx > 1 << 20, "x takes {mx} bytes");
-    let name = |l: &str| l.trim_start_matches("||").trim_end_matches('^').to_owned();
-    assert!(blocked(&r, &name(&lx[7])).await);
-    let edge = Arc::clone(&r.edge);
-    let gone = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let watch = {
-        let (edge, gone) = (Arc::clone(&edge), Arc::clone(&gone));
-        tokio::spawn(async move {
-            loop {
-                if edge.active().bundles.get("x").is_none() {
-                    gone.store(true, std::sync::atomic::Ordering::SeqCst);
-                }
-                tokio::time::sleep(Duration::from_millis(1)).await;
-            }
+/// A bundle built with `action`: its rules compiled for it, hot shards of at most `max_keys`.
+fn built(
+    name: &str,
+    action: picket_rules::matcher::BundleAction,
+    lines: &[String],
+    max_keys: u64,
+) -> picket_bundle::compile::BuiltBundle {
+    use picket_bundle::compile::{BuildOptions, CompileOptions, build, compile_rules};
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let mut o = BuildOptions::new(name, action);
+    o.max_shard_keys = max_keys;
+    build(
+        &compile_rules(&parse_rules(&refs), &CompileOptions::new(action, None)),
+        &o,
+    )
+    .unwrap()
+}
+
+/// `n` names that share no structure, as block rules.
+fn spread(p: &str, seed: u64, n: usize) -> Vec<String> {
+    let mut x = seed;
+    (0..n)
+        .map(|i| {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            format!("||{p}{}-{:012x}.example^", i, x >> 16)
         })
-    };
-    let mut c2 = config(&up, json!({"y": idy}));
-    c2["profiles"]["default"]["block"] = json!(["y"]);
-    c2["memory"] = mem;
-    let cfg2 = core.set_config(&c2);
-    core.changed(&cfg2);
+        .collect()
+}
+
+/// #70: the running config's block (x), allow (a) and scope (s) bundles, and a config dropping
+/// all three for a new block bundle (y) whose load is watched.
+struct Coverage {
+    up: FakeUpstream,
+    core: MockCore,
+    d: Dirs,
+    r: Running,
+    cfg1: String,
+    lx: Vec<String>,
+    by: picket_bundle::compile::BuiltBundle,
+    gone: Arc<std::sync::Mutex<Vec<String>>>,
+    watch: tokio::task::JoinHandle<()>,
+}
+
+impl Coverage {
+    async fn start(budget_mib: u32) -> Self {
+        use picket_rules::matcher::BundleAction;
+        let up = FakeUpstream::plain(ok_upstream()).await;
+        let core = MockCore::start().await;
+        let d = dirs();
+        write_edge_json(&d.config, Some(&core), json!({}));
+        let (lx, ly) = (spread("x", 7, 45_000), spread("y", 11, 45_000));
+        let bx = built("x", BundleAction::Block, &lx, 6_000);
+        let ba = built("a", BundleAction::Allow, &["||ok.example^".to_owned()], 6_000);
+        let bs = built("s", BundleAction::Scope, &["||scoped.example^".to_owned()], 6_000);
+        let by = built("y", BundleAction::Block, &ly, 6_000);
+        assert!(by.head.shards.len() >= 4, "{} shards", by.head.shards.len());
+        let (idx, ida, ids) = (
+            publish(&core, &bx.head, &bx.blobs),
+            publish(&core, &ba.head, &ba.blobs),
+            publish(&core, &bs.head, &bs.blobs),
+        );
+        let mut c1 = config(&up, json!({"x": idx, "a": ida, "s": ids}));
+        c1["profiles"]["default"]["block"] = json!(["x"]);
+        c1["profiles"]["default"]["allow"] = json!(["a"]);
+        c1["memory"] = json!({"bundle_budget_mib": budget_mib, "overlay_budget_mib": 4});
+        let cfg1 = core.set_config(&c1);
+        let r = start(&d, tuning(&d, true)).await;
+        wait_live(&r, &cfg1).await;
+        let gone = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let watch = {
+            let (edge, gone) = (Arc::clone(&r.edge), Arc::clone(&gone));
+            tokio::spawn(async move {
+                loop {
+                    let ab = edge.active().bundles.clone();
+                    for k in ["x", "a", "s"] {
+                        if ab.get(k).is_none() {
+                            let mut g = gone.lock().unwrap();
+                            if !g.iter().any(|x| x == k) {
+                                g.push(k.to_owned());
+                            }
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+        };
+        Self {
+            up,
+            core,
+            d,
+            r,
+            cfg1,
+            lx,
+            by,
+            gone,
+            watch,
+        }
+    }
+
+    /// The config dropping x, a and s for y, under `budget_mib`.
+    fn target(&self, budget_mib: u32) -> String {
+        self.target_then(budget_mib, |_| {})
+    }
+
+    /// [`Self::target`], `before` changing core's objects once y is published.
+    fn target_then(&self, budget_mib: u32, before: impl FnOnce(&MockCore)) -> String {
+        let idy = publish(&self.core, &self.by.head, &self.by.blobs);
+        before(&self.core);
+        let mut c = config(&self.up, json!({"y": idy}));
+        c["profiles"]["default"]["block"] = json!(["y"]);
+        c["memory"] = json!({"bundle_budget_mib": budget_mib, "overlay_budget_mib": 4});
+        let id = self.core.set_config(&c);
+        self.core.changed(&id);
+        id
+    }
+
+    fn y_failures(&self) -> Vec<Value> {
+        events(&self.core, "activation_failed")
+            .into_iter()
+            .filter(|e| e["bundle"] == "y")
+            .collect()
+    }
+
+    /// The running config still runs, with all three bundles and x blocking.
+    async fn running_intact(&self) {
+        let edge = &self.r.edge;
+        assert_eq!(edge.active().object_id.as_deref(), Some(self.cfg1.as_str()));
+        for k in ["x", "a", "s"] {
+            assert!(edge.active().bundles.get(k).is_some(), "{k} loaded");
+        }
+        let name = self.lx[7].trim_start_matches("||").trim_end_matches('^');
+        assert!(blocked(&self.r, name).await, "the running config blocks with x");
+        assert!(edge.active().bundles.get("y").is_none(), "y isn't held unused");
+        assert!(
+            self.gone.lock().unwrap().is_empty(),
+            "unloaded meanwhile: {:?}",
+            self.gone.lock().unwrap()
+        );
+    }
+}
+
+/// #70 (bundles.md §6 "if memory is short"): a config whose activation peak doesn't fit unless
+/// the running config's bundles go first is refused at stage `budget` with what would make it
+/// fit. The running block, allow and scope bundles stay loaded throughout (the target drops all
+/// three), the failure isn't retried (no load-and-unload cycle), and a budget that fits the peak
+/// lets the same change through.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_running_configs_bundles_stay_loaded_when_the_activation_peak_doesnt_fit() {
+    let c = Coverage::start(1).await;
+    let mx = c.r.edge.active().bundles.get("x").unwrap().memory_usage();
+    assert!(mx <= 1 << 20 && 2 * mx > 1 << 20, "x takes {mx} bytes");
+    let _ = c.target(1);
+    assert!(wait_until(T, || !c.y_failures().is_empty()).await);
+    let f = c.y_failures();
+    assert_eq!(f[0]["stage"], "budget", "{f:#?}");
+    let reason = f[0]["reason"].as_str().unwrap();
     assert!(
-        wait_until(T, || events(&core, "activation_failed")
-            .iter()
-            .any(|e| e["bundle"] == "y"))
-        .await
+        reason.contains("keeps using a, s, x")
+            && reason.contains("raise memory.bundle_budget_mib to at least")
+            && reason.contains("two configs"),
+        "{reason}"
     );
+    c.running_intact().await;
+    // Refused for good: the same object isn't tried again.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(c.y_failures().len(), 1, "{:#?}", c.y_failures());
+    c.running_intact().await;
+    // A budget that fits the peak: the change goes through, the old bundles unloaded once it's live.
+    c.watch.abort();
+    let cfg3 = c.target(8);
+    wait_live(&c.r, &cfg3).await;
+    let name = |l: &str| l.trim_start_matches("||").trim_end_matches('^').to_owned();
+    let ly0 = name(&spread("y", 11, 8)[7]);
+    assert!(blocked(&c.r, &ly0).await);
     assert!(
-        wait_until(T, || edge.active().bundles.get("x").is_some()).await,
-        "x is back"
+        wait_until(T, || c.r.edge.active().bundles.get("x").is_none()).await,
+        "x goes once the new config is live"
     );
-    watch.abort();
+    c.r.shutdown().await;
+    drop(c.d);
+}
+
+/// #70: a fetch failure after the activation began (y's last shard can't be fetched) leaves the
+/// running config's bundles loaded; the retry, once the blob is back, goes through.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fetch_failure_mid_activation_leaves_the_running_bundles_loaded() {
+    let c = Coverage::start(64).await;
+    let last = c.by.head.shards.iter().max_by_key(|s| s.shard).unwrap();
+    let m = picket_bundle::head::Manifest::from_bytes(&c.by.blobs[&last.base]).unwrap();
+    let fst = m.files[picket_bundle::head::DOMAINS_FST].blake3.clone();
+    let key = format!("blobs/{fst}");
+    let mut blob = None;
+    let cfg2 = c.target_then(64, |core| blob = core.with(|st| st.objects.remove(&key)));
+    let blob = blob.expect("the blob was published");
+    assert!(wait_until(T, || !c.y_failures().is_empty()).await);
+    assert_ne!(c.y_failures()[0]["stage"], "budget", "{:#?}", c.y_failures());
     assert!(
-        gone.load(std::sync::atomic::Ordering::SeqCst),
-        "x made room for y"
+        c.core.with(|st| st.object_gets.get(&key).copied().unwrap_or(0)) > 0,
+        "the failure came from asking for the missing blob"
     );
-    assert_eq!(edge.active().object_id.as_deref(), Some(cfg1.as_str()));
-    assert!(
-        blocked(&r, &name(&lx[7])).await,
-        "the running config blocks with x again"
-    );
-    assert!(edge.active().bundles.get("y").is_none(), "y isn't held unused");
-    r.shutdown().await;
+    c.running_intact().await;
+    c.core.with(|st| st.objects.insert(key.clone(), blob));
+    wait_live(&c.r, &cfg2).await;
+    c.watch.abort();
+    c.r.shutdown().await;
 }
 
 /// build-and-test.md §5 "queries held across back-to-back swaps" (bundles.md §6 Activation: the

@@ -28,25 +28,21 @@ pub const EXPORT_ONLY: &[Series] = &[
         name: "up",
         kind: Kind::CoreGauge,
         labels: &[],
-        export: None,
     },
     Series {
         name: "heavy_jobs",
         kind: Kind::CoreCounter,
         labels: &["result"],
-        export: None,
     },
     Series {
         name: "jobs_dropped",
         kind: Kind::CoreCounter,
         labels: &["lane"],
-        export: None,
     },
     Series {
         name: "metrics_dropped",
         kind: Kind::CoreCounter,
         labels: &["map"],
-        export: None,
     },
 ];
 
@@ -80,7 +76,6 @@ pub fn export_only() -> impl Iterator<Item = Series> {
         name,
         kind: Kind::CoreGauge,
         labels: &["bundle"],
-        export: None,
     };
     EXPORT_ONLY
         .iter()
@@ -89,10 +84,10 @@ pub fn export_only() -> impl Iterator<Item = Series> {
         .chain(std::iter::once(gauge(BUNDLE_PUBLISHED)))
 }
 
-/// The family a series is exported as (api.md §7): `picket_` plus its name (or its export name)
-/// with `_` for `.`, counters ending in `_total`.
+/// The family a series is exported as (api.md §7): `picket_` plus its name with `_` for `.`,
+/// counters ending in `_total`.
 pub fn family(s: &Series) -> String {
-    let base = metric_name(s.export.unwrap_or(s.name));
+    let base = metric_name(s.name);
     match s.kind {
         Kind::Counter | Kind::CoreCounter => format!("{base}_total"),
         _ => base,
@@ -187,14 +182,6 @@ fn metric_name(series: &str) -> String {
     n
 }
 
-/// The name a series is exported under ([`Series::export`]).
-fn exported(series: &str) -> &str {
-    match super::series(series).and_then(|s| s.export) {
-        Some(e) => e,
-        None => series,
-    }
-}
-
 fn label_text(l: &Labels, extra: Option<(&str, &str)>) -> String {
     let mut parts: Vec<String> = l.iter().map(|(k, v)| format!("{k}=\"{}\"", escape(v))).collect();
     if let Some((k, v)) = extra {
@@ -249,20 +236,20 @@ impl Families {
     }
 
     fn counter(&mut self, series: &str, l: &Labels, v: f64) {
-        let name = format!("{}_total", metric_name(exported(series)));
+        let name = format!("{}_total", metric_name(series));
         let line = format!("{name}{} {}", label_text(l, None), number(v));
         self.push(&name, "counter", line);
     }
 
     fn gauge(&mut self, series: &str, l: &Labels, v: f64) {
-        let name = metric_name(exported(series));
+        let name = metric_name(series);
         let line = format!("{name}{} {}", label_text(l, None), number(v));
         self.push(&name, "gauge", line);
     }
 
     /// `ms`: the field's unit is milliseconds (bounds and sum as given in ms).
     fn histogram(&mut self, series: &str, l: &Labels, h: &picket_api::Histogram, ms: bool) {
-        let name = metric_name(exported(series));
+        let name = metric_name(series);
         let mut lines = Vec::new();
         let mut cum = 0u64;
         for (i, bound) in BOUNDS_US.iter().enumerate().take(BUCKETS - 1) {

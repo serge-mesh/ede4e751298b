@@ -10,7 +10,7 @@
 //! order. `metrics.db` keeps `ts` as INTEGER Unix milliseconds for cheap binning.
 
 /// `core.db` migration steps; version = index + 1.
-pub const CORE: &[&str] = &[CORE_V1, CORE_V2, CORE_V3, CORE_V4, CORE_V5, CORE_V6];
+pub const CORE: &[&str] = &[CORE_V1, CORE_V2, CORE_V3, CORE_V4, CORE_V5, CORE_V6, CORE_V7];
 
 /// `metrics.db` migration steps; version = index + 1.
 pub const METRICS: &[&str] = &[METRICS_V1, METRICS_V2];
@@ -1452,6 +1452,26 @@ ALTER TABLE rate_limit_pauses RENAME COLUMN module TO scope;
 -- compromise, each feed's estimated change in its share caught within 2 minutes
 -- (`feeds::schedule::KChoiceRecord`).
 ALTER TABLE feed_provider_state ADD COLUMN k_choice_json TEXT;
+"#;
+
+/// Preset installs waiting for their feeds (#76).
+const CORE_V7: &str = r#"
+-- preset_pending (feeds::presets, #76): a preset install whose feeds a listing adds later (a
+-- GitHub provider's files exist only once it has listed them). One row per preset provider, so
+-- at most one per shipped preset. source: the provider's source key at install; files_json: the
+-- preset's files with no feed yet, each attached to bundle_id when its feed appears; state:
+-- 'waiting', or why it stopped ('source_changed', 'bundle_missing', 'refused', with detail) until
+-- the preset is installed again or the provider deleted. The row goes once every file has its feed.
+CREATE TABLE preset_pending (
+    provider_id TEXT PRIMARY KEY,
+    preset_id TEXT NOT NULL,
+    bundle_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    files_json TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'waiting',
+    detail TEXT,
+    created_at TEXT NOT NULL
+) STRICT;
 "#;
 
 /// Heartbeat samples by boot (chart baselines, core.md §10).

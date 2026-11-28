@@ -453,6 +453,12 @@ pub mod event_kind {
     pub const RULES_REPAIRED: &str = "rules_repaired";
     pub const PANIC: &str = "panic";
     pub const PAGE_FILE_REFETCHED: &str = "page_file_refetched";
+    /// picket-edge-helper answered `hello` with another protocol version (edge-firewall.md §4),
+    /// so the edge refused to run: `{helper_proto, edge_proto, helper_version, connection}`,
+    /// `connection` being `control` or `fast` (whichever saw it first), once per start. The edge
+    /// exits before it binds a listener or says ready, so the record usually reaches core from
+    /// the spool once a compatible edge runs again (an update rolled back, a repaired install).
+    pub const HELPER_PROTOCOL_MISMATCH: &str = "helper_protocol_mismatch";
     /// A DoT or DoH listener refused a client whose ClientHello offers no TLS 1.3 (listeners
     /// speak only TLS 1.3): `{listener, transport, client, device, mac?, sni?, offered, refused,
     /// unlogged?}`, at most one per listener and device an hour. `device` is as on `q` records;

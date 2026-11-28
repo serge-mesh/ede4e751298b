@@ -271,6 +271,9 @@ pub struct Entry {
     /// The `picket-first-seen` date in force for this line, already clamped to the run time
     /// (feeds.md §4); `None` means the run's own time.
     pub first_seen: Option<Timestamp>,
+    /// What the line's classification noted about the rule, kept all the same
+    /// ([`crate::classify::NoticeReason`]): a consumer that drops the rule drops the notice too.
+    pub notice: Option<crate::classify::NoticeReason>,
 }
 
 /// Why stored columns don't make a rule.

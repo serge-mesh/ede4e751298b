@@ -11,8 +11,10 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use picket_api::helper::{Conditions, InterfaceMode, RulesRepaired, SetStatus};
-use tokio::sync::Notify;
+use picket_api::helper::{ApplyResponse, Conditions, InterfaceMode, RulesRepaired, SetStatus};
+use tokio::sync::{Notify, oneshot};
+
+use crate::rules::Desired;
 
 /// Longest `missing` list kept in one merged `rules_repaired`.
 const MAX_MISSING: usize = 256;
@@ -131,11 +133,55 @@ pub struct Shared {
     pub counters: Mutex<Counters>,
     /// Monotonic seconds (backend clock) at which the engine last finished a pass.
     pub engine_beat: AtomicU64,
+    pending_apply: Mutex<Option<PendingApply>>,
+}
+
+/// A socket `apply` waiting for the engine. An `apply` replaces the whole desired state, so a
+/// newer one supersedes a waiting one, and every waiting caller gets the answer of the apply
+/// that ran. However many applies arrive while the engine is busy, at most one decoded
+/// payload waits; a slow engine never answers `busy` to an edge re-applying after a timeout.
+#[derive(Debug)]
+pub struct PendingApply {
+    pub desired: Box<Desired>,
+    pub waiters: Vec<oneshot::Sender<ApplyResponse>>,
 }
 
 impl Shared {
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// Leaves `desired` for the engine, replacing (and freeing) any apply still waiting. True
+    /// when none was waiting, so the engine needs a wake.
+    pub fn put_apply(&self, desired: Box<Desired>, tx: oneshot::Sender<ApplyResponse>) -> bool {
+        let mut slot = lock(&self.pending_apply);
+        match slot.as_mut() {
+            Some(p) => {
+                p.desired = desired;
+                // Callers that timed out or disconnected no longer need an answer.
+                p.waiters.retain(|w| !w.is_closed());
+                p.waiters.push(tx);
+                false
+            }
+            None => {
+                *slot = Some(PendingApply {
+                    desired,
+                    waiters: vec![tx],
+                });
+                true
+            }
+        }
+    }
+
+    /// How many callers wait on the waiting apply.
+    #[cfg(test)]
+    pub fn apply_waiters(&self) -> usize {
+        lock(&self.pending_apply).as_ref().map_or(0, |p| p.waiters.len())
+    }
+
+    /// The waiting apply, if any (the engine thread).
+    pub fn take_apply(&self) -> Option<PendingApply> {
+        lock(&self.pending_apply).take()
     }
 
     pub fn snapshot(&self) -> Snapshot {

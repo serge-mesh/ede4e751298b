@@ -188,6 +188,7 @@ fn map_value<F: FnMut(Entry)>(
                 raw: value.to_string(),
                 line_no: index,
                 first_seen: None,
+                notice: None,
             });
         }
         Item::Error(e) => stats.error(index, e, value),

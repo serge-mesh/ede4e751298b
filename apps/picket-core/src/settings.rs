@@ -932,6 +932,14 @@ fn check_encrypted_endpoint(
     if ip.is_unspecified() {
         err(key, "the resolver needs an IP".into());
     }
+    // A socket address from settings carries no interface scope, so a link-local one fails at
+    // connect (EINVAL), as for upstreams (`config::validate`, `link_local`).
+    if matches!(crate::net::canonical_ip(*ip), IpAddr::V6(v6) if v6.is_unicast_link_local()) {
+        err(
+            key,
+            "an IPv6 link-local address (fe80::/10) needs an interface scope, which a resolver can't carry: use a global, ULA or loopback address".into(),
+        );
+    }
     if port == 0 {
         err(key, "the resolver port can't be 0".into());
     }
@@ -981,6 +989,33 @@ pub fn get_row(conn: &Connection, key: &str) -> Result<Option<Value>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn link_local_resolvers_are_refused() {
+        let check = |ip: &str| {
+            let mut errs = Vec::new();
+            check_encrypted_endpoint(
+                "resolver",
+                EncryptedProtocol::Dot,
+                &ip.parse().unwrap(),
+                853,
+                "dns.example",
+                None,
+                &mut |k: &str, m: String| errs.push((k.to_string(), m)),
+            );
+            errs
+        };
+        for bad in ["fe80::1", "fe80::abcd:1", "febf::1"] {
+            let e = check(bad);
+            assert!(
+                e.iter().any(|(k, m)| k == "resolver" && m.contains("link-local")),
+                "{bad}: {e:?}"
+            );
+        }
+        for ok in ["9.9.9.9", "::1", "fd00::53", "2620:fe::fe", "192.168.1.1"] {
+            assert!(check(ok).is_empty(), "{ok}: {:?}", check(ok));
+        }
+    }
 
     #[test]
     fn web_address_patch_canonicalizes_each_written_row() {

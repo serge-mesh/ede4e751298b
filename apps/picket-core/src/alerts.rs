@@ -97,7 +97,6 @@ pub const KINDS: &[(&str, AlertType)] = &[
     ("feed_provider_trigger_down", AlertType::Operational),
     ("feed_provider_listing_incomplete", AlertType::Operational),
     ("feed_limit_reached", AlertType::Operational),
-    ("config_upgraded", AlertType::Operational),
     ("feed_held", AlertType::Operational),
     ("bundle_build_failed", AlertType::Operational),
     ("bundle_over_budget", AlertType::Operational),

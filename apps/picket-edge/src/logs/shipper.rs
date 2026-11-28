@@ -156,8 +156,12 @@ struct Progress {
     /// not a batch number: batches are planned again on each attempt, and records that aged out
     /// meanwhile shift them.
     next: usize,
-    /// Lines below this index whose age drop was already counted.
+    /// Planning reached this index: below it, the records made before `counted_cutoff` had
+    /// their age drop counted, and the others were planned for delivery (and, unless acked
+    /// since, still wait).
     counted: usize,
+    /// The latest cutoff the records below `counted` were checked against.
+    counted_cutoff: Option<Timestamp>,
     /// The segment's unreadable lines were counted.
     bad_counted: bool,
 }
@@ -491,13 +495,15 @@ impl Shipper {
                 content: c,
                 start: p.next,
                 counted: p.counted,
+                counted_cutoff: p.counted_cutoff,
             });
         }
         let plan = plan_merge(&views, cutoff, self.batch_max());
         self.dropped.add(DropReason::TooOld, plan.too_old);
-        for (h, end) in heads.iter().zip(&plan.ends) {
+        for ((h, v), end) in heads.iter().zip(&views).zip(&plan.ends) {
             if let Some(p) = self.progress.get_mut(&h.key) {
-                p.counted = p.counted.max(*end);
+                p.counted = v.counted.max(*end);
+                p.counted_cutoff = later(v.counted_cutoff, cutoff);
             }
         }
         let hdr = self.rx.headers();
@@ -536,9 +542,11 @@ impl Shipper {
             }
         }
         let evicted = self.spool.end_flight();
-        // Records of a head from `from` on that are neither shipped nor already counted too old.
+        // Records of a head from `from` on that are neither shipped nor already counted too old
+        // (the planner counted every record below `counted` made before `counted_cutoff`).
         let unshipped = |hi: usize, v: &HeadView<'_>, from: usize| {
             let counted = v.counted.max(plan.ends[hi]);
+            let counted_cutoff = later(v.counted_cutoff, cutoff);
             v.content
                 .lines
                 .iter()
@@ -546,9 +554,22 @@ impl Shipper {
                 .skip(from)
                 .filter(|(i, l)| {
                     matches!(l.kind, LineKind::Record { .. })
-                        && !(*i < counted && matches!((cutoff, l.ts), (Some(c), Some(ts)) if ts < c))
+                        && !(*i < counted && made_before_cutoff(l, counted_cutoff))
                 })
                 .count() as u64
+        };
+        // Whether part of a head from its resume point on was acked or counted too old: once
+        // it has been, the segment takes no more appends, so that what an eviction or the age
+        // limit would still drop of it is known (and nothing is counted twice).
+        let handled_some = |v: &HeadView<'_>, left: u64| {
+            let records = v
+                .content
+                .lines
+                .iter()
+                .skip(v.start)
+                .filter(|l| matches!(l.kind, LineKind::Record { .. }))
+                .count() as u64;
+            left < records
         };
         if let Some(unhandled) = unhandled {
             // Partial progress is resent from each head's first unhandled record next time
@@ -564,9 +585,7 @@ impl Shipper {
                     self.progress.remove(&h.key);
                     continue;
                 }
-                if next > v.start {
-                    // Part of it is acked: it takes no more appends, so what an eviction would
-                    // still drop is known.
+                if handled_some(v, left) {
                     self.spool.seal(h.key);
                 }
                 self.spool.set_unshipped(h.key, left);
@@ -578,7 +597,17 @@ impl Shipper {
             return DrainResult::Stop;
         }
         self.note_success();
+        // Every planned record was acked or rejected: a retry after a failed cleanup below
+        // resumes past them (no resend, no rejection counted twice).
+        for (h, end) in heads.iter().zip(&plan.ends) {
+            if let Some(p) = self.progress.get_mut(&h.key) {
+                p.next = *end;
+            }
+        }
         let env = Arc::clone(&self.env);
+        // A failed cleanup stops the drain only after every head's accounting below: an
+        // eviction `end_flight` reported is counted once, here, or never.
+        let mut failed = false;
         for (hi, ((h, v), end)) in heads.iter().zip(&views).zip(&plan.ends).enumerate() {
             if evicted.contains(&h.key) {
                 // Evicted while its records were in flight: what this round shipped arrived;
@@ -588,11 +617,13 @@ impl Shipper {
                 continue;
             }
             if *end < v.content.lines.len() {
-                // The rest waits for the next round. Once part of it is shipped, it takes no
-                // more appends.
-                if *end > v.start {
+                // The rest waits for the next round; an eviction or the age limit would drop
+                // only that.
+                let left = unshipped(hi, v, *end);
+                if handled_some(v, left) {
                     self.spool.seal(h.key);
                 }
+                self.spool.set_unshipped(h.key, left);
                 if let Some(p) = self.progress.get_mut(&h.key) {
                     p.next = *end;
                 }
@@ -605,10 +636,18 @@ impl Shipper {
                 );
             }
             if !blocking(|| self.spool.finish(h.key, env.as_ref(), &limits)) {
-                self.note_failure();
-                return DrainResult::Stop;
+                // Every record of it was handled: it takes no more appends, and an eviction
+                // or the age limit before the retry deletes it drops nothing.
+                self.spool.seal(h.key);
+                self.spool.set_unshipped(h.key, 0);
+                failed = true;
+                continue;
             }
             self.progress.remove(&h.key);
+        }
+        if failed {
+            self.note_failure();
+            return DrainResult::Stop;
         }
         DrainResult::Done
     }
@@ -909,8 +948,10 @@ struct HeadView<'a> {
     content: &'a SegContent,
     /// Where its records resume.
     start: usize,
-    /// Lines below this had their age drop counted already.
+    /// Planning reached this index in an earlier round ([`Progress::counted`]).
     counted: usize,
+    /// Below `counted`, the records made before this had their age drop counted.
+    counted_cutoff: Option<Timestamp>,
 }
 
 /// A drain round's batches.
@@ -920,6 +961,19 @@ struct Plan {
     ends: Vec<usize>,
     /// Records past the retention window, not counted before.
     too_old: u64,
+}
+
+/// The later of two cutoffs (`None`: no age decision).
+fn later(a: Option<Timestamp>, b: Option<Timestamp>) -> Option<Timestamp> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.max(y)),
+        (x, y) => x.or(y),
+    }
+}
+
+/// Whether a line was made before `cutoff` (a line without a timestamp never is).
+fn made_before_cutoff(l: &Line, cutoff: Option<Timestamp>) -> bool {
+    matches!((cutoff, l.ts), (Some(c), Some(ts)) if ts < c)
 }
 
 /// Whether record `a` (in segment `ka`) was made before record `b` (in segment `kb`): by `seq`
@@ -935,6 +989,17 @@ fn made_before(a: &Line, ka: SegKey, b: &Line, kb: SegKey) -> bool {
 /// batches of at most `max` lines (answers counted), dropping records older than `cutoff` (when
 /// the clock is synchronised). Planning stops once a head whose class has a later segment runs
 /// out. An answer travels only with the records that reference it, from their own segment.
+///
+/// Age drops are counted once per record: below a head's `counted`, a record made before its
+/// `counted_cutoff` was counted in an earlier round (and stays dropped), while one planned for
+/// delivery then and aged out since (a failed POST left it unshipped) is counted now. Records
+/// below `counted` that this round doesn't reach are checked too, so afterwards every record
+/// below the new `counted` made before the new cutoff has been counted, and none other.
+///
+/// A head's cutoff never moves back: once checked against `counted_cutoff`, its records made
+/// before it are dropped (and counted) wherever they are, even if the clock steps back or the
+/// retention grows. A record the head's later part holds can't then be planned under an earlier
+/// cutoff and taken for counted below the new `counted` (one cutoff describes the whole range).
 fn plan_merge(heads: &[HeadView<'_>], cutoff: Option<Timestamp>, max: usize) -> Plan {
     let answers: Vec<HashMap<&str, &Arc<str>>> = heads
         .iter()
@@ -955,16 +1020,20 @@ fn plan_merge(heads: &[HeadView<'_>], cutoff: Option<Timestamp>, max: usize) -> 
     let mut cur_lines = 0usize;
     let mut cur_answers: HashSet<String> = HashSet::new();
     let mut too_old = 0u64;
+    // Each head's cutoff: never earlier than the one it was checked against.
+    let cutoffs: Vec<Option<Timestamp>> = heads.iter().map(|h| later(h.counted_cutoff, cutoff)).collect();
     loop {
         // Move each head to its next record still in the window.
         for (hi, h) in heads.iter().enumerate() {
             let lines = &h.content.lines;
             while let Some(l) = lines.get(pos[hi]) {
-                let old = matches!((cutoff, l.ts), (Some(c), Some(ts)) if ts < c);
+                let counted = pos[hi] < h.counted && made_before_cutoff(l, h.counted_cutoff);
                 match &l.kind {
-                    LineKind::Record { .. } if !old => break,
+                    LineKind::Record { .. } if !counted && !made_before_cutoff(l, cutoffs[hi]) => {
+                        break;
+                    }
                     LineKind::Record { .. } => {
-                        if pos[hi] >= h.counted {
+                        if !counted {
                             too_old += 1;
                         }
                     }
@@ -1021,6 +1090,21 @@ fn plan_merge(heads: &[HeadView<'_>], cutoff: Option<Timestamp>, max: usize) -> 
     if !cur.is_empty() {
         batches.push(cur);
     }
+    // Records an earlier round planned past where this one stopped: those aged out since.
+    for (hi, h) in heads.iter().enumerate() {
+        too_old += h
+            .content
+            .lines
+            .iter()
+            .take(h.counted)
+            .skip(pos[hi])
+            .filter(|l| {
+                matches!(l.kind, LineKind::Record { .. })
+                    && !made_before_cutoff(l, h.counted_cutoff)
+                    && made_before_cutoff(l, cutoffs[hi])
+            })
+            .count() as u64;
+    }
     Plan {
         batches,
         ends: pos,
@@ -1049,6 +1133,9 @@ mod tests {
         pub poison: Mutex<Option<String>>,
         /// How long core takes to answer each POST.
         pub delay: Mutex<Option<Duration>>,
+        /// Runs while each POST waits for its answer.
+        #[allow(clippy::type_complexity, reason = "a test hook")]
+        pub during: Mutex<Option<Box<dyn FnMut() + Send>>>,
     }
 
     pub(crate) fn decode(body: &Bytes) -> Vec<String> {
@@ -1063,6 +1150,9 @@ mod tests {
     impl LogSink for ScriptSink {
         async fn post(&self, body: Bytes) -> PostOutcome {
             let lines = decode(&body);
+            if let Some(f) = self.during.lock().unwrap().as_mut() {
+                f();
+            }
             let delay = *self.delay.lock().unwrap();
             if let Some(d) = delay {
                 tokio::time::sleep(d).await;
@@ -2012,6 +2102,7 @@ mod tests {
             content: &content,
             start: 0,
             counted: 0,
+            counted_cutoff: None,
         };
         let plan = plan_merge(
             &[view],
@@ -2023,5 +2114,293 @@ mod tests {
             plan.batches.is_empty(),
             "an answer no kept record references isn't sent"
         );
+    }
+
+    fn rec_line(seq: u64, ts: Timestamp) -> spool::Line {
+        spool::Line {
+            text: Arc::from(format!(r#"{{"t":"q","seq":{seq}}}"#).as_str()),
+            kind: LineKind::Record { answer_id: None },
+            ts: Some(ts),
+            boot: Some(Arc::from("b")),
+            seq: Some(seq),
+        }
+    }
+
+    fn key(n: u64, class: Class) -> SegKey {
+        SegKey {
+            n,
+            loc: spool::Loc::DataDir,
+            class,
+        }
+    }
+
+    #[test]
+    fn records_planned_fresh_then_aged_out_are_counted_once() {
+        // #88: records at 10 and 30, planned at cutoff 0; the POST fails before either is handled.
+        let t = |s| Timestamp::from_second(s).unwrap();
+        let content = spool::SegContent {
+            lines: vec![rec_line(1, t(10)), rec_line(2, t(30))],
+            ..Default::default()
+        };
+        let view = |counted, counted_cutoff| HeadView {
+            key: key(1, Class::Bulk),
+            more: false,
+            content: &content,
+            start: 0,
+            counted,
+            counted_cutoff,
+        };
+        let first = plan_merge(&[view(0, None)], Some(t(0)), 1000);
+        assert_eq!((first.too_old, first.ends.clone()), (0, vec![2]));
+        // The retry at cutoff 20: the older record aged out undelivered.
+        let retry = plan_merge(&[view(2, Some(t(0)))], Some(t(20)), 1000);
+        assert_eq!(retry.too_old, 1, "the expired undelivered record is counted");
+        assert_eq!(
+            retry.batches.iter().flatten().map(|l| l.idx).collect::<Vec<_>>(),
+            vec![1]
+        );
+        // Another retry at the same cutoff counts nothing again.
+        let again = plan_merge(&[view(2, Some(t(20)))], Some(t(20)), 1000);
+        assert_eq!(again.too_old, 0, "counted once");
+        // A cutoff moving back doesn't let a later record be planned under it and then taken
+        // for counted: the head's cutoff stays at 20, so the record at 10 past `counted` is
+        // dropped and counted, once.
+        let later_part = spool::SegContent {
+            lines: vec![rec_line(1, t(30)), rec_line(2, t(10))],
+            ..Default::default()
+        };
+        let head = |counted, counted_cutoff| HeadView {
+            key: key(1, Class::Bulk),
+            more: false,
+            content: &later_part,
+            start: 0,
+            counted,
+            counted_cutoff,
+        };
+        let back = plan_merge(&[head(1, Some(t(20)))], Some(t(5)), 1000);
+        assert_eq!(back.too_old, 1, "dropped and counted, not silently skipped later");
+        assert_eq!(
+            back.batches.iter().flatten().map(|l| l.idx).collect::<Vec<_>>(),
+            vec![0]
+        );
+        let again = plan_merge(&[head(2, Some(t(20)))], Some(t(5)), 1000);
+        assert_eq!(again.too_old, 0, "counted once");
+        // A clock stepping back (or losing sync) doesn't bring a counted record back.
+        for cutoff in [Some(t(5)), None] {
+            let back = plan_merge(&[view(2, Some(t(20)))], cutoff, 1000);
+            assert_eq!(back.too_old, 0);
+            assert_eq!(
+                back.batches.iter().flatten().map(|l| l.idx).collect::<Vec<_>>(),
+                vec![1]
+            );
+        }
+    }
+
+    #[test]
+    fn records_planned_past_where_a_round_stops_are_counted_when_they_age_out() {
+        let t = |s| Timestamp::from_second(s).unwrap();
+        // An earlier round planned both of these records (fresh at cutoff 0) before failing.
+        let bulk = spool::SegContent {
+            lines: vec![rec_line(1, t(30)), rec_line(2, t(10))],
+            ..Default::default()
+        };
+        // This round stops at once: the security head has a later segment and nothing left.
+        let security = spool::SegContent::default();
+        let views = [
+            HeadView {
+                key: key(1, Class::Bulk),
+                more: false,
+                content: &bulk,
+                start: 0,
+                counted: 2,
+                counted_cutoff: Some(t(0)),
+            },
+            HeadView {
+                key: key(2, Class::Security),
+                more: true,
+                content: &security,
+                start: 0,
+                counted: 0,
+                counted_cutoff: None,
+            },
+        ];
+        let plan = plan_merge(&views, Some(t(20)), 1000);
+        assert_eq!(plan.ends, vec![0, 0], "nothing planned");
+        assert_eq!(plan.too_old, 1, "the record at 10 aged out below `counted`");
+    }
+
+    /// The `n` field of each acked record.
+    fn acked_ns(sink: &ScriptSink) -> Vec<i64> {
+        sink.batches
+            .lock()
+            .unwrap()
+            .iter()
+            .flatten()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["n"].as_i64())
+            .collect()
+    }
+
+    fn retention(control: &LogControl, hours: u32, batch_max: u32) {
+        control.set_config(LoggingConfig {
+            batch_max,
+            retention_h: hours,
+            ..Default::default()
+        });
+    }
+
+    #[tokio::test]
+    async fn a_record_aging_out_between_failed_posts_counts_too_old_once() {
+        // #88: mixed ages in one segment, a failed first POST, the cutoff moving between attempts.
+        let d = tempfile::tempdir().unwrap();
+        let sink = Arc::new(ScriptSink::default());
+        *sink.default.lock().unwrap() = Some(PostOutcome::Unreachable("down".into()));
+        let (mut s, p, _env, dropped, control) = shipper(d.path(), sink.clone());
+        let now = Timestamp::now();
+        drop(p.emit_at_with_receipt(
+            event_record("e", fields(&[("n", 0.into())])),
+            now - jiff::SignedDuration::from_hours(5),
+        ));
+        drop(p.emit_at_with_receipt(event_record("e", fields(&[("n", 1.into())])), now));
+        s.collect();
+        s.step().await;
+        assert_eq!(s.mode, Mode::Spool);
+        s.retry_at = None;
+        s.step().await;
+        assert_eq!(
+            dropped.snapshot()["too_old"],
+            0,
+            "both fresh at the first attempt"
+        );
+        retention(&control, 2, 1000);
+        for _ in 0..3 {
+            s.retry_at = None;
+            s.step().await;
+            assert_eq!(
+                dropped.snapshot()["too_old"],
+                1,
+                "counted once, whatever the retries"
+            );
+        }
+        *sink.default.lock().unwrap() = Some(PostOutcome::Acked);
+        s.retry_at = None;
+        s.step().await;
+        assert!(s.spool.is_empty());
+        assert_eq!(acked_ns(&sink), vec![1], "the newer record is delivered");
+        assert_eq!(dropped.snapshot()["too_old"], 1);
+        assert_eq!(dropped.snapshot()["evicted"], 0);
+    }
+
+    #[tokio::test]
+    async fn after_a_partial_success_only_unshipped_records_that_age_out_count_too_old() {
+        let d = tempfile::tempdir().unwrap();
+        let sink = Arc::new(ScriptSink::default());
+        *sink.default.lock().unwrap() = Some(PostOutcome::Unreachable("down".into()));
+        let (mut s, p, _env, dropped, control) = shipper(d.path(), sink.clone());
+        retention(&control, 72, 1);
+        let now = Timestamp::now();
+        let old = now - jiff::SignedDuration::from_hours(5);
+        for (n, ts) in [(0, old), (1, now), (2, old), (3, now)] {
+            drop(p.emit_at_with_receipt(event_record("e", fields(&[("n", n.into())])), ts));
+        }
+        s.collect();
+        s.step().await;
+        assert_eq!(s.mode, Mode::Spool);
+        // Core takes record 0, then fails.
+        sink.script
+            .lock()
+            .unwrap()
+            .extend([PostOutcome::Acked, PostOutcome::Retry("503".into())]);
+        s.retry_at = None;
+        s.step().await;
+        retention(&control, 2, 1);
+        s.retry_at = None;
+        s.step().await;
+        assert_eq!(
+            dropped.snapshot()["too_old"],
+            1,
+            "record 2 only: record 0 arrived"
+        );
+        *sink.default.lock().unwrap() = Some(PostOutcome::Acked);
+        s.retry_at = None;
+        s.step().await;
+        assert!(s.spool.is_empty());
+        assert_eq!(acked_ns(&sink), vec![0, 1, 3]);
+        assert_eq!(dropped.snapshot()["too_old"], 1);
+    }
+
+    #[tokio::test]
+    async fn a_segment_expiring_after_a_counted_age_drop_counts_only_the_rest() {
+        let d = tempfile::tempdir().unwrap();
+        let sink = Arc::new(ScriptSink::default());
+        *sink.default.lock().unwrap() = Some(PostOutcome::Unreachable("down".into()));
+        let (mut s, p, _env, dropped, control) = shipper(d.path(), sink.clone());
+        let now = Timestamp::now();
+        // The first record is the newer: no record is handled before the failure.
+        drop(p.emit_at_with_receipt(
+            event_record("e", fields(&[("n", 0.into())])),
+            now - jiff::SignedDuration::from_hours(3),
+        ));
+        drop(p.emit_at_with_receipt(
+            event_record("e", fields(&[("n", 1.into())])),
+            now - jiff::SignedDuration::from_hours(5),
+        ));
+        s.collect();
+        s.step().await;
+        assert_eq!(s.mode, Mode::Spool);
+        s.retry_at = None;
+        s.step().await;
+        retention(&control, 4, 1000);
+        s.retry_at = None;
+        s.step().await;
+        assert_eq!(dropped.snapshot()["too_old"], 1, "record 1 aged out");
+        // The whole segment ages out: only record 0 is left to count.
+        retention(&control, 2, 1000);
+        s.retry_at = None;
+        s.step().await;
+        assert!(s.spool.is_empty());
+        assert_eq!(dropped.snapshot()["too_old"], 2, "each record counted once");
+        assert!(acked_ns(&sink).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_cleanup_leaves_nothing_to_count_of_a_delivered_segment() {
+        let d = tempfile::tempdir().unwrap();
+        let sink = Arc::new(ScriptSink::default());
+        *sink.default.lock().unwrap() = Some(PostOutcome::Unreachable("down".into()));
+        let (mut s, p, _env, dropped, control) = shipper(d.path(), sink.clone());
+        drop(p.emit_at_with_receipt(
+            event_record("e", fields(&[("n", 0.into())])),
+            Timestamp::now() - jiff::SignedDuration::from_hours(3),
+        ));
+        s.collect();
+        s.step().await;
+        assert_eq!(s.mode, Mode::Spool);
+        let (key, path) = s.spool.oldest().unwrap();
+        let saved = std::fs::read(&path).unwrap();
+        // Core takes the record, but the segment can't be deleted: a directory took its place.
+        *sink.default.lock().unwrap() = Some(PostOutcome::Acked);
+        let at = path.clone();
+        *sink.during.lock().unwrap() = Some(Box::new(move || {
+            if at.is_file() {
+                std::fs::remove_file(&at).unwrap();
+                std::fs::create_dir(&at).unwrap();
+                std::fs::write(at.join("x"), b"x").unwrap();
+            }
+        }));
+        s.retry_at = None;
+        s.step().await;
+        assert_eq!(acked_ns(&sink).len(), 1);
+        assert!(s.spool.keys().contains(&key), "the cleanup failed");
+        *sink.during.lock().unwrap() = None;
+        std::fs::remove_dir_all(&path).unwrap();
+        std::fs::write(&path, saved).unwrap();
+        // The segment ages out before the retry deletes it: its record arrived, so no drop.
+        retention(&control, 2, 1000);
+        s.retry_at = None;
+        s.step().await;
+        assert!(s.spool.is_empty());
+        assert_eq!(dropped.snapshot()["too_old"], 0, "{:?}", dropped.snapshot());
+        assert_eq!(dropped.snapshot()["evicted"], 0, "{:?}", dropped.snapshot());
+        assert_eq!(acked_ns(&sink).len(), 1);
     }
 }

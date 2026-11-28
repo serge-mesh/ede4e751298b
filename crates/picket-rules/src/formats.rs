@@ -163,7 +163,10 @@ impl ParseStats {
         }
     }
 
-    pub(crate) fn notice(&mut self, line_no: u64, reason: NoticeReason, text: &str) {
+    /// Counts a notice (and samples its line while there is room): the parser's for each line
+    /// it notes; a consumer that keeps only some rules counts the ones it keeps
+    /// ([`crate::Entry::notice`]).
+    pub fn notice(&mut self, line_no: u64, reason: NoticeReason, text: &str) {
         let reason = format!("{reason:?}");
         if self.notice_samples.len() < MAX_NOTICE_SAMPLES {
             self.notice_samples.push(sample(line_no, reason.clone(), text));
@@ -384,6 +387,11 @@ pub fn parse_lines<R: BufRead, F: FnMut(Entry)>(
         };
         stats.rule_lines = stats.rule_lines.saturating_add(1);
         let mut line_error = None;
+        // A notice is about the line's rule, which comes before it.
+        let notice = items.iter().find_map(|i| match i {
+            Item::Notice(n) => Some(*n),
+            _ => None,
+        });
         for item in items {
             match item {
                 Item::Rule(rule) => {
@@ -393,6 +401,7 @@ pub fn parse_lines<R: BufRead, F: FnMut(Entry)>(
                         raw: text.to_string(),
                         line_no,
                         first_seen,
+                        notice,
                     });
                 }
                 Item::Warning { rule_type, reason } => {
