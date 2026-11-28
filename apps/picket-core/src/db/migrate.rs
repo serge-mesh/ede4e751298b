@@ -547,4 +547,26 @@ mod tests {
         assert_eq!(av, 2);
         migrate_databases(d.path()).unwrap();
     }
+
+    /// A `core.db` from before pauses were keyed by scope (version 4) keeps its stored pauses.
+    #[test]
+    fn stored_pauses_survive_the_scope_rename() {
+        let d = tempfile::tempdir().unwrap();
+        let core = DbOptions::core(d.path());
+        create_fresh(&core, &m(&CORE.steps[..4])).unwrap();
+        let mut c = Connection::open(&core.path).unwrap();
+        c.execute(
+            "INSERT INTO module_pauses (module, until) VALUES ('github', '2026-11-28T12:00:00Z')",
+            [],
+        )
+        .unwrap();
+        apply(&mut c, &CORE).unwrap();
+        assert_eq!(user_version(&c).unwrap(), CORE.latest());
+        let row: (String, String) = c
+            .query_row("SELECT scope, until FROM rate_limit_pauses", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(row, ("github".into(), "2026-11-28T12:00:00Z".into()));
+    }
 }

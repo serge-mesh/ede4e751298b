@@ -854,10 +854,9 @@ CREATE INDEX policy_drops_feed ON policy_drops(feed_id, status);
 CREATE INDEX feed_changes_check ON feed_changes(check_id);
 CREATE INDEX feed_checks_provider_check ON feed_checks(provider_check_id);
 
--- After a `RateLimited` reply no check in the provider's pause scope (`DownloadModule::pause_scope`:
--- `github`, or `http:<origin>`) starts until `until` (providers.md §2), across restarts.
-CREATE TABLE rate_limit_pauses (
-    scope TEXT PRIMARY KEY,
+-- After a `RateLimited` reply no check through the module starts until `until` (providers.md §2).
+CREATE TABLE module_pauses (
+    module TEXT PRIMARY KEY,
     until TEXT NOT NULL
 ) STRICT;
 
@@ -1412,6 +1411,14 @@ CREATE TABLE cold_share_state (
 "#;
 
 const CORE_V5: &str = r#"
+-- Pauses are keyed by the provider's pause scope (`DownloadModule::pause_scope`: `github`, or
+-- `http:<origin>`), no longer by module: after a `RateLimited` reply no check in that scope
+-- starts until `until` (providers.md §2), across restarts. Stored pauses carry over: a module
+-- id is the scope of every module but `http`, and an `http` row only pauses providers whose URL
+-- doesn't parse until it expires.
+ALTER TABLE module_pauses RENAME TO rate_limit_pauses;
+ALTER TABLE rate_limit_pauses RENAME COLUMN module TO scope;
+
 -- k_choice_json: the last weekly `k` choice of a `dynamic` provider (feed-scheduling.md §5) with
 -- the planning budget's part in it: the preferred and selected aggressiveness, whether the budget
 -- slowed the provider or no `k` fit it, the replay window, the predicted checks a day and, after a
