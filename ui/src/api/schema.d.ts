@@ -213,6 +213,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/ui/v1/bundles/{id}/public-suffixes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The public suffixes the bundle blocks, by feed, with the rules that name each (the full list behind its grouped public_suffix alerts) */
+        get: operations["listBundlePublicSuffixes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/ui/v1/bundles/{id}/status": {
         parameters: {
             query?: never;
@@ -5076,6 +5093,33 @@ export interface components {
             /** @description Pass as `cursor` for the next page; null on the last page. */
             next_cursor: string | null;
         };
+        /** @description One rule behind a public-suffix block: its text and source line, as the feed lists it now. */
+        PublicSuffixRule: {
+            /** Format: int64 */
+            line?: number | null;
+            rule?: string | null;
+        };
+        /** @description One public suffix a bundle blocks below the top level, from one feed. */
+        PublicSuffixView: {
+            feed: string;
+            /** @description The feed's rules blocking it (more than one when several rules name it). */
+            rules: components["schemas"]["PublicSuffixRule"][];
+            suffix: string;
+        };
+        /**
+         * @description The public suffixes a bundle blocks below the top level, ordered by feed then suffix, with
+         *     the exact totals behind the grouped warnings.
+         */
+        PublicSuffixes: {
+            items: components["schemas"]["PublicSuffixView"][];
+            /** @description Pass as `cursor` for the next page; null on the last page. */
+            next_cursor?: string | null;
+            /**
+             * Format: uint64
+             * @description Distinct (feed, suffix) pairs in all, over every page.
+             */
+            total: number;
+        };
         Recheck: {
             /**
              * @default [
@@ -6925,6 +6969,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Explanation"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listBundlePublicSuffixes: {
+        parameters: {
+            query?: {
+                /** @description Only this feed's suffixes. */
+                feed?: string;
+                /** @description The `next_cursor` of the previous page. */
+                cursor?: string;
+                /** @description Items per page (default 100, 1 to 500; else 400). */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicSuffixes"];
                 };
             };
             /** @description Error */

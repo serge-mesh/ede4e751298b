@@ -6,8 +6,17 @@
 //!   more ([`picket_rules::compile::is_broad`]). **`broad_allow`** the same for an exception in a
 //!   block bundle, or any rule of an allow bundle, from a downloaded feed. Both resolve when the
 //!   rule leaves the bundle.
-//! - **`bundle_warning`**, each when new: a block of a public suffix below the top level
-//!   (private-section wildcards excluded); each cross-feed `@@` / `$badfilter` canceller, with
+//! - **`bundle_warning`** for public suffixes (#49): one per (bundle, feed) whose rules block a
+//!   public suffix below the top level (private-section wildcards excluded), keyed
+//!   `bundle_warning:{bundle}:public_suffix:{feed}` whatever the suffixes are. The affected rules
+//!   are kept in `bundle_psl_hits` (added as builds read them, removed when their rule leaves the
+//!   bundle), and the alert shows the distinct suffix count, the rule count and the first
+//!   [`PSL_PREVIEW`] suffixes; `GET bundles/{id}/public-suffixes` lists them all. It is raised
+//!   with the first affected suffix, its summary follows the set while open, and it resolves when
+//!   the set empties (the feed leaving the bundle, or the bundle's deletion, included). Once
+//!   resolved by hand it stays resolved while the set is unchanged or shrinks, and reopens when a
+//!   suffix the alert hasn't shown enters (one that left and came back included), recording which.
+//! - **`bundle_warning`**, each when new: each cross-feed `@@` / `$badfilter` canceller, with
 //!   what it was found to cancel, or "may cancel" when the bounded scan couldn't prove it
 //!   ([`picket_rules::badfilter::cross_feed_cancellations_within`]); more than 10k patterns or
 //!   host-IP mappings; patterns past the reference's budget or too large to build; rules whose
@@ -26,6 +35,7 @@ use picket_rules::badfilter::{CancelKind, ScanLimits, cross_feed_cancellations_w
 use picket_rules::compile::{blocks_public_suffix_below_tld, is_broad};
 use picket_rules::name::reverse_dotted;
 use picket_rules::{Flags, Kind, Rule, RuleType};
+use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 
 use super::build::Ctx;
@@ -107,11 +117,30 @@ pub struct Finding {
     pub detail: Value,
 }
 
+/// A rule blocking a public suffix below the top level (#49): kept in `bundle_psl_hits` at
+/// commit, behind its (bundle, feed) pair's grouped warning.
+#[derive(Clone, Debug)]
+pub struct PslHit {
+    pub suffix: String,
+    pub identity: Identity,
+}
+
+/// Suffixes a grouped public-suffix warning previews (the full list: the API).
+pub const PSL_PREVIEW: usize = 10;
+
+/// The grouped public-suffix warning of `feed` in `bundle` (#49).
+pub fn psl_key(bundle: &str, feed: &str) -> String {
+    format!("bundle_warning:{bundle}:public_suffix:{feed}")
+}
+
 /// What a build found; applied in its commit.
 #[derive(Clone, Debug, Default)]
 pub struct Findings {
     pub items: Vec<Finding>,
     pub dropped: u64,
+    /// Public-suffix blocks the build read, uncapped (each is one stored row, so the grouped
+    /// warnings' counts stay exact).
+    pub psl: Vec<PslHit>,
     /// Aggregate conditions: dedupe key → the alert to raise (`None`: resolve).
     pub conditions: BTreeMap<String, Option<RaiseSpec>>,
 }
@@ -217,14 +246,11 @@ pub fn check_entry(
     }
     if !is_allow
         && blocks_public_suffix_below_tld(&rule, |n| crate::psl::rules_list().is_public_suffix(n.as_str()))
+        && let Some(name) = rule.name()
     {
-        ctx.findings.push(Finding {
-            kind: "bundle_warning",
-            severity: Severity::Warning,
-            dedupe_key: format!("bundle_warning:{bundle}:psl:{}", ident.short()),
-            title: format!("Bundle {bundle} blocks a public suffix (feed {})", m.feed),
+        ctx.findings.psl.push(PslHit {
+            suffix: name.as_str().to_string(),
             identity: ident,
-            detail: json!({"warning": "public_suffix"}),
         });
     }
 }
@@ -541,6 +567,7 @@ pub fn apply(
             }
         }
     }
+    apply_public_suffix(tx, alerts, bundle, members, &findings.psl, ch)?;
     // Per-rule alerts whose rule left the bundle.
     let open: Vec<(String, String)> = {
         let mut st = tx.prepare(
@@ -560,24 +587,202 @@ pub fn apply(
         else {
             continue;
         };
-        let present = members.contains(&ident.feed)
-            && tx
-                .query_row(
-                    "SELECT 1 FROM feed_entries WHERE feed_id = ?1 AND rule_type = ?2 AND key = ?3 AND kind = ?4
-                       AND flags = ?5 AND value_json = ?6 AND removed_run IS NULL LIMIT 1",
-                    rusqlite::params![
-                        ident.feed,
-                        ident.rule_type,
-                        ident.key,
-                        ident.kind,
-                        ident.flags as i64,
-                        ident.value_json
-                    ],
-                    |_| Ok(()),
-                )
-                .is_ok();
+        let present = members.contains(&ident.feed) && entry_present(tx, &ident);
         if !present {
             alerts.resolve_in(tx, &key, Some(&json!({"rule_left_bundle": true})), ch)?;
+        }
+    }
+    Ok(())
+}
+
+/// True when the feed still lists the rule (its current entries).
+fn entry_present(tx: &rusqlite::Transaction<'_>, ident: &Identity) -> bool {
+    tx.query_row(
+        "SELECT 1 FROM feed_entries WHERE feed_id = ?1 AND rule_type = ?2 AND key = ?3 AND kind = ?4
+           AND flags = ?5 AND value_json = ?6 AND removed_run IS NULL LIMIT 1",
+        rusqlite::params![
+            ident.feed,
+            ident.rule_type,
+            ident.key,
+            ident.kind,
+            i64::from(ident.flags),
+            ident.value_json
+        ],
+        |_| Ok(()),
+    )
+    .is_ok()
+}
+
+/// `bundle_id`'s open alerts whose dedupe key starts with `prefix`: (dedupe key, feed).
+fn open_with_prefix(
+    tx: &rusqlite::Transaction<'_>,
+    bundle: &str,
+    prefix: &str,
+) -> rusqlite::Result<Vec<(String, Option<String>)>> {
+    let n = i64::try_from(prefix.chars().count()).unwrap_or(i64::MAX);
+    let mut st = tx.prepare(
+        "SELECT dedupe_key, feed_id FROM alerts WHERE bundle_id = ?1 AND kind = 'bundle_warning'
+           AND state = 'open' AND substr(dedupe_key, 1, ?3) = ?2",
+    )?;
+    st.query_map(rusqlite::params![bundle, prefix, n], |r| {
+        Ok((r.get(0)?, r.get(1)?))
+    })?
+    .collect()
+}
+
+/// The public-suffix step of a build's commit (#49): the rules it read go into
+/// `bundle_psl_hits`, rows whose rule left the bundle go, the per-rule public-suffix alerts of
+/// earlier releases are superseded (resolved, their history kept), and each (bundle, feed) pair's
+/// grouped warning is brought in line with its current set ([`psl_summarise`]).
+fn apply_public_suffix(
+    tx: &rusqlite::Transaction<'_>,
+    alerts: &crate::alerts::Alerts,
+    bundle: &str,
+    members: &[String],
+    hits: &[PslHit],
+    ch: &mut Changes,
+) -> rusqlite::Result<()> {
+    for h in hits {
+        tx.execute(
+            "INSERT OR IGNORE INTO bundle_psl_hits(bundle_id, feed_id, rule_hash, suffix, identity_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                bundle,
+                h.identity.feed,
+                h.identity.short(),
+                h.suffix,
+                serde_json::to_string(&h.identity).unwrap_or_default()
+            ],
+        )?;
+    }
+    let rows: Vec<(String, String, String)> = {
+        let mut st =
+            tx.prepare("SELECT feed_id, rule_hash, identity_json FROM bundle_psl_hits WHERE bundle_id = ?1")?;
+        st.query_map([bundle], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    let mut feeds: HashSet<String> = HashSet::new();
+    for (feed, hash, ij) in rows {
+        let present = members.contains(&feed)
+            && serde_json::from_str::<Identity>(&ij).is_ok_and(|i| entry_present(tx, &i));
+        if present {
+            feeds.insert(feed);
+        } else {
+            tx.execute(
+                "DELETE FROM bundle_psl_hits WHERE bundle_id = ?1 AND feed_id = ?2 AND rule_hash = ?3",
+                rusqlite::params![bundle, feed, hash],
+            )?;
+        }
+    }
+    for (key, feed) in open_with_prefix(tx, bundle, &format!("bundle_warning:{bundle}:psl:"))? {
+        let by = feed.as_deref().map(|f| psl_key(bundle, f));
+        alerts.resolve_in(tx, &key, Some(&json!({"superseded_by": by})), ch)?;
+    }
+    for (_, feed) in open_with_prefix(tx, bundle, &psl_key(bundle, ""))? {
+        if let Some(f) = feed {
+            feeds.insert(f);
+        }
+    }
+    let mut feeds: Vec<String> = feeds.into_iter().collect();
+    feeds.sort();
+    for feed in feeds {
+        psl_summarise(tx, alerts, bundle, &feed, ch)?;
+    }
+    Ok(())
+}
+
+/// Brings one (bundle, feed) pair's grouped public-suffix warning in line with its rows (#49):
+/// resolved when none are left; raised when it doesn't exist; its summary replaced while open
+/// (no new occurrence or history entry); while resolved, left resolved unless a suffix it hasn't
+/// shown entered, which reopens it with the added suffixes in its details.
+fn psl_summarise(
+    tx: &rusqlite::Transaction<'_>,
+    alerts: &crate::alerts::Alerts,
+    bundle: &str,
+    feed: &str,
+    ch: &mut Changes,
+) -> rusqlite::Result<()> {
+    let key = psl_key(bundle, feed);
+    // suffix, rules, shown by the alert already
+    let rows: Vec<(String, i64, bool)> = {
+        let mut st = tx.prepare(
+            "SELECT suffix, count(*), max(alerted) FROM bundle_psl_hits WHERE bundle_id = ?1 AND feed_id = ?2
+             GROUP BY suffix ORDER BY suffix",
+        )?;
+        st.query_map(rusqlite::params![bundle, feed], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0))
+        })?
+        .collect::<rusqlite::Result<_>>()?
+    };
+    if rows.is_empty() {
+        alerts.resolve_in(tx, &key, Some(&json!({"suffixes": 0})), ch)?;
+        return Ok(());
+    }
+    let total = rows.len();
+    let rules: i64 = rows.iter().map(|r| r.1).sum();
+    let added: Vec<&str> = rows.iter().filter(|r| !r.2).map(|r| r.0.as_str()).collect();
+    let all: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+    let digest = picket_api::ids::object_id(all.join("\n").as_bytes())[..16].to_string();
+    let detail = json!({
+        "warning": "public_suffix",
+        "bundle": bundle,
+        "feed": feed,
+        "suffixes": total,
+        "rules": rules,
+        "preview": all.iter().take(PSL_PREVIEW).collect::<Vec<_>>(),
+        "more": total.saturating_sub(PSL_PREVIEW),
+        "added": added.iter().take(PSL_PREVIEW).collect::<Vec<_>>(),
+        "added_count": added.len(),
+        "suffix_digest": digest,
+    });
+    let title = format!(
+        "Bundle {bundle} blocks {total} public suffix{} (feed {feed})",
+        if total == 1 { "" } else { "es" }
+    );
+    let current: Option<(String, Option<String>)> = tx
+        .query_row(
+            "SELECT state, json_extract(details_json, '$.suffix_digest') FROM alerts WHERE dedupe_key = ?1",
+            [&key],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let shown = match current {
+        Some((state, old)) if state == "open" || added.is_empty() => {
+            // Open: the summary follows the set. Resolved by hand with nothing new: it stays
+            // resolved (its summary still follows, so reading it shows the current set).
+            if old.as_deref() != Some(digest.as_str()) {
+                alerts.update_summary_in(tx, &key, &title, &detail, ch)?;
+            }
+            state == "open"
+        }
+        // New, or resolved and a suffix it hasn't shown entered: raised (reopened).
+        _ => {
+            let spec = RaiseSpec::new("bundle_warning", Severity::Warning, key.clone(), title, detail)
+                .bundle(bundle.to_string())
+                .feed(feed.to_string());
+            alerts.raise_in(tx, &spec, ch)?.is_some()
+        }
+    };
+    if shown && !added.is_empty() {
+        tx.execute(
+            "UPDATE bundle_psl_hits SET alerted = 1 WHERE bundle_id = ?1 AND feed_id = ?2 AND alerted = 0",
+            rusqlite::params![bundle, feed],
+        )?;
+    }
+    Ok(())
+}
+
+/// A deleted bundle's public-suffix rows go and its grouped warnings resolve (#49).
+pub fn retire_public_suffix(
+    tx: &rusqlite::Transaction<'_>,
+    alerts: &crate::alerts::Alerts,
+    bundle: &str,
+    ch: &mut Changes,
+) -> rusqlite::Result<()> {
+    tx.execute("DELETE FROM bundle_psl_hits WHERE bundle_id = ?1", [bundle])?;
+    for prefix in [psl_key(bundle, ""), format!("bundle_warning:{bundle}:psl:")] {
+        for (key, _) in open_with_prefix(tx, bundle, &prefix)? {
+            alerts.resolve_in(tx, &key, Some(&json!({"bundle_deleted": true})), ch)?;
         }
     }
     Ok(())
