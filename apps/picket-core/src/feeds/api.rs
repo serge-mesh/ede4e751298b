@@ -1628,13 +1628,28 @@ pub struct AddedUrl {
     pub outcome: crate::config::Outcome,
 }
 
+/// The outcome of adding a URL whose feed exists: nothing changed, the provider as it is, masked
+/// as every entity the UI API returns (an older release's literal credential).
+fn unchanged_provider(p: &FeedProviderDef) -> crate::config::Outcome {
+    crate::config::Outcome {
+        id: p.id.clone(),
+        entity: serde_json::to_value(p)
+            .ok()
+            .map(|v| crate::config::store::for_ui(crate::config::EntityKind::FeedProvider, v)),
+        warnings: vec![],
+        feeds_added: vec![],
+        feeds_deleted: vec![],
+    }
+}
+
 async fn add_by_url(
     State(s): State<SharedState>,
     peer: Option<axum::Extension<PeerAddr>>,
     crate::web::error::ApiJson(body): crate::web::error::ApiJson<AddUrl>,
 ) -> ApiResult<Json<AddedUrl>> {
     let actor = actor(peer);
-    let model = s.config.model_of(crate::config::EntityKind::FeedProvider).await?;
+    // The providers and their feeds (a URL whose feed exists changes nothing).
+    let model = s.config.model_of(crate::config::EntityKind::Feed).await?;
     let template = body
         .feed
         .clone()
@@ -1691,6 +1706,23 @@ async fn add_by_url(
                     .or_else(|| default_branch.clone());
                 pb == want
             });
+            // Its feed is there: returned as it is, the provider's selection and the feed's
+            // settings untouched (as for an http URL below).
+            if let Some(p) = found
+                && let Some(f) = model.feeds.values().find(|f| {
+                    f.provider.as_deref() == Some(p.id.as_str()) && f.file.as_deref() == Some(u.path.as_str())
+                })
+            {
+                return Ok(Json(AddedUrl {
+                    provider: p.id.clone(),
+                    created_provider: false,
+                    file: u.path,
+                    feed: Some(f.id.clone()),
+                    existing: true,
+                    notice: u.notice,
+                    outcome: unchanged_provider(p),
+                }));
+            }
             let (pid, created) = match found {
                 Some(p) => (p.id.clone(), false),
                 None => {
@@ -1787,7 +1819,6 @@ async fn add_by_url(
                         .and_then(|u| url::Url::parse(u).ok())
                         .is_some_and(|u| http::url_key(&u) == key)
             };
-            let model = s.config.model_of(crate::config::EntityKind::Feed).await?;
             let feed_of = |m: &crate::config::Model, pid: &str| {
                 m.feeds
                     .values()
@@ -1799,18 +1830,9 @@ async fn add_by_url(
                 .as_ref()
                 .is_some_and(|p| feed_of(&model, &p.id).is_some());
             let (pid, created, outcome) = match existing {
-                // Its feed is there: returned as it is (no duplicate), the provider masked as
-                // every entity the UI API returns (an older release's literal credential).
+                // Its feed is there: returned as it is (no duplicate), nothing changed.
                 Some(p) if feed_of(&model, &p.id).is_some() => {
-                    let outcome = crate::config::Outcome {
-                        id: p.id.clone(),
-                        entity: serde_json::to_value(&p).ok().map(|v| {
-                            crate::config::store::for_ui(crate::config::EntityKind::FeedProvider, v)
-                        }),
-                        warnings: vec![],
-                        feeds_added: vec![],
-                        feeds_deleted: vec![],
-                    };
+                    let outcome = unchanged_provider(&p);
                     (p.id, false, outcome)
                 }
                 // Its feed was deleted: added again.
