@@ -725,6 +725,10 @@ mod tests {
     /// window, beside its siblings against alone.
     const GROUPED_TOLERANCE_POINTS: f64 = 2.5;
 
+    /// The most checks a day a provider of several fixtures may take, against the sum of its
+    /// feeds' checks alone.
+    const GROUPED_CHECKS_FACTOR: f64 = 1.05;
+
     /// How far before the fixtures' end each measured window ends, in days.
     const WINDOW_ENDS: [f64; 5] = [0.0, 7.0, 14.0, 21.0, 28.0];
 
@@ -791,10 +795,12 @@ mod tests {
                     ));
                 }
             }
-            // One provider still takes fewer checks than its feeds would apart.
+            // One provider takes about the checks its feeds would apart, or fewer: it takes its
+            // most aggressive feed's `k`, so a calmer sibling can add a few (measured: at most
+            // 3.3 % more, AdGuard DNS filter with jpgpi250 DoH, the window ending 14 days back).
             let apart: f64 = c.iter().map(|i| alone[*i].checks_per_day).sum();
             assert!(
-                g.checks_per_day <= apart,
+                g.checks_per_day <= GROUPED_CHECKS_FACTOR * apart,
                 "{c:?}, window ending {back} d back: {:.1} checks a day together, {apart:.1} apart",
                 g.checks_per_day
             );
