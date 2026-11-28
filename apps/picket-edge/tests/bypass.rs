@@ -430,6 +430,107 @@ async fn the_ring_answers_probes_and_dns_allows_follow_every_limit() {
     e.r.shutdown().await;
 }
 
+/// Pushes a config whose profile has `bypass` and a 600 s NXDOMAIN block answer, and waits for it.
+async fn with_block_ttl_600(e: &Env, bypass: Value) {
+    let mut cfg = config(&e.up, &e.head, bypass, json!({"interfaces": []}));
+    cfg["profiles"]["default"]["block_response"] = json!({"type": "nxdomain", "ttl": 600});
+    let id = e.core.set_config(&cfg);
+    e.core.changed(&id);
+    let edge = Arc::clone(&e.r.edge);
+    assert!(wait_until(T, || edge.active().object_id.as_deref() == Some(id.as_str())).await);
+}
+
+/// #50: a DNS allow must outlast its block's cached answer (hold max(60 s, TTL + 5 s), then 5 s
+/// for the reload). One that would end sooner is refused with `403 too_short`, whether the
+/// profile's `max_duration` or the request is short, with nothing recorded and no limit used; a
+/// compatible one reports the full hold as its countdown.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_dns_allow_that_ends_inside_its_blocks_cache_hold_is_refused() {
+    let e = env(json!({"mode": "off"}), json!({"interfaces": []}), None).await;
+    // A fresh 600 s block under a 5 min maximum: the grant would be shortened to 300 s.
+    with_block_ttl_600(
+        &e,
+        json!({"mode": "self", "max_duration": "5m", "rate_per_hour": 2}),
+    )
+    .await;
+    let m = udp_q(e.dns(), &Q::new("blocked.example", 1)).await;
+    assert_eq!(m.rcode, 3);
+    let bid = block_id(&m);
+    let (st, v) = e
+        .ext(
+            "PATCH",
+            Some(json!([{"block_id": bid, "expires_at": now() + 3600}])),
+        )
+        .await;
+    assert_eq!(st, 403, "{v}");
+    assert_eq!(v["error"]["code"], "too_short");
+    assert_eq!(v["error"]["index"], 0);
+    let msg = v["error"]["message"].as_str().unwrap();
+    assert!(
+        msg.contains("ask again in") && msg.contains("max_duration"),
+        "{msg}"
+    );
+    assert_eq!(e.ext("GET", None).await, (200, json!([])), "nothing recorded");
+
+    // Under a 1 h maximum, a short request is refused too, saying how long it needs.
+    with_block_ttl_600(
+        &e,
+        json!({"mode": "self", "max_duration": "1h", "rate_per_hour": 2}),
+    )
+    .await;
+    let (st, v) = e
+        .ext(
+            "PATCH",
+            Some(json!([{"block_id": bid, "expires_at": now() + 300}])),
+        )
+        .await;
+    assert_eq!(st, 403, "{v}");
+    assert_eq!(v["error"]["code"], "too_short");
+    let msg = v["error"]["message"].as_str().unwrap();
+    let need: u64 = msg
+        .rsplit("at least ")
+        .next()
+        .and_then(|t| t.trim_end_matches(" s").parse().ok())
+        .unwrap_or_else(|| panic!("{msg}"));
+    assert!(
+        (600..=610).contains(&need),
+        "hold 605 s + 5 s, less the time since the block: {need}"
+    );
+
+    // A compatible request (15 min): created, its countdown the rest of the hold.
+    let (st, v) = e
+        .ext(
+            "PATCH",
+            Some(json!([{"block_id": bid, "expires_at": now() + 900}])),
+        )
+        .await;
+    assert_eq!(st, 200, "{v}");
+    let ra = v[0]["retry_after_s"].as_u64().unwrap();
+    assert!((590..=605).contains(&ra), "the hold, not cut short: {ra}");
+    let allow_id = v[0]["allow_id"].as_str().unwrap().to_owned();
+    let expires = v[0]["expires_at"].as_i64().unwrap();
+    // Re-timing it to end inside the hold: refused, the allow keeps its end.
+    let (st, v) = e
+        .ext(
+            "PATCH",
+            Some(json!([{"allow_id": allow_id, "expires_at": now() + 120}])),
+        )
+        .await;
+    assert_eq!((st, &v["error"]["code"]), (403, &json!("too_short")), "{v}");
+    let (_, v) = e.ext("GET", None).await;
+    assert_eq!(v[0]["expires_at"], expires);
+    // None of the refusals counted against rate_per_hour 2: a re-time past the hold is the
+    // second change this hour.
+    let (st, v) = e
+        .ext(
+            "PATCH",
+            Some(json!([{"allow_id": allow_id, "expires_at": now() + 1800}])),
+        )
+        .await;
+    assert_eq!(st, 200, "{v}");
+    e.r.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bypass_off_is_refused_and_core_revokes_allows() {
     let e = env(json!({"mode": "off"}), json!({"interfaces": []}), None).await;

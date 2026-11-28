@@ -428,11 +428,41 @@ pub struct Upstream {
     pub trust_store: Option<String>,
 }
 
-/// The longest block TTL the edge serves (`block_response.ttl`): just under the shortest allow
-/// (15 min) minus the 5 s hold slack and the 5 s reload margin, so a browser's cached block
-/// answer always expires inside an allow and the reload after it gets the fresh answer. The edge
-/// lowers longer TTLs to this; core accepts them with a warning.
+/// The longest block TTL the edge serves (`block_response.ttl`): the extension's shortest allow
+/// choice (15 min) minus the 5 s hold slack ([`BLOCK_HOLD_SLACK_S`]) and the 5 s reload margin
+/// ([`RELOAD_BEFORE_EXPIRY_S`]), so a cached block answer expires inside any allow of 15 min or
+/// more and the reload after it gets the fresh answer. The edge lowers longer TTLs to this; core
+/// accepts them with a warning. Shorter allows are possible (`bypass.max_duration` down to 1 min,
+/// or a short request): [`min_allow_for_block_s`] says which fit (#50).
 pub const MAX_BLOCK_TTL_S: u32 = 890;
+
+/// Seconds past the block TTL that a block's hold adds: a reload right at the TTL can still find
+/// the browser's cached block answer unexpired, and Firefox then serves it to the extension's
+/// second attempt too, while refreshing it (#15). With the slack the reload finds it expired.
+pub const BLOCK_HOLD_SLACK_S: u64 = 5;
+
+/// The shortest hold: browsers keep an answer for at least about a minute whatever its TTL.
+pub const BLOCK_HOLD_MIN_S: u64 = 60;
+
+/// How long before an allow ends its reload must happen at the latest: room for the reload and
+/// the extension's second attempt 2 s later while the allow still holds.
+pub const RELOAD_BEFORE_EXPIRY_S: u64 = 5;
+
+/// A block's hold: how long after a block answer served with `ttl` a browser may still use its
+/// cached copy, `max(60 s, TTL + 5 s)` (the `retry_after_s` the bypass API reports for a fresh
+/// block).
+pub fn block_hold_s(ttl: u32) -> u64 {
+    BLOCK_HOLD_MIN_S.max(u64::from(ttl) + BLOCK_HOLD_SLACK_S)
+}
+
+/// The shortest temporary allow that lifts a block answer served just now with `ttl` (the edge
+/// serves at most [`MAX_BLOCK_TTL_S`]): its hold, then the reload margin before the allow ends.
+/// A shorter allow would end while the browser still uses the cached block answer, so the edge
+/// refuses one (`403 too_short`) and core refuses a profile whose `bypass.max_duration` is
+/// shorter than this for its `block_response.ttl` (#50).
+pub fn min_allow_for_block_s(ttl: u32) -> u64 {
+    block_hold_s(ttl.min(MAX_BLOCK_TTL_S)) + RELOAD_BEFORE_EXPIRY_S
+}
 
 /// The longest DoH request path.
 pub const MAX_DOH_PATH: usize = 256;

@@ -27,7 +27,11 @@
 //!   stream reset) leaves the allow either recorded with its firewall entries or neither.
 //! - **Durations:** `max_duration` is bounded at activation to the longest timeout a firewall
 //!   entry can hold ([`crate::dns::runtime::bounds::BYPASS_MAX_DURATION_S`], ~24.8 days: an IP
-//!   allow outliving its kernel entry would lapse unseen); every time sum is checked.
+//!   allow outliving its kernel entry would lapse unseen); every time sum is checked. A DNS
+//!   allow that would end while browsers may still use its block's cached answer (the block's
+//!   hold plus the reload margin, [`earliest_end`]) is refused, `403 too_short`, whether the
+//!   request or the governing `max_duration` is short, rather than shortened behind a countdown
+//!   that can't work (#50); an older block whose hold has mostly passed fits a shorter allow.
 //! - After each config activation every allow is checked again, and a device's allows when it
 //!   gains an address: one its governing profiles no longer permit is revoked (`via: config`),
 //!   one that ends past now + their smallest `max_duration` is shortened (`via: config`). A
@@ -195,13 +199,58 @@ fn view(a: &StoredAllow, retry_after: Option<u64>) -> AllowView {
 }
 
 /// How long before an allow's `expires_at` its reload must happen at the latest: room for the
-/// reload and the extension's second attempt 2 s later while the allow still holds.
+/// reload and the extension's second attempt 2 s later while the allow still holds
+/// ([`picket_api::edge_config::RELOAD_BEFORE_EXPIRY_S`]).
 pub const RETRY_BEFORE_EXPIRY_S: i64 = 5;
+const _: () = assert!(RETRY_BEFORE_EXPIRY_S.unsigned_abs() == RELOAD_BEFORE_EXPIRY_S_U);
+
+/// The earliest a DNS allow of a block recorded at `block_time` with `ttl` may end (#50): the
+/// end of the block's hold (a browser may use its cached block answer until then), plus the
+/// reload margin. `None` once the hold has ended (a reload now gets the fresh answer), or for an
+/// allow without its block's time and TTL.
+pub fn earliest_end(block_time: Option<Timestamp>, ttl: Option<u32>, now: Timestamp) -> Option<Timestamp> {
+    let (t, ttl) = (block_time?, ttl?);
+    let hold = SignedDuration::from_secs(i64::try_from(ring::hold_s(ttl)).unwrap_or(i64::MAX));
+    let hold_end = picket_api::time::saturating_add(t, hold);
+    (hold_end > now)
+        .then(|| picket_api::time::saturating_add(hold_end, SignedDuration::from_secs(RETRY_BEFORE_EXPIRY_S)))
+}
+
+/// Whole seconds from `now` to `t`, rounded up.
+fn secs_ceil(t: Timestamp, now: Timestamp) -> u64 {
+    let d = t - now;
+    let s = d.as_secs() + i64::from(d.subsec_nanos() > 0);
+    u64::try_from(s).unwrap_or(0)
+}
+
+/// The refusal of a DNS allow that would end before its block's cached answer expires (#50):
+/// `403 too_short`, saying how long it would need, and whether the request or the governing
+/// profiles' `max_duration` is what is short. Nothing is recorded or counted against limits.
+fn too_short(earliest: Timestamp, max_end: Timestamp, ttl: u32, now: Timestamp, index: usize) -> Refusal {
+    let need = secs_ceil(earliest, now);
+    let message = if max_end < earliest {
+        let max = secs_ceil(max_end, now);
+        format!(
+            "browsers may use this block's cached answer (block TTL {ttl} s) for {} s more, past              the longest allow this device's profiles permit ({max} s): ask again in {} s, or              have the profile's bypass.max_duration raised or block_response.ttl lowered",
+            need.saturating_sub(RELOAD_BEFORE_EXPIRY_S_U),
+            need.saturating_sub(max)
+        )
+    } else {
+        format!(
+            "the allow would end before browsers stop using this block's cached answer (block              TTL {ttl} s): ask for at least {need} s"
+        )
+    };
+    Refusal::new(StatusCode::FORBIDDEN, "too_short", message, Some(index))
+}
+
+const RELOAD_BEFORE_EXPIRY_S_U: u64 = picket_api::edge_config::RELOAD_BEFORE_EXPIRY_S;
 
 /// `retry_after_s` (edge.md §12): `max(0, block_time + hold − now)` for a DNS allow,
 /// `hold = max(60 s, block TTL + 5 s)` ([`ring::hold_s`]), but never later than
-/// [`RETRY_BEFORE_EXPIRY_S`] before the allow expires: a block TTL about as long as the allow
-/// would otherwise put the reload after it, where it meets the block again; 0 for an IP allow.
+/// [`RETRY_BEFORE_EXPIRY_S`] before the allow expires; 0 for an IP allow. The API creates or
+/// re-times a DNS allow only when it outlasts the hold by that margin ([`earliest_end`], #50),
+/// so the bound applies only to an allow a config re-check shortened, which reports no
+/// `retry_after_s`.
 pub fn retry_after(a: &StoredAllow, now: Timestamp) -> u64 {
     if a.kind == AllowKind::Ip {
         return 0;
@@ -782,6 +831,20 @@ impl Bypass {
             let max_end = ends_by(now, lim.max_duration);
             let want = Timestamp::from_second(e.expires_at).unwrap_or(max_end);
             let end = want.min(max_end);
+            // A DNS allow must outlast its block's cached answer (#50): one that ends sooner
+            // would meet the cached block at reload, behind a countdown that says it will work.
+            if kind_ == AllowKind::Dns {
+                let (bt, ttl) = match (&block, existing) {
+                    (Some(b), _) => (Some(b.wall), Some(b.response.ttl)),
+                    (None, Some(x)) => (x.block_time, x.block_ttl),
+                    (None, None) => (None, None),
+                };
+                if let (Some(earliest), Some(ttl)) = (earliest_end(bt, ttl, now), ttl)
+                    && end < earliest
+                {
+                    return Err(too_short(earliest, max_end, ttl, now, i));
+                }
+            }
             counted += 1;
             match existing {
                 Some(x) => {
@@ -1655,6 +1718,57 @@ mod tests {
         assert_eq!(retry_after(&a, now), 0, "too late to wait: reload now");
         let ip = crate::allows::tests::allow("b", AllowKind::Ip, 3600);
         assert_eq!(retry_after(&ip, now), 0);
+    }
+
+    /// #50: a DNS allow may end no earlier than its block's hold plus the reload margin; an
+    /// older block's remaining hold may already fit a short allow, and one whose hold ended
+    /// constrains nothing.
+    #[test]
+    fn earliest_end_is_the_rest_of_the_hold_plus_the_reload_margin() {
+        let now = Timestamp::now();
+        let ago = |s: i64| Some(now - SignedDuration::from_secs(s));
+        let at = |s: i64| Some(now + SignedDuration::from_secs(s));
+        // A fresh 600 s block: 605 s hold + 5 s, past a 5 min maximum.
+        assert_eq!(earliest_end(ago(0), Some(600), now), at(610));
+        assert!(earliest_end(ago(0), Some(600), now) > at(300));
+        // The same block 400 s later: 210 s left, so a 5 min allow fits.
+        assert_eq!(earliest_end(ago(400), Some(600), now), at(210));
+        // Short TTLs hold 60 s.
+        assert_eq!(earliest_end(ago(10), Some(10), now), at(55));
+        // Hold over: no constraint. No recorded block: none either.
+        assert_eq!(earliest_end(ago(605), Some(600), now), None);
+        assert_eq!(earliest_end(None, Some(600), now), None);
+        assert_eq!(earliest_end(ago(0), None, now), None);
+        // The longest TTL the edge serves fits the extension's shortest choice (15 min).
+        let ttl = crate::dns::runtime::bounds::BLOCK_TTL_S;
+        assert_eq!(earliest_end(ago(0), Some(ttl), now), at(900));
+        assert_eq!(
+            picket_api::edge_config::min_allow_for_block_s(ttl),
+            900,
+            "core's profile check agrees"
+        );
+        assert_eq!(picket_api::edge_config::min_allow_for_block_s(10), 65);
+        assert_eq!(
+            picket_api::edge_config::min_allow_for_block_s(86_400),
+            900,
+            "capped"
+        );
+    }
+
+    #[test]
+    fn a_too_short_refusal_says_what_is_short() {
+        let now = Timestamp::now();
+        let at = |s: i64| now + SignedDuration::from_secs(s);
+        let r = too_short(at(610), at(300), 600, now, 0);
+        assert_eq!(
+            (r.status, r.code, r.index),
+            (StatusCode::FORBIDDEN, "too_short", Some(0))
+        );
+        assert!(r.message.contains("605 s more"), "{}", r.message);
+        assert!(r.message.contains("(300 s)"), "{}", r.message);
+        assert!(r.message.contains("ask again in 310 s"), "{}", r.message);
+        let r = too_short(at(610), at(3600), 600, now, 1);
+        assert!(r.message.ends_with("ask for at least 610 s"), "{}", r.message);
     }
 
     /// The edge's longest block TTL fits a 15 min allow made right after the block: the hold
