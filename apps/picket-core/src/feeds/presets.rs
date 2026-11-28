@@ -439,6 +439,15 @@ enum ProviderStep {
     Present,
 }
 
+/// The feeds in `bundle` as stored in `tx` (none when it's gone).
+fn bundle_members(tx: &rusqlite::Transaction<'_>, bundle: &str) -> anyhow::Result<Vec<String>> {
+    let m = crate::config::store::load_kind(tx, EntityKind::Bundle)?;
+    Ok(m.bundles
+        .get(bundle)
+        .map(|b| b.feeds.iter().map(|f| f.feed.clone()).collect())
+        .unwrap_or_default())
+}
+
 /// Creates the preset's provider, or brings back the preset's files on the existing provider of
 /// the same source, in `tx`; refuses a provider with the id that reads another source.
 fn provider_step(
@@ -508,11 +517,18 @@ pub async fn install(state: &SharedState, id: &str, actor: Actor) -> CoreResult<
             .config
             .change_when(
                 move |tx| {
+                    let members_before = match &bundle {
+                        Some(b) => bundle_members(tx, b).map_err(CoreError::Other)?,
+                        None => Vec::new(),
+                    };
                     if let Some(b) = &bundle {
                         intend_in(tx, &p.id, &def2, b).map_err(CoreError::Other)?;
                     }
+                    // A provider created or brought back whose feeds come with it (a fixed-file
+                    // module's) completes the intent in its own save (`select::apply_in`), so
+                    // the call after it finds nothing left to add (issue 116).
                     let (step, changed) = provider_step(tx, &pv, &def2, &a)?;
-                    let added = complete_in(tx, &def2.id).map_err(CoreError::Other)?;
+                    complete_in(tx, &def2.id).map_err(CoreError::Other)?;
                     let waiting = pending(tx, &def2.id).map_err(|e| CoreError::Other(e.into()))?;
                     // Its feeds from the same snapshot as `waiting`, so the two agree.
                     let mut st =
@@ -531,12 +547,17 @@ pub async fn install(state: &SharedState, id: &str, actor: Actor) -> CoreResult<
                             feeds.push(id);
                         }
                     }
-                    Ok((
-                        step,
-                        changed || !added.is_empty(),
-                        !added.is_empty(),
-                        (waiting, feeds),
-                    ))
+                    // Whether this install put any of its feeds in the bundle, by whichever step.
+                    let added = match &bundle {
+                        Some(b) => {
+                            let now = bundle_members(tx, b).map_err(CoreError::Other)?;
+                            feeds
+                                .iter()
+                                .any(|f| now.contains(f) && !members_before.contains(f))
+                        }
+                        None => false,
+                    };
+                    Ok((step, changed || added, added, (waiting, feeds)))
                 },
                 |(_, changed, _, _)| *changed,
             )

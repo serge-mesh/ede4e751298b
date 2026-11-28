@@ -230,6 +230,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/ui/v1/bundles/{id}/public-suffixes/rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The rules that name one public suffix the bundle blocks from one feed, a page at a time (the rest of a public-suffix item's rules, from its rules_cursor) */
+        get: operations["listBundlePublicSuffixRules"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/ui/v1/bundles/{id}/status": {
         parameters: {
             query?: never;
@@ -5222,11 +5239,30 @@ export interface components {
             line?: number | null;
             rule?: string | null;
         };
+        /** @description A page of PublicSuffixRule items (cursor pagination). */
+        PublicSuffixRulePage: {
+            items: components["schemas"]["PublicSuffixRule"][];
+            /** @description Pass as `cursor` for the next page; null on the last page. */
+            next_cursor: string | null;
+        };
         /** @description One public suffix a bundle blocks below the top level, from one feed. */
         PublicSuffixView: {
             feed: string;
-            /** @description The feed's rules blocking it (more than one when several rules name it). */
+            /**
+             * Format: uint64
+             * @description How many of the feed's rules block it, over every page.
+             */
+            rule_count: number;
+            /**
+             * @description The feed's first rules blocking it (more than one when several rules name it), at most
+             *     10; `rules_cursor` pages through the rest.
+             */
             rules: components["schemas"]["PublicSuffixRule"][];
+            /**
+             * @description Pass as `cursor` to `GET bundles/{id}/public-suffixes/rules` for the rules after
+             *     `rules`; null when `rules` holds them all.
+             */
+            rules_cursor?: string | null;
             suffix: string;
         };
         /**
@@ -7129,6 +7165,46 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PublicSuffixes"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listBundlePublicSuffixRules: {
+        parameters: {
+            query: {
+                /** @description The feed. */
+                feed: string;
+                /** @description The public suffix. */
+                suffix: string;
+                /** @description The `next_cursor` of the previous page. */
+                cursor?: string;
+                /** @description Items per page (default 100, 1 to 500; else 400). */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicSuffixRulePage"];
                 };
             };
             /** @description Error */

@@ -1052,6 +1052,26 @@ async fn check_now_and_preset_installs_ignore_an_empty_or_malformed_body() {
     }
 }
 
+/// Installs the FireHOL level 1 preset through the UI API, returning what it did.
+async fn install_firehol(c: &Core) -> Value {
+    let r = ui(c, Method::POST, "/feed-presets/firehol-level1")
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    r.json().await.unwrap()
+}
+
+/// Whether `feed` is in `block-common`.
+async fn in_block_common(c: &Core, feed: &str) -> bool {
+    get_json(c, "/bundles/block-common").await["feeds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f["feed"] == feed)
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn presets_install_and_restore() {
     let c = core_with(None, None).await;
@@ -1122,6 +1142,13 @@ async fn presets_install_and_restore() {
         .unwrap();
     assert_eq!(r["provider"], "firehol");
     assert_eq!(r["feeds"], json!(["firehol"]));
+    // Issue 116: the provider's creation already put its feed in the bundle (a fixed-file
+    // provider's feeds come with it); the install says so.
+    assert_eq!(
+        (r["created"].as_bool(), r["bundle_added"].as_bool()),
+        (Some(true), Some(true)),
+        "{r}"
+    );
     // The preset names its feed (a provider feed is otherwise named after its file); the id
     // stays `<provider>-<file>`.
     assert_eq!(get_json(&c, "/feeds/firehol").await["name"], "FireHOL level 1");
@@ -1132,6 +1159,13 @@ async fn presets_install_and_restore() {
             .unwrap()
             .iter()
             .any(|f| f["feed"] == "firehol")
+    );
+    // Installed again unchanged: nothing added.
+    let r = install_firehol(&c).await;
+    assert_eq!(
+        (r["created"].as_bool(), r["bundle_added"].as_bool()),
+        (Some(false), Some(false)),
+        "{r}"
     );
     let r = ui(&c, Method::DELETE, "/feeds/firehol")
         .json(&json!({}))
@@ -1151,6 +1185,8 @@ async fn presets_install_and_restore() {
         .await
         .unwrap();
     assert_eq!(r["feeds"], json!(["firehol"]), "{r}");
+    assert_eq!(r["bundle_added"], true, "the restored feed joins the bundle again: {r}");
+    assert!(in_block_common(&c, "firehol").await);
     assert_eq!(
         get_json(&c, "/feed-providers/firehol").await["exclude"],
         json!([])
@@ -1160,6 +1196,22 @@ async fn presets_install_and_restore() {
         "FireHOL level 1",
         "a restored preset feed is named too"
     );
+    // Taken out of the bundle only (the feed stays): installing again puts it back, and says so.
+    let mut b = get_json(&c, "/bundles/block-common").await;
+    b["feeds"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|f| f["feed"] != "firehol");
+    let r = ui(&c, Method::PUT, "/bundles/block-common")
+        .json(&b)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK, "{}", r.text().await.unwrap());
+    assert!(!in_block_common(&c, "firehol").await);
+    let r = install_firehol(&c).await;
+    assert_eq!(r["bundle_added"], true, "{r}");
+    assert!(in_block_common(&c, "firehol").await);
     // Issue 74: an `http` provider of https://big.oisd.nl/ under OISD big's id is no install of
     // the (GitHub) preset: not shown installed, and installing it is refused like any other
     // module's provider with the id, leaving it and the bundle as they are.

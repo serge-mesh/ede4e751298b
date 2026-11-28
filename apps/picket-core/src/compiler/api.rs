@@ -118,13 +118,33 @@ pub struct PublicSuffixQuery {
     pub limit: Option<usize>,
 }
 
+/// `?feed=…&suffix=…&cursor=…&limit=…`
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+pub struct PublicSuffixRulesQuery {
+    pub feed: String,
+    pub suffix: String,
+    pub cursor: Option<String>,
+    pub limit: Option<usize>,
+}
+
+/// How many of a suffix's rules a [`PublicSuffixView`] lists (issue 115): the rest come a page
+/// at a time from `GET bundles/{id}/public-suffixes/rules`, so a page of suffixes stays bounded
+/// however many rules name one.
+pub const PUBLIC_SUFFIX_RULES: usize = 10;
+
 /// One public suffix a bundle blocks below the top level, from one feed.
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 pub struct PublicSuffixView {
     pub feed: String,
     pub suffix: String,
-    /// The feed's rules blocking it (more than one when several rules name it).
+    /// The feed's first rules blocking it (more than one when several rules name it), at most
+    /// 10; `rules_cursor` pages through the rest.
     pub rules: Vec<PublicSuffixRule>,
+    /// How many of the feed's rules block it, over every page.
+    pub rule_count: u64,
+    /// Pass as `cursor` to `GET bundles/{id}/public-suffixes/rules` for the rules after
+    /// `rules`; null when `rules` holds them all.
+    pub rules_cursor: Option<String>,
 }
 
 /// One rule behind a public-suffix block: its text and source line, as the feed lists it now.
@@ -400,6 +420,55 @@ async fn warnings(
     }))
 }
 
+/// The rule behind a `bundle_psl_hits` row (its stored identity), as its feed lists it now;
+/// `None` for an identity that doesn't parse.
+fn psl_rule(c: &rusqlite::Connection, identity_json: &str) -> Option<PublicSuffixRule> {
+    let i = serde_json::from_str::<super::guard::Identity>(identity_json).ok()?;
+    let (rule, line): (Option<String>, Option<i64>) = c
+        .query_row(
+            "SELECT raw, line_no FROM feed_entries WHERE feed_id = ?1 AND rule_type = ?2 AND key = ?3
+               AND kind = ?4 AND flags = ?5 AND value_json = ?6 AND removed_run IS NULL LIMIT 1",
+            rusqlite::params![
+                i.feed,
+                i.rule_type,
+                i.key,
+                i.kind,
+                i64::from(i.flags),
+                i.value_json
+            ],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap_or_default();
+    Some(PublicSuffixRule { rule, line })
+}
+
+/// Up to `limit` of the rules of `bundle`'s (`feed`, `suffix`) after `after` (a rule hash,
+/// empty for the first), in rule-hash order, and the cursor past them when more follow.
+fn psl_rules(
+    c: &rusqlite::Connection,
+    bundle: &str,
+    feed: &str,
+    suffix: &str,
+    after: &str,
+    limit: usize,
+) -> anyhow::Result<(Vec<PublicSuffixRule>, Option<String>)> {
+    let mut st = c.prepare_cached(
+        "SELECT rule_hash, identity_json FROM bundle_psl_hits
+          WHERE bundle_id = ?1 AND feed_id = ?2 AND suffix = ?3 AND rule_hash > ?4
+          ORDER BY rule_hash LIMIT ?5",
+    )?;
+    let mut rows: Vec<(String, String)> = st
+        .query_map(rusqlite::params![bundle, feed, suffix, after, limit + 1], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let more = rows.len() > limit;
+    rows.truncate(limit);
+    let cursor = more.then(|| rows.last().map(|(h, _)| encode_cursor(h))).flatten();
+    let rules = rows.iter().filter_map(|(_, ij)| psl_rule(c, ij)).collect();
+    Ok((rules, cursor))
+}
+
 async fn public_suffixes(
     State(s): State<SharedState>,
     ApiPath(id): ApiPath<String>,
@@ -421,9 +490,8 @@ async fn public_suffixes(
         _ => (String::new(), String::new()),
     };
     let feed = q.feed.clone();
-    let (total, page) = s
-        .db
-        .read(move |c| {
+    let (total, more, items) =
+        s.db.read(move |c| {
             let total: i64 = c.query_row(
                 "SELECT count(*) FROM (SELECT DISTINCT feed_id, suffix FROM bundle_psl_hits
                    WHERE bundle_id = ?1 AND (?2 IS NULL OR feed_id = ?2))",
@@ -431,56 +499,38 @@ async fn public_suffixes(
                 |r| r.get(0),
             )?;
             let mut st = c.prepare(
-                "SELECT DISTINCT feed_id, suffix FROM bundle_psl_hits
+                "SELECT feed_id, suffix, count(*) FROM bundle_psl_hits
                   WHERE bundle_id = ?1 AND (?2 IS NULL OR feed_id = ?2) AND (feed_id, suffix) > (?3, ?4)
-                  ORDER BY feed_id, suffix LIMIT ?5",
+                  GROUP BY feed_id, suffix ORDER BY feed_id, suffix LIMIT ?5",
             )?;
-            let pairs: Vec<(String, String)> = st
+            let mut groups: Vec<(String, String, i64)> = st
                 .query_map(
                     rusqlite::params![id, feed, after_feed, after_suffix, limit + 1],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )?
                 .collect::<rusqlite::Result<_>>()?;
-            let mut rules_st = c.prepare(
-                "SELECT identity_json FROM bundle_psl_hits WHERE bundle_id = ?1 AND feed_id = ?2 AND suffix = ?3
-                  ORDER BY rule_hash",
-            )?;
-            let mut page = Vec::new();
-            for (f, suffix) in pairs {
-                let ids: Vec<String> = rules_st
-                    .query_map(rusqlite::params![id, f, suffix], |r| r.get(0))?
-                    .collect::<rusqlite::Result<_>>()?;
-                let mut rules = Vec::new();
-                for ij in ids {
-                    let Ok(i) = serde_json::from_str::<super::guard::Identity>(&ij) else {
-                        continue;
-                    };
-                    let (rule, line): (Option<String>, Option<i64>) = c
-                        .query_row(
-                            "SELECT raw, line_no FROM feed_entries WHERE feed_id = ?1 AND rule_type = ?2 AND key = ?3
-                               AND kind = ?4 AND flags = ?5 AND value_json = ?6 AND removed_run IS NULL LIMIT 1",
-                            rusqlite::params![i.feed, i.rule_type, i.key, i.kind, i64::from(i.flags), i.value_json],
-                            |r| Ok((r.get(0)?, r.get(1)?)),
-                        )
-                        .unwrap_or_default();
-                    rules.push(PublicSuffixRule { rule, line });
-                }
-                page.push(PublicSuffixView {
+            // The group past the page only says another page follows: its rules aren't read.
+            let more = groups.len() > limit;
+            groups.truncate(limit);
+            let mut items = Vec::with_capacity(groups.len());
+            for (f, suffix, count) in groups {
+                let (rules, rules_cursor) = psl_rules(c, &id, &f, &suffix, "", PUBLIC_SUFFIX_RULES)?;
+                items.push(PublicSuffixView {
                     feed: f,
                     suffix,
                     rules,
+                    rule_count: u64::try_from(count).unwrap_or(0),
+                    rules_cursor,
                 });
             }
-            Ok::<_, anyhow::Error>((total, page))
+            Ok::<_, anyhow::Error>((total, more, items))
         })
         .await?;
-    let more = page.len() > limit;
-    let items: Vec<PublicSuffixView> = page.into_iter().take(limit).collect();
     let next_cursor = more
         .then(|| {
             items
                 .last()
-                .map(|v| encode_cursor(&format!("{}\n{}", v.feed, v.suffix)))
+                .map(|v: &PublicSuffixView| encode_cursor(&format!("{}\n{}", v.feed, v.suffix)))
         })
         .flatten();
     Ok(Json(PublicSuffixes {
@@ -488,6 +538,32 @@ async fn public_suffixes(
         items,
         next_cursor,
     }))
+}
+
+/// The rules of one public suffix a bundle blocks from one feed, a page at a time (the rest of a
+/// [`PublicSuffixView`]'s `rules`, from its `rules_cursor`).
+async fn public_suffix_rules(
+    State(s): State<SharedState>,
+    ApiPath(id): ApiPath<String>,
+    ApiQuery(q): ApiQuery<PublicSuffixRulesQuery>,
+) -> ApiResult<Json<Page<PublicSuffixRule>>> {
+    let model = s.config.model().await?;
+    if !model.bundles.contains_key(&id) {
+        return Err(ApiError::not_found("no such bundle"));
+    }
+    let limit = crate::web::api::limit_param(
+        q.limit,
+        crate::web::api::DEFAULT_LIMIT,
+        crate::web::api::MAX_LIMIT,
+    )?;
+    let after = match &q.cursor {
+        Some(c) if !c.is_empty() => decode_cursor(c).ok_or_else(|| ApiError::bad_request("bad cursor"))?,
+        _ => String::new(),
+    };
+    let (items, next_cursor) =
+        s.db.read(move |c| psl_rules(c, &id, &q.feed, &q.suffix, &after, limit))
+            .await?;
+    Ok(Json(Page { items, next_cursor }))
 }
 
 async fn build_now(
@@ -633,6 +709,7 @@ pub fn item_routes() -> Router<SharedState> {
         .route("/{id}/versions", get(versions))
         .route("/{id}/warnings", get(warnings))
         .route("/{id}/public-suffixes", get(public_suffixes))
+        .route("/{id}/public-suffixes/rules", get(public_suffix_rules))
         .route("/{id}/build", post(build_now))
         .route("/{id}/explain", get(explain))
 }
