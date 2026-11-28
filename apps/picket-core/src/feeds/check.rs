@@ -1956,8 +1956,10 @@ pub async fn choose_ks(state: &SharedState) {
         if !matches!(current, Ok(true)) {
             continue;
         }
+        // Only learners still there: a source edit committed since the write drops them, and the
+        // old choice mustn't recreate them in the new epoch.
         for f in &feeds {
-            state.feeds.with_learner(&f.id, |l| {
+            state.feeds.with_existing_learner(&f.id, |l| {
                 if let Some(r) = &record {
                     l.k = r.choice.k;
                 }

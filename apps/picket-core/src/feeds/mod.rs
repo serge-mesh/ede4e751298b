@@ -1420,10 +1420,15 @@ impl Feeds {
         self.rebuild_learners(state).await;
     }
 
-    /// Runs `f` on the feed's learner (created on first use).
-    pub(crate) fn with_learner<T>(&self, feed: &str, f: impl FnOnce(&mut Learner) -> T) -> Option<T> {
+    /// Runs `f` on the feed's learner only if it has one: a learner dropped meanwhile (a new model
+    /// epoch, a deletion) isn't brought back by a result computed for the old one.
+    pub(crate) fn with_existing_learner<T>(
+        &self,
+        feed: &str,
+        f: impl FnOnce(&mut Learner) -> T,
+    ) -> Option<T> {
         let mut m = self.learners.lock().ok()?;
-        Some(f(m.entry(feed.to_string()).or_default()))
+        m.get_mut(feed).map(f)
     }
 
     /// A copy of the feed's learner.
@@ -2374,6 +2379,29 @@ mod lifecycle_tests {
         assert_eq!(tick(&f, now + secs(121)), vec![Cause::CheckNow]);
         f.complete(P, now + secs(121));
         assert!(tick(&f, now + secs(121)).is_empty(), "once");
+    }
+
+    /// Issue #65: a weekly choice finished after its feed's learner was dropped (a new model
+    /// epoch) doesn't bring the learner back.
+    #[test]
+    fn a_late_choice_does_not_recreate_a_dropped_learner() {
+        let f = Feeds::default();
+        f.learners.lock().unwrap().insert("a".into(), Learner::default());
+        assert_eq!(
+            f.with_existing_learner("a", |l| {
+                l.k = 3.0;
+            }),
+            Some(())
+        );
+        assert_eq!(f.learner("a").map(|l| l.k), Some(3.0));
+        f.drop_learner("a");
+        assert_eq!(
+            f.with_existing_learner("a", |l| {
+                l.k = 4.0;
+            }),
+            None
+        );
+        assert!(f.learner("a").is_none());
     }
 
     /// Issue #65: a restart keeps each stored pause still running whole, however long past an
