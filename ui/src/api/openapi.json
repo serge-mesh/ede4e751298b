@@ -713,6 +713,59 @@
         },
         "type": "object"
       },
+      "BrowserExtensionBuild": {
+        "description": "One extension build.",
+        "properties": {
+          "browser": {
+            "description": "`brave` or `firefox`.",
+            "type": "string"
+          },
+          "file": {
+            "description": "The file name.",
+            "type": "string"
+          },
+          "path": {
+            "description": "Where to download it: `/browser-extension/<file>` (open, no basic auth).",
+            "type": "string"
+          },
+          "sha256": {
+            "description": "The file's SHA-256, hex.",
+            "type": "string"
+          },
+          "size": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "browser",
+          "version",
+          "file",
+          "path",
+          "size",
+          "sha256"
+        ],
+        "type": "object"
+      },
+      "BrowserExtensionBuilds": {
+        "description": "The builds in the package.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/BrowserExtensionBuild"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
       "BrowserList": {
         "properties": {
           "enabled": {
@@ -3570,59 +3623,6 @@
           "file_bytes",
           "file_cap",
           "body_cap"
-        ],
-        "type": "object"
-      },
-      "ExtensionBuild": {
-        "description": "One extension build.",
-        "properties": {
-          "browser": {
-            "description": "`brave` or `firefox`.",
-            "type": "string"
-          },
-          "file": {
-            "description": "The file name.",
-            "type": "string"
-          },
-          "path": {
-            "description": "Where to download it: `/extension/<file>` (open, no basic auth).",
-            "type": "string"
-          },
-          "sha256": {
-            "description": "The file's SHA-256, hex.",
-            "type": "string"
-          },
-          "size": {
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "version": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "browser",
-          "version",
-          "file",
-          "path",
-          "size",
-          "sha256"
-        ],
-        "type": "object"
-      },
-      "ExtensionBuilds": {
-        "description": "The builds in the package.",
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/ExtensionBuild"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "items"
         ],
         "type": "object"
       },
@@ -12479,6 +12479,37 @@
         ]
       }
     },
+    "/api/ui/v1/browser-extension": {
+      "get": {
+        "operationId": "listBrowserExtensionBuilds",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserExtensionBuilds"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "The browser extension builds in the package, with SHA-256 sums and download paths",
+        "tags": [
+          "system"
+        ]
+      }
+    },
     "/api/ui/v1/browser-lists": {
       "get": {
         "operationId": "listBrowserLists",
@@ -14214,37 +14245,6 @@
         "summary": "Update: install the offered release now (release.install_now)",
         "tags": [
           "edges"
-        ]
-      }
-    },
-    "/api/ui/v1/extension": {
-      "get": {
-        "operationId": "listExtensionBuilds",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ExtensionBuilds"
-                }
-              }
-            },
-            "description": "Success"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Error"
-          }
-        },
-        "summary": "The browser extension builds in the package, with SHA-256 sums and download paths",
-        "tags": [
-          "system"
         ]
       }
     },

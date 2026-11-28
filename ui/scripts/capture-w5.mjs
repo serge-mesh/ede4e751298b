@@ -458,7 +458,7 @@ await capture("/temp-allows?limit=1", "/temp-allows?limit=1");
 await capture("/dnssec/queue");
 await capture("/dnssec/results");
 await capture("/dnssec/results?outcome=bogus");
-await capture("/extension");
+await capture("/browser-extension");
 console.log("seq 4:", JSON.stringify((await ok("GET", `/logs/${encodeURIComponent(idOf(4))}`))).slice(0, 600));
 const alerts = await waitFor("alerts", async () => {
   const a = await ok("GET", "/alerts?limit=100");

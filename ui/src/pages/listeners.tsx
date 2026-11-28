@@ -1,5 +1,4 @@
 import * as React from "react";
-import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "@/components/common/page";
 import { EntityList } from "@/components/common/entity-list";
 import { OrderedPicker } from "@/components/common/ordered-picker";
@@ -8,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { useEdges, useIdentity } from "@/api/queries";
 import type { ListenerDef } from "@/api/types";
 import type { FieldOverride } from "@/components/schema-form/schema-form";
+import type { DataTableColumn } from "@/components/common/data-table";
 
 function tlsText(l: ListenerDef): string {
   if (!l.tls) return l.proto === "dns" ? "—" : "none";
@@ -20,7 +20,7 @@ export function ListenersPage() {
   const edges = useEdges();
   const identity = useIdentity();
   const edgeName = React.useMemo(() => new Map((edges.data ?? []).map((e) => [e.id ?? "", e.name || e.id || ""])), [edges.data]);
-  const columns = React.useMemo<ColumnDef<ListenerDef, unknown>[]>(
+  const columns = React.useMemo<DataTableColumn<ListenerDef>[]>(
     () => [
       { id: "name", header: "Name", accessorFn: (l) => l.name || l.id, cell: ({ row }) => <SafeText>{row.original.name || row.original.id}</SafeText> },
       { id: "proto", header: "Protocol", accessorFn: (l) => l.proto, cell: ({ getValue }) => <Badge variant="outline">{String(getValue())}</Badge> },

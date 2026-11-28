@@ -857,6 +857,37 @@ fn profile_warnings() {
         "{:?}",
         out.warnings
     );
+    // #50: self-service bypass needs allows that outlast a fresh block's cached answer
+    // (hold max(60 s, TTL + 5 s), then 5 s for the reload).
+    for (id, ttl, max, mode) in [
+        ("short5m", 600, "5m", "self"),
+        ("short1m", 10, "1m", "self"),
+        ("short14m", 890, "14m59s", "self"),
+    ] {
+        refused(
+            c.create(
+                EntityKind::Profile,
+                json!({"id": id, "name": id, "block_response": {"type": "custom_ip", "ipv4": "192.168.1.9", "ttl": ttl},
+                    "bypass": {"mode": mode, "max_duration": max}}),
+            ),
+            "bypass_shorter_than_block_hold",
+        );
+    }
+    for (id, ttl, max, mode) in [
+        ("fits15m", 890, "15m", "self"),
+        ("fits10m", 590, "10m", "self"),
+        ("fits65s", 10, "65s", "self"),
+        // Above the cap the edge serves 890 s: 15 min still fits.
+        ("capped15m", 3600, "15m", "self"),
+        ("offshort", 600, "1m", "off"),
+    ] {
+        c.create(
+            EntityKind::Profile,
+            json!({"id": id, "name": id, "block_response": {"type": "nxdomain", "ttl": ttl},
+                "bypass": {"mode": mode, "max_duration": max}}),
+        )
+        .unwrap_or_else(|e| panic!("{id}: {e:?}"));
+    }
     // The validator profile admits only core: no warning for it.
     let issues =
         picket_core::config::validate::validate(&picket_core::config::store::load_model(&c.conn).unwrap());

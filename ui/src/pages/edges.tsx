@@ -1,10 +1,9 @@
 import * as React from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import type { ColumnDef } from "@tanstack/react-table";
 import { toast } from "sonner";
 import { CheckIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { PageHeader, Section } from "@/components/common/page";
-import { DataTable } from "@/components/common/data-table";
+import { DataTable, type DataTableColumn } from "@/components/common/data-table";
 import { QueryView } from "@/components/common/states";
 import { Mono, SafeText } from "@/components/common/text";
 import { TimeAgo } from "@/components/common/time";
@@ -71,7 +70,7 @@ function conditionCount(e: EdgeView): number {
 
 function EdgeTable({ edges }: { edges: EdgeView[] }) {
   const navigate = useNavigate();
-  const columns = React.useMemo<ColumnDef<EdgeView, unknown>[]>(
+  const columns = React.useMemo<DataTableColumn<EdgeView>[]>(
     () => [
       {
         id: "name",
@@ -127,7 +126,7 @@ function EdgeTable({ edges }: { edges: EdgeView[] }) {
 function PendingTable({ pending }: { pending: PendingEdge[] }) {
   const [approving, setApproving] = React.useState<PendingEdge | null>(null);
   const forget = useEdgeMutation((fp: string) => unwrap(client.DELETE("/api/ui/v1/edges/pending/{fp}", { params: { path: { fp } } })));
-  const columns = React.useMemo<ColumnDef<PendingEdge, unknown>[]>(
+  const columns = React.useMemo<DataTableColumn<PendingEdge>[]>(
     () => [
       { id: "key", header: "Key fingerprint", accessorFn: (p) => p.key, cell: ({ row }) => <CopyField value={row.original.key} label="Copy fingerprint" /> },
       { id: "claimed", header: "Claimed name", accessorFn: (p) => p.claimed_name ?? "", cell: ({ row }) => <SafeText>{row.original.claimed_name}</SafeText> },

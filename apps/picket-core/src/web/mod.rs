@@ -10,9 +10,9 @@
 pub mod api;
 pub mod assets;
 pub mod auth;
+pub mod browser_extension;
 pub mod error;
 pub mod events;
-pub mod extension;
 pub mod openapi;
 pub mod protect;
 
@@ -133,7 +133,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/lanca/ca.crt", get(ca_der))
         .route("/lanca/ca.pem", get(ca_pem))
         .route("/lists/{*path}", get(crate::lists::serve::get))
-        .route("/extension/{name}", get(extension::download))
+        .route("/browser-extension/{name}", get(browser_extension::download))
         .fallback(assets::serve)
         .layer(from_fn_with_state(state.clone(), protect::guard))
         .layer(from_fn(protect::headers))

@@ -34,12 +34,12 @@ async fn extension_builds_are_served_open_with_their_sums() {
         Some(json!({"web": {"tls": "off"}})),
         picket_core::run::StartOptions {
             release_dir: std::path::PathBuf::from("/nonexistent/picket-core/edge"),
-            extension_dir: ext.path().to_path_buf(),
+            browser_extension_dir: ext.path().to_path_buf(),
             ..Default::default()
         },
     )
     .await;
-    let (st, v) = get(&c, "/extension").await;
+    let (st, v) = get(&c, "/browser-extension").await;
     assert_eq!(st, StatusCode::OK);
     let items = v["items"].as_array().unwrap();
     assert_eq!(items.len(), 2, "{v}");
@@ -51,15 +51,18 @@ async fn extension_builds_are_served_open_with_their_sums() {
         json!(hex::encode(sha2::Sha256::digest(b"brave build")))
     );
     let path = brave["path"].as_str().unwrap();
-    assert_eq!(path, "/extension/picket-browser-extension-0.1.0-brave.zip");
+    assert_eq!(
+        path,
+        "/browser-extension/picket-browser-extension-0.1.0-brave.zip"
+    );
     // The download is open: no basic auth.
     let r = reqwest::get(format!("{}{path}", c.base("http"))).await.unwrap();
     assert_eq!(r.status(), StatusCode::OK);
     assert_eq!(r.bytes().await.unwrap().as_ref(), b"brave build");
     for bad in [
-        "/extension/notes.txt",
-        "/extension/picket-browser-extension-0.2.0-brave.zip",
-        "/extension/..%2Fcore.db",
+        "/browser-extension/notes.txt",
+        "/browser-extension/picket-browser-extension-0.2.0-brave.zip",
+        "/browser-extension/..%2Fcore.db",
     ] {
         let r = reqwest::get(format!("{}{bad}", c.base("http"))).await.unwrap();
         assert_eq!(r.status(), StatusCode::NOT_FOUND, "{bad}");

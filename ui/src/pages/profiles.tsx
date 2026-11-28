@@ -1,6 +1,5 @@
 import * as React from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import type { ColumnDef } from "@tanstack/react-table";
 import { toast } from "sonner";
 import { FlaskConicalIcon, MonitorSmartphoneIcon, PlusIcon, TriangleAlertIcon } from "lucide-react";
 import { PageHeader, Section } from "@/components/common/page";
@@ -21,13 +20,14 @@ import { ObjectArrayItems, type FieldOverride } from "@/components/schema-form/s
 import { openapiRoot } from "@/lib/openapi";
 import { formatCompact } from "@/lib/format";
 import { escapeControl } from "@/lib/text";
+import type { DataTableColumn } from "@/components/common/data-table";
 
 export function ProfilesPage() {
   const navigate = useNavigate();
   const settings = useSettings();
   const def = settings.data?.settings.default_profile;
   const formProps = useProfileFormProps();
-  const columns = React.useMemo<ColumnDef<ProfileDef, unknown>[]>(
+  const columns = React.useMemo<DataTableColumn<ProfileDef>[]>(
     () => [
       {
         id: "name",

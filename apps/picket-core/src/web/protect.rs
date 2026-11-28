@@ -52,7 +52,7 @@ pub fn classify(path: &str) -> PathClass {
     } else if path.starts_with("/lists/")
         || path == "/lists"
         || path.starts_with("/lanca/")
-        || path.starts_with("/extension/")
+        || path.starts_with("/browser-extension/")
     {
         PathClass::Lists
     } else {

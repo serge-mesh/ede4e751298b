@@ -1,12 +1,20 @@
 import * as React from "react";
 import {
+  columnFilteringFeature,
+  createFilteredRowModel,
+  createSortedRowModel,
+  filterFn_includesString,
   flexRender,
-  getCoreRowModel,
-  getFilteredRowModel,
-  getSortedRowModel,
-  useReactTable,
+  globalFilteringFeature,
+  rowSortingFeature,
+  sortFn_alphanumeric,
+  sortFn_datetime,
+  sortFn_text,
+  tableFeatures,
+  useTable,
   type ColumnDef,
   type Row,
+  type RowData,
   type SortingState,
 } from "@tanstack/react-table";
 import { ArrowDownIcon, ArrowUpIcon, ChevronsUpDownIcon, SearchIcon } from "lucide-react";
@@ -15,10 +23,29 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
 /**
+ * The table features every DataTable registers: sorting and the global filter. The sort functions
+ * are the ones `sortFn: "auto"` picks from, as TanStack Table v8 did by default.
+ */
+const dataTableFeatures = tableFeatures({
+  rowSortingFeature,
+  columnFilteringFeature,
+  globalFilteringFeature,
+  sortedRowModel: createSortedRowModel(),
+  filteredRowModel: createFilteredRowModel(),
+  sortFns: { alphanumeric: sortFn_alphanumeric, text: sortFn_text, datetime: sortFn_datetime },
+  filterFns: { includesString: filterFn_includesString },
+});
+
+type DataTableFeatures = typeof dataTableFeatures;
+
+/** A column of a DataTable over rows of type T. */
+export type DataTableColumn<T extends RowData> = ColumnDef<DataTableFeatures, T, unknown>;
+
+/**
  * A sortable, filterable table (TanStack Table). Cells render values as React text; columns
  * that show outside text use SafeText.
  */
-export function DataTable<T>({
+export function DataTable<T extends RowData>({
   data,
   columns,
   searchable,
@@ -33,13 +60,13 @@ export function DataTable<T>({
   label,
 }: {
   data: T[];
-  columns: ColumnDef<T, unknown>[];
+  columns: DataTableColumn<T>[];
   searchable?: boolean;
   searchPlaceholder?: string;
   initialSort?: SortingState;
   empty?: React.ReactNode;
   onRowClick?: (row: T) => void;
-  rowClassName?: (row: Row<T>) => string | undefined;
+  rowClassName?: (row: Row<DataTableFeatures, T>) => string | undefined;
   getRowId?: (row: T, index: number) => string;
   toolbar?: React.ReactNode;
   dense?: boolean;
@@ -47,17 +74,13 @@ export function DataTable<T>({
 }) {
   const [sorting, setSorting] = React.useState<SortingState>(initialSort ?? []);
   const [filter, setFilter] = React.useState("");
-  // TanStack Table returns functions that change identity; the React Compiler lint knows.
-  // eslint-disable-next-line react-hooks/incompatible-library
-  const table = useReactTable({
+  const table = useTable({
+    features: dataTableFeatures,
     data,
     columns,
     state: { sorting, globalFilter: filter },
     onSortingChange: setSorting,
     onGlobalFilterChange: setFilter,
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
     getRowId,
     globalFilterFn: "includesString",
   });
@@ -137,7 +160,7 @@ export function DataTable<T>({
                   }
                   tabIndex={onRowClick ? 0 : undefined}
                 >
-                  {row.getVisibleCells().map((cell) => (
+                  {row.getAllCells().map((cell) => (
                     <TableCell key={cell.id} className={cn(dense && "py-1")}>
                       {flexRender(cell.column.columnDef.cell, cell.getContext())}
                     </TableCell>

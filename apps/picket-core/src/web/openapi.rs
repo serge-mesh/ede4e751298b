@@ -826,12 +826,12 @@ fn operations() -> Vec<Op> {
         .ok("200", Some("TempAllowViewPage")),
         op(
             Get,
-            "/extension",
-            "listExtensionBuilds",
+            "/browser-extension",
+            "listBrowserExtensionBuilds",
             "The browser extension builds in the package, with SHA-256 sums and download paths",
             "system",
         )
-        .ok("200", Some("ExtensionBuilds")),
+        .ok("200", Some("BrowserExtensionBuilds")),
         // DNSSEC (core.md §8, §12)
         op(
             Get,
@@ -1053,7 +1053,7 @@ fn schemas() -> Map<String, Value> {
     register::<crate::lookups::api::LookupProviderStatus>(&mut g);
     register::<crate::lookups::api::TempAllowView>(&mut g);
     register::<crate::lookups::selftest::SelfTestView>(&mut g);
-    register::<crate::web::extension::ExtensionBuilds>(&mut g);
+    register::<crate::web::browser_extension::BrowserExtensionBuilds>(&mut g);
     register::<crate::config::export::ExportDocument>(&mut g);
     register::<crate::config::export::RestoreResult>(&mut g);
     register::<crate::dnssec::api::DnssecQueue>(&mut g);

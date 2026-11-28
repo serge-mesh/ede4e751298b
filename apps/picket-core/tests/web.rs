@@ -82,12 +82,23 @@ async fn auth_where_needed_and_nowhere_else() {
         c.state.lanca.load().cert_der.as_slice()
     );
     assert_eq!(get(&c, "/lanca/ca.pem", None).await.status(), StatusCode::OK);
+    // A bundle no config has: core builds its own lists in the background from start, so
+    // block-common may already be served (200) or not yet (404). Either way, no auth is asked.
     assert_eq!(
-        get(&c, "/lists/not-a-bundle.txt", None).await.status(),
+        get(&c, "/lists/no-such-bundle.txt", None).await.status(),
         StatusCode::NOT_FOUND
     );
+    let lists = get(&c, "/lists/block-common.txt", None).await;
+    assert!(
+        matches!(lists.status(), StatusCode::OK | StatusCode::NOT_FOUND),
+        "{}",
+        lists.status()
+    );
+    assert!(lists.headers().get("www-authenticate").is_none());
     assert_eq!(
-        get(&c, "/extension/picket-brave.zip", None).await.status(),
+        get(&c, "/browser-extension/picket-brave.zip", None)
+            .await
+            .status(),
         StatusCode::NOT_FOUND
     );
     // /metrics is off (404) while metrics.allow_cidrs is empty.
@@ -116,7 +127,7 @@ async fn open_paths_serve_only_their_own_resources() {
         "/lanca/anything",
         "/lanca/settings",
         "/lanca/",
-        "/extension/x/y",
+        "/browser-extension/x/y",
     ] {
         let r = get(&c, path, None).await;
         assert_eq!(r.status(), StatusCode::NOT_FOUND, "{path}");

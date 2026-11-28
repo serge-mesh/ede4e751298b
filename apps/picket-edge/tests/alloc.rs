@@ -1,19 +1,35 @@
-//! Hot-path allocation budgets (build-and-test.md §4), measured on the real serving path: an
-//! edge started in process with a config and a block bundle, and each query driven through
-//! `pipeline::serve_with`, the entry every listener uses (decode, device limits, profile choice,
-//! the ladder, the cache, the reply and the log step).
+//! Hot-path allocation budgets, measured on the real serving path: an edge started in process
+//! with a config and a block bundle, and each query driven through `pipeline::serve_with`, the
+//! entry every listener uses (decode, device limits, profile choice, the ladder, the cache, the
+//! reply and the log step). This file is the budgets' source of truth.
 //!
-//! - On the baseline fixtures, a cache hit and a block reply, query decoding included, make at
-//!   most 2 allocations, and serving after decoding makes none. The reply goes into the buffer the
-//!   listener lends (listeners reuse theirs).
-//! - With the profile's `log: off` nothing else is allocated: the `q` record's fields are built
-//!   only when the profile keeps the record. With `log: full` the log step builds the record and
-//!   its JSON line (build-and-test.md §4 benchmarks "encode a log record" on its own): its counts
-//!   are committed budgets here ([`LOG_FULL_BLOCK`], [`LOG_FULL_HIT`]).
+//! **Metric:** allocation operations, allocations plus reallocations (a buffer that grows counts
+//! each time it moves), as `picket-wire`'s `alloc_budget` and `picket-bundle`'s `alloc` count.
 //!
-//! One test in its own binary: the counting allocator is global. The edge runs on a
-//! current-thread runtime and each measured query is polled once, synchronously, so none of its
-//! background tasks runs inside a measurement; each count is the least of several runs.
+//! **Fixtures:** the baseline queries, a block reply (`x.ads.example.com/A`, blocked by the
+//! bundle, `null_ip`) and a cache hit (`www.example.com/A`, one warmed answer), each with and
+//! without temporary allows in `allows.json`, from a client with no name, into a reply buffer the
+//! listener lends (listeners reuse theirs).
+//!
+//! - **Serving, `log: off`:** at most 2 operations per query, decoding included, and none after
+//!   decoding. Nothing else is allocated: the `q` record's fields are built only when the profile
+//!   keeps the record.
+//! - **Logging, `log: full`:** the log step builds the `q` record's fields (with a copy of
+//!   `versions`), its reason and preview, serializes its JSON line and enqueues it, synchronously
+//!   before `serve_with` returns. Its operations are the difference between a fixture with
+//!   `log: full` and the same fixture with `log: off`: at most [`LOG_FULL_CEILING`] (32) on these
+//!   fixtures, so at most 34 in all with the serving budget, and at most the measured
+//!   per-fixture regression thresholds [`LOG_FULL_BLOCK`] and [`LOG_FULL_HIT`]. These are
+//!   baseline regression budgets for these fixtures, not a maximum for every configuration:
+//!   richer previews, longer names and larger bundle-version sets allocate more.
+//!
+//! **Method:** one test in its own binary, since the counting allocator is global. The edge runs
+//! on a current-thread runtime and each measured query is polled once, synchronously, so none of
+//! its background tasks runs inside a measurement: transport and task overhead (sockets, the
+//! listener's task) and the shipping of log records to core aren't counted. Each fixture is
+//! served three times first (first-use allocations: the device's bucket, the allow index,
+//! matchers), then each count is the least of 7 runs, with inputs prepared and results dropped
+//! outside the count.
 
 #![allow(
     clippy::unwrap_used,
@@ -45,11 +61,15 @@ use picket_wire::{AnswerLimits, CacheValue, SentQuery};
 #[global_allocator]
 static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
-/// The log step's allocations with `log: full`, per query: the `q` record's text fields (with a
-/// copy of `versions`), its reason and preview, its JSON line and the buffer hand-off. Committed
-/// baselines, measured at 19 (block) and 23 (hit), plus 5 % (build-and-test.md §4).
-const LOG_FULL_BLOCK: usize = 20;
-const LOG_FULL_HIT: usize = 24;
+/// The most allocation operations the log step may add on the baseline fixtures (`log: full`
+/// over `log: off`).
+const LOG_FULL_CEILING: usize = 32;
+/// The log step's committed regression thresholds per fixture, measured with this metric
+/// (allocations plus reallocations) at 26 (block reply) and 28 (cache hit), with and without
+/// temporary allows, plus about 5 % rounded up. A change that needs more raises these in the same
+/// commit, reviewed like code, within [`LOG_FULL_CEILING`].
+const LOG_FULL_BLOCK: usize = 28;
+const LOG_FULL_HIT: usize = 30;
 
 async fn activate(edge: &Edge, log: &str, n: u8) {
     let cfg: picket_api::edge_config::EdgeConfig = serde_json::from_value(serde_json::json!({
@@ -146,16 +166,18 @@ fn serve(edge: &Edge, msg: &[u8], buf: Vec<u8>) -> (u16, Option<Vec<u8>>) {
     (u16::from(reply[3] & 0x0F), Some(reply))
 }
 
-/// The least allocation count of `f` over several runs (inputs prepared outside the count).
+/// The least count of allocation operations (allocations plus reallocations: a buffer that grows
+/// counts each time it moves, as in `picket-wire`'s and `picket-bundle`'s budgets) of `f` over 7
+/// runs, inputs prepared and the result dropped outside the count.
 fn least<P, R>(mut prep: impl FnMut() -> P, mut f: impl FnMut(P) -> R) -> usize {
     (0..7)
         .map(|_| {
             let p = prep();
             let reg = Region::new(GLOBAL);
             let r = f(p);
-            let n = reg.change().allocations;
+            let s = reg.change();
             drop(r);
-            n
+            s.allocations + s.reallocations
         })
         .min()
         .unwrap()
@@ -192,7 +214,9 @@ fn cache_hit_and_block_reply_budgets_on_the_real_serving_path() {
         let block_msg = dnsh::Q::new("x.ads.example.com", 1).bytes();
         let hit_msg = dnsh::Q::new("www.example.com", 1).bytes();
         let lend = || Vec::with_capacity(4096);
-        // (n, log, temporary allows): ER9 also measures with a non-empty `allows.json`, so ladder
+        // The `log: off` counts of the run just before, for the log step's increment.
+        let mut unlogged: Option<(usize, usize)> = None;
+        // (n, log, temporary allows): also measured with a non-empty `allows.json`, so ladder
         // step 1 looks the device up by its text (`DeviceKey::with_text`, on the stack).
         for (n, log, allows) in [
             (1u8, "off", false),
@@ -221,8 +245,8 @@ fn cache_hit_and_block_reply_budgets_on_the_real_serving_path() {
             let block = least(lend, |b| serve(&edge, &block_msg, b));
             let hit = least(lend, |b| serve(&edge, &hit_msg, b));
             eprintln!(
-                "allocations per query, log {log}, allows {allows}: block reply {block} (decode \
-                 {decode_block}), cache hit {hit} (decode {decode_hit})"
+                "allocation operations per query, log {log}, allows {allows}: block reply {block} \
+                 (decode {decode_block}), cache hit {hit} (decode {decode_hit})"
             );
             match log {
                 "off" => {
@@ -233,18 +257,27 @@ fn cache_hit_and_block_reply_budgets_on_the_real_serving_path() {
                     );
                     assert!(hit <= 2, "cache hit, decoding included: {hit}");
                     assert_eq!(hit, decode_hit, "serving a hit after decoding allocates nothing");
+                    unlogged = Some((block, hit));
                 }
                 _ => {
-                    assert!(
-                        block - decode_block <= LOG_FULL_BLOCK,
-                        "block reply's log step: {}",
-                        block - decode_block
+                    let (off_block, off_hit) = unlogged.take().expect("the log: off run comes first");
+                    let (log_block, log_hit) = (block - off_block, hit - off_hit);
+                    eprintln!(
+                        "  log step (full over off), allows {allows}: block reply {log_block}, cache hit {log_hit}"
                     );
-                    assert!(
-                        hit - decode_hit <= LOG_FULL_HIT,
-                        "cache hit's log step: {}",
-                        hit - decode_hit
-                    );
+                    for (what, n, threshold) in [
+                        ("block reply", log_block, LOG_FULL_BLOCK),
+                        ("cache hit", log_hit, LOG_FULL_HIT),
+                    ] {
+                        assert!(
+                            n <= LOG_FULL_CEILING,
+                            "{what}'s log step: {n} operations, over the ceiling of {LOG_FULL_CEILING}"
+                        );
+                        assert!(
+                            n <= threshold,
+                            "{what}'s log step: {n} operations, over its regression threshold of {threshold}"
+                        );
+                    }
                 }
             }
         }

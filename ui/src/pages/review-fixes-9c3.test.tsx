@@ -126,7 +126,7 @@ describe("U1: views kept fresh only by events read once more when the event sock
       qk.feed("manual-block", "export-size"),
       qk.manualFile("manual-block"),
       qk.warninglists,
-      ["extension"],
+      ["browser-extension"],
       ["devices"],
       ["lookup-modules"],
       ["lookup-status", "p1"],

@@ -55,7 +55,7 @@ pub struct StartOptions {
     /// The feed downloads' HTTP client options (tests add a root and host overrides).
     pub feed_http: crate::modules::download::client::HttpOptions,
     /// Where the browser extension builds in the package live (core.md §12).
-    pub extension_dir: PathBuf,
+    pub browser_extension_dir: PathBuf,
     /// Pins the clock's synchronisation answer instead of probing the host (tests: a CI
     /// container has no time service, so the probe would say "not synchronised").
     pub clock_synced: Option<bool>,
@@ -70,7 +70,7 @@ impl Default for StartOptions {
             release_keys: crate::settings::release_keys(),
             any_port: false,
             feed_http: Default::default(),
-            extension_dir: PathBuf::from(crate::web::extension::DEFAULT_DIR),
+            browser_extension_dir: PathBuf::from(crate::web::browser_extension::DEFAULT_DIR),
             clock_synced: None,
             disk_watch: true,
         }
@@ -193,7 +193,9 @@ pub async fn start_with(
         lists: crate::lists::Lists::default(),
         lookups: Arc::new(crate::lookups::Lookups::new()),
         dnssec: Arc::new(crate::dnssec::Dnssec::default()),
-        extension: Arc::new(crate::web::extension::Builds::new(opts.extension_dir.clone())),
+        browser_extension: Arc::new(crate::web::browser_extension::Builds::new(
+            opts.browser_extension_dir.clone(),
+        )),
         restore: Arc::default(),
         shutdown: shutdown.clone(),
         metrics_db,

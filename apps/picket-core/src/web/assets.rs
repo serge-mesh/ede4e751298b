@@ -88,7 +88,7 @@ pub fn is_asset_path(path: &str) -> bool {
 }
 
 pub async fn serve(method: Method, uri: Uri) -> Response {
-    // Paths outside the UI's class (`/lists*`, `/lanca/*`, `/extension/*`, `/healthz`,
+    // Paths outside the UI's class (`/lists*`, `/lanca/*`, `/browser-extension/*`, `/healthz`,
     // `/metrics`) pass the guard without basic auth: they serve only their exact resources, and
     // never the UI document (core.md §12).
     if super::protect::classify(uri.path()) != super::protect::PathClass::Ui {
