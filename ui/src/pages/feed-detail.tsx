@@ -1047,10 +1047,11 @@ export function RunResult({ run, slow, retryAt, running }: { run: RunRow | null;
         {(run.parse?.notices?.BroadBrowser ?? 0) > 0 && (
           <div>
             <h4 className="mb-1 text-sm font-medium">
-              {formatNumber(run.parse?.notices?.BroadBrowser ?? 0)} broad browser rules kept
+              {formatNumber(run.parse?.notices?.BroadBrowser ?? 0)} broad browser rules {run.status === "applied" ? "kept" : "in this run"}
             </h4>
             <p className="mb-1 text-xs text-muted-foreground">
-              Browser rules with no domain restriction and a pattern that matches most requests. They are kept and go to the browser lists built from this feed; set the feed&apos;s browser mode to drop to leave its browser rules out.
+              Browser rules with no domain restriction and a pattern that matches most requests.{" "}
+              {run.status === "applied" ? "They are kept and go to the browser lists built from this feed" : "This run wasn't applied; an applied run keeps them for the browser lists built from this feed"}; set the feed&apos;s browser mode to drop to leave its browser rules out.
             </p>
             {run.parse?.notice_samples && run.parse.notice_samples.length > 0 && (
               <ul className="space-y-1 text-xs">

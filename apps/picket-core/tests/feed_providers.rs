@@ -416,6 +416,7 @@ async fn adding_an_existing_github_feed_by_url_changes_nothing() {
             ("a.txt", "a.example\n"),
             ("lists/b.txt", "0.0.0.0 b.example\n"),
             ("x.txt", "x.example\n"),
+            ("y.txt", "y.example\n"),
         ],
     );
     let c = core_with(Some(&srv), None).await;
@@ -522,6 +523,40 @@ async fn adding_an_existing_github_feed_by_url_changes_nothing() {
     .await;
     assert_eq!((st, v["existing"].as_bool()), (StatusCode::OK, Some(false)), "{v}");
     assert_eq!(get_json(&c, "/feed-providers/or").await["exclude"], json!([]));
+    // A second provider of the repository and branch (an overlap, warned about) with the file:
+    // its feed is returned, and neither provider's selection changes.
+    let (st, v) = post(
+        &c,
+        "/feed-providers",
+        json!({"id": "or2", "name": "o/r again", "module": "github", "config": {"owner": "o", "repo": "r"},
+               "files": [{"match": "y.txt", "feed": {"format": "plain"}}]}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    check_provider(&c, "or2").await;
+    wait_until("the second provider's feed", || async {
+        c.state.feeds.provider_feeds("or2").len() == 1
+    })
+    .await;
+    let y = c.state.feeds.provider_feeds("or2")[0].id.clone();
+    let (or_before, or2_before) = (
+        get_json(&c, "/feed-providers/or").await,
+        get_json(&c, "/feed-providers/or2").await,
+    );
+    let (st, v) = post(
+        &c,
+        "/feed-providers-add-url",
+        json!({"url": "https://raw.githubusercontent.com/o/r/main/y.txt"}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(
+        (v["provider"].as_str(), v["existing"].as_bool(), v["feed"].as_str()),
+        (Some("or2"), Some(true), Some(y.as_str())),
+        "{v}"
+    );
+    assert_eq!(get_json(&c, "/feed-providers/or").await["files"], or_before["files"]);
+    assert_eq!(get_json(&c, "/feed-providers/or2").await["files"], or2_before["files"]);
     // Another branch is another provider.
     let (st, v) = post(
         &c,

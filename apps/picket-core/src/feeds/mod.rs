@@ -950,6 +950,11 @@ impl Feeds {
         let guard = JobGuard::new(state.clone(), feed);
         let job = IngestJob::new(state.clone(), feed, work, guard);
         if state.scheduler.heavy.submit(Priority::P1, Box::new(job)) == crate::scheduler::Submitted::Dropped {
+            if state.scheduler.heavy.is_closed() {
+                // Shutting down, not full: no retry, and an import's refusal is no attempt (its
+                // run starts again with the next start).
+                return;
+            }
             tracing::warn!(feed = %feed, "the heavy lane is full; the feed's run waits for its next check");
             // A manual feed has no next scheduled check: its run is tried again in a minute.
             self.retry_manual(feed, Timestamp::now() + jiff::SignedDuration::from_mins(1));

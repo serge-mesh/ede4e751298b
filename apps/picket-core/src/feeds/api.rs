@@ -1729,7 +1729,7 @@ async fn add_by_url(
                 None
             };
             let want = u.branch.clone().or_else(|| default_branch.clone());
-            let found = same_repo.iter().find(|p| {
+            let on_branch = |p: &&&FeedProviderDef| {
                 let pb = p
                     .config
                     .get("branch")
@@ -1737,14 +1737,22 @@ async fn add_by_url(
                     .map(str::to_string)
                     .or_else(|| default_branch.clone());
                 pb == want
-            });
-            // Its feed is there: returned as it is, the provider's selection and the feed's
+            };
+            let found = same_repo.iter().find(on_branch);
+            // Its feed is there, on any provider of the repository and branch (two may overlap,
+            // with a warning): returned as it is, the providers' selections and the feed's
             // settings untouched (as for an http URL below).
-            if let Some(p) = found
-                && let Some(f) = model.feeds.values().find(|f| {
-                    f.provider.as_deref() == Some(p.id.as_str()) && f.file.as_deref() == Some(u.path.as_str())
-                })
-            {
+            let existing = same_repo.iter().filter(on_branch).find_map(|p| {
+                model
+                    .feeds
+                    .values()
+                    .find(|f| {
+                        f.provider.as_deref() == Some(p.id.as_str())
+                            && f.file.as_deref() == Some(u.path.as_str())
+                    })
+                    .map(|f| (*p, f))
+            });
+            if let Some((p, f)) = existing {
                 return Ok(Json(AddedUrl {
                     provider: p.id.clone(),
                     created_provider: false,
