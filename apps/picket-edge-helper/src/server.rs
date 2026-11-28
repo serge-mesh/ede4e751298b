@@ -778,7 +778,9 @@ mod apply_tests {
             Ok((_, Request::Apply(d))) => d,
             other => panic!("{other:?}"),
         };
-        shared.put_apply(desired(), oneshot::channel().0);
+        // One receiver per apply the engine runs: each put into an empty slot starts one.
+        let (first, first_rx) = oneshot::channel();
+        shared.put_apply(desired(), first);
         // A burst of wakes (UniFi's state file, `ensure`s, lost apply wakes) ahead of the disable.
         for i in 0..engine::CMD_QUEUE - 1 {
             tx.send(if i % 2 == 0 {
@@ -791,28 +793,38 @@ mod apply_tests {
         let (dtx, drx) = oneshot::channel();
         tx.send(Cmd::Disable(dtx)).unwrap();
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let taken = Arc::new(AtomicUsize::new(0));
         let refill = std::thread::spawn({
-            let (shared, stop, taken) = (shared.clone(), stop.clone(), taken.clone());
+            let (shared, stop) = (shared.clone(), stop.clone());
             let d = desired();
             move || {
+                let mut applies = Vec::new();
                 while !stop.load(Ordering::Relaxed) {
-                    if shared.put_apply(d.clone(), oneshot::channel().0) {
-                        taken.fetch_add(1, Ordering::Relaxed);
+                    let (atx, arx) = oneshot::channel();
+                    if shared.put_apply(d.clone(), atx) {
+                        applies.push(arx);
                     }
                     std::thread::yield_now();
                 }
+                applies
             }
         });
         let engine = Engine::new(b.clone(), shared.clone(), Platform::Debian);
-        std::thread::spawn(move || engine::run(engine, rx));
+        let engine = std::thread::spawn(move || engine::run(engine, rx));
         let r = timeout(Duration::from_secs(2), drx).await;
-        let applies = taken.load(Ordering::Relaxed);
         stop.store(true, Ordering::Relaxed);
-        refill.join().unwrap();
+        let mut applies = refill.join().unwrap();
+        applies.insert(0, first_rx);
+        // Every answer is in once the engine has stopped (a last waiting apply gets none).
+        drop(tx);
+        engine.join().unwrap();
         assert!(r.expect("the disable was not answered").is_ok());
+        let before_disable = applies
+            .iter_mut()
+            .filter_map(|a| a.try_recv().ok())
+            .filter(|r| !r.conditions.helper_disabled)
+            .count();
         // One apply per wake ahead of it would be 16.
-        assert!(applies < 6, "{applies} applies ran before the disable");
+        assert_eq!(before_disable, 1, "applies that ran before the disable");
     }
 
     #[tokio::test]
