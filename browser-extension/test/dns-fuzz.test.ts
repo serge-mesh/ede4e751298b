@@ -769,12 +769,15 @@ function optionFraming(rng: Rng): Guarded {
   return { query: p.query, bytes: assemble(p), outcome };
 }
 
-/** Parses a guarded case and checks it ends in the outcome it was built for. */
-function expectOutcome(c: Guarded): void {
-  if (typeof c.outcome === 'string') {
-    expectDnsError(c.bytes, c.query, c.outcome);
-  } else {
-    expect(parseReply(c.bytes, c.query)).toEqual(c.outcome);
+/** What the parse of a guarded case gives: the reply, or the message of its DnsError (any other error is thrown). */
+function outcomeOf(c: Guarded): DnsReply | string {
+  try {
+    return parseReply(c.bytes, c.query);
+  } catch (e) {
+    if (e instanceof DnsError) {
+      return e.message;
+    }
+    throw e;
   }
 }
 
@@ -892,7 +895,9 @@ describe('DoH replies at the input boundaries (seeded random)', () => {
   it(
     'reads names up to the label limit in every section, and refuses longer ones',
     () => {
-      cases(8, deepOwner, showGuarded, expectOutcome);
+      cases(8, deepOwner, showGuarded, (c) => {
+        expect(outcomeOf(c)).toEqual(c.outcome);
+      });
     },
     TIMEOUT_MS,
   );
@@ -900,7 +905,9 @@ describe('DoH replies at the input boundaries (seeded random)', () => {
   it(
     'refuses section counts and RDATA lengths that run past the message',
     () => {
-      cases(9, inconsistentLengths, showGuarded, expectOutcome);
+      cases(9, inconsistentLengths, showGuarded, (c) => {
+        expect(outcomeOf(c)).toEqual(c.outcome);
+      });
     },
     TIMEOUT_MS,
   );
@@ -908,7 +915,9 @@ describe('DoH replies at the input boundaries (seeded random)', () => {
   it(
     'refuses a second OPT record anywhere among the additional records',
     () => {
-      cases(10, secondOpt, showGuarded, expectOutcome);
+      cases(10, secondOpt, showGuarded, (c) => {
+        expect(outcomeOf(c)).toEqual(c.outcome);
+      });
     },
     TIMEOUT_MS,
   );
@@ -916,7 +925,9 @@ describe('DoH replies at the input boundaries (seeded random)', () => {
   it(
     'refuses EDNS options cut short and EDE options too short for an INFO-CODE',
     () => {
-      cases(11, optionFraming, showGuarded, expectOutcome);
+      cases(11, optionFraming, showGuarded, (c) => {
+        expect(outcomeOf(c)).toEqual(c.outcome);
+      });
     },
     TIMEOUT_MS,
   );
