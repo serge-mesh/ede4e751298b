@@ -12,7 +12,7 @@
 //!   upstream answer with TC over a stream transport fails that upstream (S6, in the pool).
 //! - Only recursion-desired queries are answered (edge.md §16): others get REFUSED, uncounted
 //!   as a decision (`rejected`).
-//! - Latency is `max(upstream, lookups)`: the two run concurrently. When [4] and [5] both block,
+//! - Latency is `max(upstream, lookups)`: the two run concurrently. When \[4\] and \[5\] both block,
 //!   the lower step (the lookup) decides.
 //! - Every query runs inside `catch_unwind` ([`serve`]): a panic answers SERVFAIL, counts in
 //!   `panics` and logs a `panic` event (edge.md §16).

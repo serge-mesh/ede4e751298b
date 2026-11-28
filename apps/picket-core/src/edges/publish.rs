@@ -2,7 +2,7 @@
 //!
 //! - **Rendering:** [`Publisher::render`] renders every edge's `EdgeConfig` from the model, the
 //!   settings, the release offer, the bundle and verdict-set heads core names, the edge's
-//!   requests and core's addresses ([`crate::edges::render`]). It runs, debounced, after every
+//!   requests and core's addresses ([`crate::edges::render()`]). It runs, debounced, after every
 //!   trigger ([`Publisher::trigger`]: a configuration commit, a request, a release registration,
 //!   a hello that changes the release offer, a new head) and every minute as a safety net (core's
 //!   addresses, heads published by other modules). Renders are serialised.

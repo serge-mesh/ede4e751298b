@@ -10,10 +10,12 @@
 //!
 //! **Deadlines** on every exchange (README §2 Bounded): connecting, waiting for the response
 //! head, the gap between two body chunks, and the whole body. Bodies are bounded by the caller:
-//! [`Resp::bytes_limited`] for small API answers, [`Resp::stage`] for downloads (the decoded
+//! [`Resp::bytes_limited`] for small API answers, [`Ctx::stage`] for downloads (the decoded
 //! size cap, `feeds.max_download_mib`).
 //!
 //! Errors never carry a URL (`reqwest::Error::without_url`): a URL may hold a resolved secret.
+//!
+//! [`Ctx::stage`]: super::Ctx::stage
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -191,7 +193,7 @@ fn make_header(name: &str, value: &str, credential: bool) -> Result<Header, Http
 }
 
 /// A response whose head has arrived; the body is read with [`Resp::bytes_limited`] or
-/// [`Resp::stage`].
+/// [`Ctx::stage`](super::Ctx::stage).
 pub struct Resp {
     pub status: StatusCode,
     pub headers: HeaderMap,
