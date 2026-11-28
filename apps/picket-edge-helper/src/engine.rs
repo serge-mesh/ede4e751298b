@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError, sync_channel};
 use std::time::{Duration, Instant};
 
 use picket_api::edge_config::FwMode;
@@ -994,6 +994,8 @@ pub enum Cmd {
 /// The engine thread: commands, triggers and the 2 s re-assert. Runs until `Shutdown` or until
 /// every sender is gone; writes the snapshot on the way out.
 pub fn run<B: Backend>(mut engine: Engine<B>, rx: Receiver<Cmd>) {
+    let close = CloseOnExit::new(rx, engine.shared.clone());
+    let rx = &close.rx;
     let mut next = Instant::now() + REASSERT;
     let mut follow_up: Option<Instant> = None;
     let mut last_end = Instant::now();
@@ -1012,16 +1014,35 @@ pub fn run<B: Backend>(mut engine: Engine<B>, rx: Receiver<Cmd>) {
             }
             None => false,
         };
-        // After an apply, take at most one queued command without waiting before looking at the
-        // slot again: applies arriving back to back can't hold off a `disable` or a shutdown.
-        let wait = if applied {
-            Duration::ZERO
+        let got = if applied {
+            // After an apply, take at most one queued command without waiting before looking at
+            // the slot again, so applies arriving back to back can't hold off a `disable` or a
+            // shutdown. Wakes cost no pass and don't count: they are taken on the way.
+            let mut got = Err(RecvTimeoutError::Timeout);
+            for _ in 0..=CMD_QUEUE {
+                match rx.try_recv() {
+                    Ok(Cmd::ApplyPending) => {}
+                    Ok(Cmd::Trigger) => on_trigger(&mut next, &mut follow_up, last_end),
+                    Ok(cmd) => {
+                        got = Ok(cmd);
+                        break;
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        got = Err(RecvTimeoutError::Disconnected);
+                        break;
+                    }
+                }
+            }
+            got
         } else {
-            follow_up
-                .map_or(next, |f| f.min(next))
-                .saturating_duration_since(Instant::now())
+            rx.recv_timeout(
+                follow_up
+                    .map_or(next, |f| f.min(next))
+                    .saturating_duration_since(Instant::now()),
+            )
         };
-        match rx.recv_timeout(wait) {
+        match got {
             Ok(Cmd::ApplyPending) => {}
             Err(RecvTimeoutError::Timeout) if applied => {}
             Ok(Cmd::Disable(tx)) => {
@@ -1034,15 +1055,8 @@ pub fn run<B: Backend>(mut engine: Engine<B>, rx: Receiver<Cmd>) {
                 last_end = Instant::now();
                 next = last_end + REASSERT;
             }
-            Ok(Cmd::Trigger) => {
-                // UniFi may write its state file before or after it rewrites the chains: look
-                // now and again a second later.
-                let soon = (Instant::now() + Duration::from_millis(100)).max(last_end + MIN_GAP);
-                next = next.min(soon);
-                follow_up = Some(soon + Duration::from_secs(1));
-            }
+            Ok(Cmd::Trigger) => on_trigger(&mut next, &mut follow_up, last_end),
             Ok(Cmd::Shutdown(tx)) => {
-                drop(engine.shared.take_apply());
                 engine.shutdown();
                 let _ = tx.send(());
                 return;
@@ -1057,11 +1071,42 @@ pub fn run<B: Backend>(mut engine: Engine<B>, rx: Receiver<Cmd>) {
                 next = (start + REASSERT).max(last_end + MIN_GAP);
             }
             Err(RecvTimeoutError::Disconnected) => {
-                drop(engine.shared.take_apply());
                 engine.shutdown();
                 return;
             }
         }
+    }
+}
+
+/// The engine's command queue (`sync_channel` in main).
+pub const CMD_QUEUE: usize = 16;
+
+/// UniFi may write its state file before or after it rewrites the chains: look now and again a
+/// second later.
+fn on_trigger(next: &mut Instant, follow_up: &mut Option<Instant>, last_end: Instant) {
+    let soon = (Instant::now() + Duration::from_millis(100)).max(last_end + MIN_GAP);
+    *next = (*next).min(soon);
+    *follow_up = Some(soon + Duration::from_secs(1));
+}
+
+/// However the engine thread ends (shutdown, every sender gone, or a panic): close the queue
+/// first, then free a waiting apply. A socket apply arriving after that finds the queue closed
+/// and gives up at once (server.rs), instead of waiting `engine_timeout` on a slot nobody takes.
+pub(crate) struct CloseOnExit {
+    rx: Receiver<Cmd>,
+    shared: Arc<Shared>,
+}
+
+impl CloseOnExit {
+    pub(crate) fn new(rx: Receiver<Cmd>, shared: Arc<Shared>) -> Self {
+        Self { rx, shared }
+    }
+}
+
+impl Drop for CloseOnExit {
+    fn drop(&mut self) {
+        drop(std::mem::replace(&mut self.rx, sync_channel(0).1));
+        drop(self.shared.take_apply());
     }
 }
 

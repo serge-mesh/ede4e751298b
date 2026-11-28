@@ -211,7 +211,7 @@ fn run(
         pending = ?rep.pending,
         "start-up done"
     );
-    let (etx, erx) = sync_channel::<Cmd>(16);
+    let (etx, erx) = sync_channel::<Cmd>(engine::CMD_QUEUE);
     let engine_thread = std::thread::Builder::new()
         .name("engine".into())
         .spawn(move || engine::run(engine, erx))?;
