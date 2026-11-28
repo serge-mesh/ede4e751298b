@@ -13,8 +13,10 @@
 //!   waits behind a `dump` page, an `apply` or an `iptables-restore` holding out for the lock.
 //! - **Bounded memory:** frames are decoded straight into typed requests (never into
 //!   `serde_json::Value`, which can cost 30× a frame's size), frames over 64 KiB are decoded at
-//!   most two at a time, a connection holds at most one response (≤ 1 MiB) plus its coalesced
-//!   events (a few KiB), and a client that doesn't read is dropped after a write timeout.
+//!   most two at a time, and an `apply` is validated while it streams in, keeping only its
+//!   normalised networks (never a string per CIDR). A connection holds at most one response
+//!   (≤ 1 MiB) plus its coalesced events (a few KiB), and a client that doesn't read is
+//!   dropped after a write timeout.
 //! - **Events** go to connections that said `hello` with `events: true`.
 
 use std::io;
@@ -27,8 +29,8 @@ use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
 use picket_api::helper::{
-    ApplyRequest, DeleteRequest, DumpRequest, EnsureRequest, HelloRequest, HelloResponse, HelperError,
-    MAX_FRAME, PROTO_VERSION, SetFull, SetStatus, StatusResponse, error_code, kind, sets,
+    DeleteRequest, DumpRequest, EnsureRequest, HelloRequest, HelloResponse, HelperError, MAX_FRAME,
+    PROTO_VERSION, SetFull, SetStatus, StatusResponse, error_code, kind, sets,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -38,11 +40,13 @@ use tokio::sync::{Semaphore, oneshot, watch};
 use tokio::time::{Instant, sleep_until, timeout};
 use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 
+use crate::apply::Apply;
 use crate::backend::Backend;
 use crate::dump::{self, DumpStore};
 use crate::engine::Cmd;
 use crate::fast::{FastHandle, Job, MAX_ENTRIES};
 use crate::ipset::IpsetError;
+use crate::rules::Desired;
 use crate::shared::{Mailbox, Shared};
 
 /// Frames larger than this take a decode permit.
@@ -449,9 +453,8 @@ impl<B: Backend> Server<B> {
                     },
                 )
             }
-            Request::Apply(req) => match self.engine_call(id, |tx| Cmd::Apply(req, tx)).await {
-                Ok(Ok(r)) => frame(kind::APPLY, id, &r),
-                Ok(Err(e)) => frame(kind::ERROR, id, &e),
+            Request::Apply(d) => match self.engine_call(id, |tx| Cmd::Apply(d, tx)).await {
+                Ok(r) => frame(kind::APPLY, id, &r),
                 Err(f) => f,
             },
             // The emergency switch is the CLI's alone (edge.md §15): an edge can neither lift an
@@ -532,7 +535,7 @@ impl<B: Backend> Server<B> {
 #[derive(Debug)]
 pub enum Request {
     Hello(HelloRequest),
-    Apply(Box<ApplyRequest>),
+    Apply(Box<Desired>),
     Disable,
     Enable,
     Ensure(EnsureRequest),
@@ -564,7 +567,7 @@ pub fn parse_request(f: &[u8]) -> Result<(Option<u64>, Request), (Option<u64>, H
     }
     let req = match head.kind.as_str() {
         kind::HELLO => Request::Hello(parse!(HelloRequest)),
-        kind::APPLY => Request::Apply(Box::new(parse!(ApplyRequest))),
+        kind::APPLY => Request::Apply(Box::new(parse!(Apply).desired().map_err(|e| invalid(id, e))?)),
         kind::DISABLE => Request::Disable,
         kind::ENABLE => Request::Enable,
         kind::ENSURE => {

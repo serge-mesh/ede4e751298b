@@ -212,9 +212,7 @@ fn socket_requests_and_ip_addr_json() {
         let f = mutate(&mut rng, seed);
         match parse_request(&f) {
             Ok((_, Request::Apply(r))) => {
-                if let Ok(d) = Desired::from_request(&r) {
-                    assert_eq!(Desired::from_request(&d.to_request()).as_ref(), Ok(&d));
-                }
+                assert_eq!(Desired::from_request(&r.to_request()).as_ref(), Ok(&*r));
             }
             Ok((_, Request::Ensure(r))) => {
                 for e in &r.entries {

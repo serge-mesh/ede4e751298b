@@ -325,12 +325,17 @@ impl<B: Backend> Engine<B> {
             code: error_code::INVALID.into(),
             message,
         })?;
+        Ok(self.apply_desired(d))
+    }
+
+    /// Socket requests have already been validated, without retaining their decoded strings.
+    fn apply_desired(&mut self, d: Desired) -> ApplyResponse {
         self.desired = d;
         self.has_rules = true;
         self.persist_due = true;
         self.prune();
         let rep = self.pass(Mode::Apply);
-        Ok(self.response(rep))
+        self.response(rep)
     }
 
     /// `disable`: save the flag, remove the jumps; sets and chains stay.
@@ -976,10 +981,8 @@ impl<B: Backend> Engine<B> {
 
 /// Requests to the engine thread.
 pub enum Cmd {
-    Apply(
-        Box<ApplyRequest>,
-        oneshot::Sender<Result<ApplyResponse, HelperError>>,
-    ),
+    /// A socket `apply`, validated and normalised while it was decoded.
+    Apply(Box<Desired>, oneshot::Sender<ApplyResponse>),
     Disable(oneshot::Sender<ApplyResponse>),
     Enable(oneshot::Sender<ApplyResponse>),
     /// Run a pass soon (inotify on UniFi's state file, or an `ensure` that found no set).
@@ -996,8 +999,8 @@ pub fn run<B: Backend>(mut engine: Engine<B>, rx: Receiver<Cmd>) {
     loop {
         let deadline = follow_up.map_or(next, |f| f.min(next));
         match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-            Ok(Cmd::Apply(req, tx)) => {
-                let _ = tx.send(engine.apply(&req));
+            Ok(Cmd::Apply(desired, tx)) => {
+                let _ = tx.send(engine.apply_desired(*desired));
                 last_end = Instant::now();
                 next = last_end + REASSERT;
             }

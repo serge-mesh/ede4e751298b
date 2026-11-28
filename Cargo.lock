@@ -2376,6 +2376,7 @@ dependencies = [
  "sd-notify",
  "serde",
  "serde_json",
+ "stats_alloc",
  "tempfile",
  "thiserror",
  "tokio",
