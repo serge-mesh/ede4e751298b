@@ -854,10 +854,16 @@ impl Bypass {
                         .and_then(|w| self.ring.find_name(key, w.wire())),
                     (None, None) => None,
                 };
-                let earliest = [(bt, ttl), (newest.as_ref().map(|n| n.wall), newest.as_ref().map(|n| n.response.ttl))]
-                    .into_iter()
-                    .filter_map(|(bt, ttl)| earliest_end(bt, ttl, now).zip(ttl))
-                    .max_by_key(|(e, _)| *e);
+                let earliest = [
+                    (bt, ttl),
+                    (
+                        newest.as_ref().map(|n| n.wall),
+                        newest.as_ref().map(|n| n.response.ttl),
+                    ),
+                ]
+                .into_iter()
+                .filter_map(|(bt, ttl)| earliest_end(bt, ttl, now).zip(ttl))
+                .max_by_key(|(e, _)| *e);
                 if let Some((earliest, ttl)) = earliest
                     && end < earliest
                 {
@@ -1792,7 +1798,11 @@ mod tests {
         assert_eq!(earliest.subsec_nanosecond(), 0);
         let r = too_short(earliest, now + SignedDuration::from_secs(3600), 600, now, 0);
         let need: i64 = r.message.rsplit(' ').nth(1).unwrap().parse().unwrap();
-        assert!(Timestamp::from_second(now.as_second() + need).unwrap() >= earliest, "{}", r.message);
+        assert!(
+            Timestamp::from_second(now.as_second() + need).unwrap() >= earliest,
+            "{}",
+            r.message
+        );
     }
 
     #[test]

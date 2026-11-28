@@ -37,7 +37,6 @@ fn assert_jumps_above(rules: &[String], anchor: &str) {
     assert_eq!(js, [a - 2, a - 1], "{rules:#?}");
 }
 
-
 /// The conditions without `local_dst`, which only reports UniFi's local networks (here: no set,
 /// so unavailable) and is no finding about the layout.
 fn findings(c: &picket_api::helper::Conditions) -> picket_api::helper::Conditions {

@@ -2355,7 +2355,11 @@ mod lifecycle_tests {
             let r = f.with(|i| start_decision(i, P, Cause::CheckNow, now)).unwrap();
             assert_eq!(r, Err(Triggered::Scheduled(now + secs(100))), "paused: {paused}");
             f.recompute_due(P);
-            assert_eq!(tick(&f, now + secs(101)), vec![Cause::CheckNow], "paused: {paused}");
+            assert_eq!(
+                tick(&f, now + secs(101)),
+                vec![Cause::CheckNow],
+                "paused: {paused}"
+            );
         }
     }
 
