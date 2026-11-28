@@ -4,14 +4,18 @@
 //
 // Well-formed replies are checked field by field against what was written; broken ones (cut,
 // overwritten, wrong section counts, spliced-in compression pointers, reserved label types and
-// oversized lengths) against invariants. EXTRA-TEXT is written the way the edge writes it
+// oversized lengths) and arbitrary buffers (empty, short, and just under, at and over the
+// message-size limit) against invariants. Replies built to reach one of the parser's guards (the
+// label limit in a name, section counts and RDATA lengths past the end, a second OPT, EDNS options
+// cut short) must end in that guard's DnsError, and dense valid replies at the size limit are read
+// field by field before their boundary mutations. EXTRA-TEXT is written the way the edge writes it
 // (crates/picket-wire/src/ede.rs: values percent-encoded, tokens dropped from the left past 128
 // bytes), then mangled.
 //
 // The same seed gives the same cases, and a failure names its seed, case and input.
 // PICKET_FUZZ_RUNS sets the cases per test (default 2000) and PICKET_FUZZ_SEED the seed (default
 // 1; `random` picks one). `npm run test:fuzz` runs 100,000 cases per test from a random seed
-// unless they are set.
+// unless they are set. The dense near-limit test runs a 25th as many (each case is ~64 KiB).
 
 import { describe, expect, it } from 'vitest';
 
@@ -57,10 +61,14 @@ function seedOf(v: string | undefined): number {
 const RUNS = runsOf(process.env.PICKET_FUZZ_RUNS);
 const SEED = seedOf(process.env.PICKET_FUZZ_SEED);
 const TIMEOUT_MS = Math.max(10_000, RUNS * 5);
+/** Cases of the dense near-limit test, whose inputs are ~64 KiB each. */
+const DENSE_RUNS = Math.max(1, Math.ceil(RUNS / 25));
 
 /** The most EDE options a reply's parse keeps, and EXTRA-TEXT bytes kept per option (dns.ts). */
 const MAX_EDE = 8;
 const MAX_EXTRA_TEXT = 512;
+/** The most labels dns.ts reads in one name, the root or pointer that ends it not counted (skipName). */
+const MAX_LABELS = 128;
 /** What ede.ts accepts as a token key, a block id, and a decoded value's length. */
 const KEY = /^[a-z][a-z0-9_-]{0,31}$/;
 const BLOCK_ID = /^[A-Za-z0-9._~-]{1,64}$/;
@@ -103,10 +111,10 @@ class Rng {
   }
 }
 
-/** Runs `check` on RUNS cases from `make`; a failure names the seed, the case and its input. */
-function cases<T>(salt: number, make: (rng: Rng) => T, show: (input: T) => string, check: (input: T) => void): void {
+/** Runs `check` on `runs` cases from `make`; a failure names the seed, the case and its input. */
+function cases<T>(salt: number, make: (rng: Rng) => T, show: (input: T) => string, check: (input: T) => void, runs = RUNS): void {
   const rng = new Rng(SEED ^ salt);
-  for (let i = 0; i < RUNS; i++) {
+  for (let i = 0; i < runs; i++) {
     const input = make(rng);
     try {
       check(input);
@@ -118,6 +126,7 @@ function cases<T>(salt: number, make: (rng: Rng) => T, show: (input: T) => strin
 }
 
 const hex = (b: Uint8Array): string => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+const showBytes = (b: Uint8Array): string => `${String(b.length)} bytes: ${hex(b)}`;
 const u16 = (n: number): number[] => [(n >>> 8) & 0xff, n & 0xff];
 const u32 = (n: number): number[] => [(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff];
 const isUpper = (b: number): boolean => b >= 0x41 && b <= 0x5a;
@@ -273,8 +282,25 @@ function randomQuery(rng: Rng): Uint8Array {
 const queryId = (query: Uint8Array): number => (query[0]! << 8) | query[1]!;
 const questionOf = (query: Uint8Array): Uint8Array => query.subarray(12, query.length - 11);
 
-/** An owner name: the root, a pointer to the question, or binary labels ending in either. */
+/** `labels` binary labels of 1 to `longest` bytes, ending in the root or a pointer to the question. */
+function deepName(rng: Rng, labels: number, longest: number): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < labels; i++) {
+    const len = 1 + rng.int(longest);
+    out.push(len, ...rng.bytes(len));
+  }
+  out.push(...(rng.oneIn(2) ? [0] : [0xc0, 0x0c]));
+  return out;
+}
+
+/**
+ * An owner name: the root, a pointer to the question, or binary labels ending in either; now and
+ * then just within the label limit, so mutations land near it.
+ */
 function ownerName(rng: Rng): number[] {
+  if (rng.oneIn(32)) {
+    return deepName(rng, MAX_LABELS - rng.int(4), rng.oneIn(4) ? 63 : 3);
+  }
   switch (rng.int(4)) {
     case 0:
       return [0];
@@ -346,6 +372,18 @@ interface Generated {
   bytes: Uint8Array;
 }
 
+/** The query's question as a reply echoes it, its letters in either case. */
+function echoQuestion(rng: Rng, query: Uint8Array): number[] {
+  const question = Array.from(questionOf(query));
+  for (let i = 0; i < question.length - 4; i++) {
+    const b = question[i]!;
+    if (fold(b) >= 0x61 && fold(b) <= 0x7a && rng.oneIn(2)) {
+      question[i] = b ^ 0x20;
+    }
+  }
+  return question;
+}
+
 interface WellFormed extends Generated {
   expected: DnsReply;
 }
@@ -358,13 +396,7 @@ interface WellFormed extends Generated {
 function wellFormed(rng: Rng, query: Uint8Array): WellFormed {
   const id = queryId(query);
   const flags = 0x8000 | rng.int(0x8000);
-  const question = Array.from(questionOf(query));
-  for (let i = 0; i < question.length - 4; i++) {
-    const b = question[i]!;
-    if (fold(b) >= 0x61 && fold(b) <= 0x7a && rng.oneIn(2)) {
-      question[i] = b ^ 0x20;
-    }
-  }
+  const question = echoQuestion(rng, query);
   const an = rng.int(4);
   const ns = rng.int(3);
   const body = [...question];
@@ -477,6 +509,323 @@ function parsed({ query, bytes }: Generated): DnsReply | null {
   return r;
 }
 
+/** Parses `bytes` and checks it ends in a DnsError with `message`. */
+function expectDnsError(bytes: Uint8Array, query: Uint8Array, message: string): void {
+  let error: unknown = null;
+  try {
+    parseReply(bytes, query);
+  } catch (e) {
+    error = e;
+  }
+  expect(error, `a DnsError: ${message}`).toBeInstanceOf(DnsError);
+  expect((error as DnsError).message).toBe(message);
+}
+
+// --- Arbitrary buffers ---
+
+/**
+ * Any bytes: empty, shorter than a header, around a header and question, a few KiB, or (one case
+ * in 40) just under, at or just over the size limit. Most start with a header and question that
+ * pass the first checks, so the bytes after them reach the records.
+ */
+function arbitrary(rng: Rng): Generated {
+  const query = randomQuery(rng);
+  let length: number;
+  if (rng.oneIn(40)) {
+    length = rng.pick([MAX_MESSAGE - 1 - rng.int(64), MAX_MESSAGE, MAX_MESSAGE + 1, MAX_MESSAGE + 2 + rng.int(64)]);
+  } else {
+    length = rng.pick([rng.int(12), 12 + rng.int(query.length + 8), rng.int(512), rng.int(4096)]);
+  }
+  const bytes = new Uint8Array(length);
+  switch (rng.int(4)) {
+    case 0:
+      bytes.fill(rng.pick([0, 0xff, 0xc0, 0x3f, 0x29]));
+      break;
+    case 1: {
+      const pattern = pathology(rng);
+      for (let i = 0; i < length; i++) {
+        bytes[i] = pattern[i % pattern.length]!;
+      }
+      break;
+    }
+    default:
+      for (let i = 0; i < length; i++) {
+        bytes[i] = rng.int(256);
+      }
+  }
+  if (length >= 12 && !rng.oneIn(3)) {
+    const count = (): number[] => u16(rng.pick([0, 0, 1, rng.int(4), rng.int(0x10000)]));
+    const head = [
+      ...u16(rng.oneIn(8) ? rng.int(0x10000) : queryId(query)),
+      ...u16((rng.oneIn(8) ? 0 : 0x8000) | rng.int(0x8000)),
+      ...u16(rng.oneIn(8) ? rng.int(4) : 1),
+      ...count(),
+      ...count(),
+      ...count(),
+    ];
+    if (rng.oneIn(2)) {
+      head.push(...echoQuestion(rng, query));
+    }
+    bytes.set(head.slice(0, length));
+  }
+  return { query, bytes };
+}
+
+// --- Replies built to reach one guard ---
+
+interface Sections {
+  an: number[][];
+  ns: number[][];
+  ar: number[][];
+}
+
+/** A reply's parts, with the EDE options and extended RCODE its OPT record (if any) carries. */
+interface Parts {
+  query: Uint8Array;
+  flags: number;
+  question: number[];
+  sections: Sections;
+  ede: Ede[];
+  extendedRcode: number;
+}
+
+interface Guarded extends Generated {
+  /** The reply the parse must return, or the message of the DnsError it must end in. */
+  outcome: DnsReply | string;
+}
+
+const insertAt = <T>(rng: Rng, items: T[], item: T): void => {
+  items.splice(rng.int(items.length + 1), 0, item);
+};
+
+/** A well-formed reply's parts: a few records in each section and, if `opt`, an OPT record. */
+function parts(rng: Rng, opt: boolean): Parts {
+  const query = randomQuery(rng);
+  const flags = 0x8000 | rng.int(0x8000);
+  const question = echoQuestion(rng, query);
+  const sections: Sections = {
+    an: Array.from({ length: rng.int(4) }, () => record(rng)),
+    ns: Array.from({ length: rng.int(3) }, () => record(rng)),
+    ar: Array.from({ length: rng.int(3) }, () => record(rng)),
+  };
+  const ede: Ede[] = [];
+  const extendedRcode = opt ? rng.int(256) : 0;
+  if (opt) {
+    insertAt(rng, sections.ar, optRecord(rng, extendedRcode, ede));
+  }
+  return { query, flags, question, sections, ede, extendedRcode };
+}
+
+/** The reply's bytes; `counts` overrides ANCOUNT, NSCOUNT and ARCOUNT. */
+function assemble(p: Parts, counts = [p.sections.an.length, p.sections.ns.length, p.sections.ar.length]): Uint8Array {
+  const out = [...u16(queryId(p.query)), ...u16(p.flags), ...u16(1), ...counts.flatMap(u16), ...p.question];
+  for (const rr of [...p.sections.an, ...p.sections.ns, ...p.sections.ar]) {
+    for (const b of rr) {
+      out.push(b);
+    }
+  }
+  return Uint8Array.from(out);
+}
+
+/** The reply the parse of {@link assemble}'s bytes returns. */
+const expectedOf = (p: Parts): DnsReply => ({
+  id: queryId(p.query),
+  rcode: (p.flags & 0xf) | (p.extendedRcode << 4),
+  truncated: (p.flags & 0x0200) !== 0,
+  answers: p.sections.an.length,
+  ede: p.ede,
+});
+
+/** Where `rr` (one of `p`'s records) starts in {@link assemble}'s bytes. */
+function offsetOf(p: Parts, rr: number[]): number {
+  let o = 12 + p.question.length;
+  for (const r of [...p.sections.an, ...p.sections.ns, ...p.sections.ar]) {
+    if (r === rr) {
+      return o;
+    }
+    o += r.length;
+  }
+  throw new Error('no such record');
+}
+
+/** A record of `owner`, type `type`, with up to 15 bytes of RDATA. */
+function recordOf(rng: Rng, owner: number[], type: number): number[] {
+  const rdata = rng.bytes(rng.int(16));
+  return [...owner, ...u16(type), ...u16(1), ...u32(rng.int(0x10000)), ...u16(rdata.length), ...rdata];
+}
+
+/**
+ * A record in any section whose owner has 125 to 131 labels: read up to the label limit, refused
+ * past it.
+ */
+function deepOwner(rng: Rng): Guarded {
+  const p = parts(rng, !rng.oneIn(4));
+  const labels = MAX_LABELS - 3 + rng.int(7);
+  const owner = deepName(rng, labels, rng.oneIn(4) ? 63 : 3);
+  insertAt(rng, rng.pick([p.sections.an, p.sections.ns, p.sections.ar]), recordOf(rng, owner, rng.pick([1, 16, 28])));
+  return { query: p.query, bytes: assemble(p), outcome: labels <= MAX_LABELS ? expectedOf(p) : 'too many labels' };
+}
+
+/**
+ * Lengths that disagree with the bytes: a section count past the records present, an RDATA
+ * length (of any record, OPT too) past the end of the message, or the message cut anywhere. A
+ * well-formed reply is read to its last byte, so each ends in a truncated message.
+ */
+function inconsistentLengths(rng: Rng): Guarded {
+  const p = parts(rng, !rng.oneIn(4));
+  switch (rng.int(3)) {
+    case 0: {
+      const counts = [p.sections.an.length, p.sections.ns.length, p.sections.ar.length];
+      const i = rng.int(3);
+      counts[i] = Math.min(0xffff, counts[i]! + 1 + (rng.oneIn(2) ? rng.int(4) : rng.int(0x10000)));
+      return { query: p.query, bytes: assemble(p, counts), outcome: 'truncated message' };
+    }
+    case 1: {
+      const owner = ownerName(rng);
+      const victim = recordOf(rng, owner, rng.pick([1, 28, 41]));
+      insertAt(rng, rng.pick([p.sections.an, p.sections.ns, p.sections.ar]), victim);
+      const bytes = assemble(p);
+      const at = offsetOf(p, victim) + owner.length + 8;
+      const left = bytes.length - (at + 2);
+      const rdlength = Math.min(0xffff, left + 1 + (rng.oneIn(2) ? rng.int(4) : rng.int(0x10000)));
+      bytes.set(u16(rdlength), at);
+      return { query: p.query, bytes, outcome: 'truncated message' };
+    }
+    default: {
+      const bytes = assemble(p);
+      return { query: p.query, bytes: bytes.subarray(0, rng.int(bytes.length)), outcome: 'truncated message' };
+    }
+  }
+}
+
+/** Two or three OPT records among the additional records: refused. */
+function secondOpt(rng: Rng): Guarded {
+  const p = parts(rng, true);
+  for (let i = 0, n = 1 + rng.int(2); i < n; i++) {
+    insertAt(rng, p.sections.ar, optRecord(rng, rng.int(256), []));
+  }
+  return { query: p.query, bytes: assemble(p), outcome: 'second OPT record' };
+}
+
+/**
+ * An OPT record whose options end badly: an option header cut short, an option longer than the
+ * RDATA left, or an EDE option too short for its INFO-CODE. The short EDE option is refused unless
+ * the 8 EDE options a parse keeps came before it, when it is skipped like any past the 8th.
+ */
+function optionFraming(rng: Rng): Guarded {
+  const p = parts(rng, false);
+  p.extendedRcode = rng.int(256);
+  const options: number[] = [];
+  const other = (): void => {
+    const code = rng.pick([8, 10, 12, rng.int(0x10000)]);
+    const data = rng.bytes(rng.int(30));
+    options.push(...u16(code === 15 ? 12 : code), ...u16(data.length), ...data);
+  };
+  const ede = (): void => {
+    const code = rng.int(0x10000);
+    const text = extraText(rng);
+    options.push(...u16(15), ...u16(2 + text.length), ...u16(code), ...text);
+    if (p.ede.length < MAX_EDE) {
+      p.ede.push({ code, text: decoder.decode(Uint8Array.from(text.slice(0, MAX_EXTRA_TEXT))) });
+    }
+  };
+  const kind = rng.int(4);
+  const leading = kind === 3 ? MAX_EDE + rng.int(3) : rng.int(MAX_EDE);
+  for (let i = 0; i < leading; i++) {
+    while (rng.oneIn(3)) {
+      other();
+    }
+    ede();
+  }
+  if (rng.oneIn(2)) {
+    other();
+  }
+  let outcome: DnsReply | string = 'truncated message';
+  switch (kind) {
+    case 0:
+      options.push(...rng.bytes(1 + rng.int(3)));
+      break;
+    case 1: {
+      const data = rng.bytes(rng.int(8));
+      const length = data.length + 1 + (rng.oneIn(2) ? rng.int(4) : rng.int(0xffff - data.length));
+      options.push(...u16(rng.oneIn(2) ? 15 : rng.int(0x10000)), ...u16(length), ...data);
+      break;
+    }
+    default: {
+      const short = rng.bytes(rng.int(2));
+      options.push(...u16(15), ...u16(short.length), ...short);
+      while (rng.oneIn(2)) {
+        if (rng.oneIn(2)) {
+          ede();
+        } else {
+          other();
+        }
+      }
+      outcome = kind === 2 ? 'short EDE option' : expectedOf(p);
+    }
+  }
+  const opt = [0, ...u16(41), ...u16(rng.int(0x10000)), p.extendedRcode, rng.int(256), ...u16(rng.int(0x10000)), ...u16(options.length), ...options];
+  insertAt(rng, p.sections.ar, opt);
+  return { query: p.query, bytes: assemble(p), outcome };
+}
+
+/** Parses a guarded case and checks it ends in the outcome it was built for. */
+function expectOutcome(c: Guarded): void {
+  if (typeof c.outcome === 'string') {
+    expectDnsError(c.bytes, c.query, c.outcome);
+  } else {
+    expect(parseReply(c.bytes, c.query)).toEqual(c.outcome);
+  }
+}
+
+const showGuarded = (c: Guarded): string => `${typeof c.outcome === 'string' ? c.outcome : 'a reply'} expected from ${showBytes(c.bytes)}`;
+
+// --- Dense replies at the size limit ---
+
+interface Dense extends WellFormed {
+  size: number;
+  /** A byte for the tail that grows the reply to the limit and past it. */
+  fill: number;
+  /** A byte overwritten near the end, and its new value. */
+  at: number;
+  value: number;
+}
+
+/** A size at the limit, just under it, or within 4 KiB of it. */
+const nearLimit = (rng: Rng): number => rng.pick([MAX_MESSAGE, MAX_MESSAGE - 1 - rng.int(16), MAX_MESSAGE - 1 - rng.int(4096)]);
+
+/**
+ * A well-formed reply of exactly `size` bytes: authority and additional records (an OPT among
+ * them) as {@link wellFormed} writes them, then hundreds of answers (some with owners at the label
+ * limit) until less than 1 KiB is left, then one record among the answers or authority records
+ * whose RDATA fills the rest.
+ */
+function dense(rng: Rng, size: number): Dense {
+  const p = parts(rng, true);
+  p.sections.an = [];
+  const length = (rrs: number[][]): number => rrs.reduce((n, rr) => n + rr.length, 0);
+  let gap = size - (12 + p.question.length + length(p.sections.ns) + length(p.sections.ar));
+  if (gap < 12) {
+    throw new Error(`no room for the last record in ${String(size)} bytes`);
+  }
+  while (gap >= 12 + 1024) {
+    const rr = rng.oneIn(64) ? recordOf(rng, deepName(rng, MAX_LABELS, 3), rng.pick([1, 16, 28])) : record(rng);
+    // An owner at the label limit with long labels can run to 8 KiB; one that won't fit is dropped.
+    if (rr.length <= gap - 12) {
+      p.sections.an.push(rr);
+      gap -= rr.length;
+    }
+  }
+  const rdata = rng.bytes(gap - 12);
+  const filler = [0xc0, 0x0c, ...u16(rng.pick([16, 99, 0xff00])), ...u16(1), ...u32(rng.int(0x10000)), ...u16(rdata.length)];
+  for (const b of rdata) {
+    filler.push(b);
+  }
+  insertAt(rng, rng.pick([p.sections.an, p.sections.ns]), filler);
+  const bytes = assemble(p);
+  return { query: p.query, bytes, expected: expectedOf(p), size, fill: rng.int(256), at: bytes.length - 1 - rng.int(64), value: rng.int(256) };
+}
+
 describe('DoH replies (seeded random)', () => {
   it(
     'reads every well-formed reply field by field',
@@ -507,6 +856,97 @@ describe('DoH replies (seeded random)', () => {
             expect(typeof isFirewallBlock(r)).toBe('boolean');
           }
         },
+      );
+    },
+    TIMEOUT_MS,
+  );
+});
+
+describe('DoH replies at the input boundaries (seeded random)', () => {
+  it(
+    'ends any bytes, empty to just past the size limit, in a DnsError or a reply that answers the query',
+    () => {
+      let accepted = 0;
+      cases(
+        7,
+        arbitrary,
+        (c) => showBytes(c.bytes),
+        (c) => {
+          if (c.bytes.length > MAX_MESSAGE) {
+            expectDnsError(c.bytes, c.query, 'message too large');
+          } else if (c.bytes.length < 12) {
+            expectDnsError(c.bytes, c.query, 'truncated message');
+          } else if (parsed(c) !== null) {
+            accepted += 1;
+          }
+        },
+      );
+      // The headers written in front of the bytes let some through to the records and past them.
+      if (RUNS >= 1000) {
+        expect(accepted).toBeGreaterThan(0);
+      }
+    },
+    TIMEOUT_MS,
+  );
+
+  it(
+    'reads names up to the label limit in every section, and refuses longer ones',
+    () => {
+      cases(8, deepOwner, showGuarded, expectOutcome);
+    },
+    TIMEOUT_MS,
+  );
+
+  it(
+    'refuses section counts and RDATA lengths that run past the message',
+    () => {
+      cases(9, inconsistentLengths, showGuarded, expectOutcome);
+    },
+    TIMEOUT_MS,
+  );
+
+  it(
+    'refuses a second OPT record anywhere among the additional records',
+    () => {
+      cases(10, secondOpt, showGuarded, expectOutcome);
+    },
+    TIMEOUT_MS,
+  );
+
+  it(
+    'refuses EDNS options cut short and EDE options too short for an INFO-CODE',
+    () => {
+      cases(11, optionFraming, showGuarded, expectOutcome);
+    },
+    TIMEOUT_MS,
+  );
+
+  it(
+    'reads dense replies at the size limit field by field, and refuses them cut, recounted or grown past it',
+    () => {
+      cases(
+        12,
+        (rng) => dense(rng, nearLimit(rng)),
+        (c) => showBytes(c.bytes),
+        (c) => {
+          const { query, bytes } = c;
+          expect(bytes.length).toBe(c.size);
+          expect(parseReply(bytes, query)).toEqual(c.expected);
+          // A well-formed reply is read to its last byte, so one byte short or one record more is truncated.
+          expectDnsError(bytes.subarray(0, bytes.length - 1), query, 'truncated message');
+          const recounted = Uint8Array.from(bytes);
+          recounted.set(u16(((bytes[10]! << 8) | bytes[11]!) + 1), 10);
+          expectDnsError(recounted, query, 'truncated message');
+          // Grown to the limit with trailing bytes, then one past it.
+          const grown = new Uint8Array(MAX_MESSAGE + 1).fill(c.fill);
+          grown.set(bytes);
+          parsed({ query, bytes: grown.subarray(0, MAX_MESSAGE) });
+          expectDnsError(grown, query, 'message too large');
+          const overwritten = Uint8Array.from(bytes);
+          overwritten[c.at] = c.value;
+          parsed({ query, bytes: overwritten });
+        },
+        DENSE_RUNS,
       );
     },
     TIMEOUT_MS,
