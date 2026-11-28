@@ -315,6 +315,24 @@ async fn broad_browser_rules_reach_the_lists() {
     let p = parse("df").await;
     assert_eq!(p.get("notices"), None, "{p}");
     assert_eq!(p["kept"], 1, "{p}");
+    // Browser rules the rule policy drops (`browser_changes: drop` takes `$removeparam` and the
+    // exception): no notice for them, the kept ones still noted.
+    manual_feed(
+        &c,
+        "pf",
+        json!({"modes": {"browser": {"mode": "replace"}}, "rule_policy": {"browser_changes": "drop"}}),
+    )
+    .await;
+    save(&c, "pf", &format!("{}\n", broad.join("\n"))).await;
+    let p = parse("pf").await;
+    assert_eq!(p["notices"], json!({"BroadBrowser": 2}), "{p}");
+    let texts: Vec<&str> = p["notice_samples"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(texts, vec![broad[1], broad[2]], "{p}");
 }
 
 async fn served(c: &Core, path: &str) -> String {

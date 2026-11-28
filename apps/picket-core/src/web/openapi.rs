@@ -1463,7 +1463,7 @@ mod tests {
         }
         assert_eq!(m["x-picket-series"]["lookup_call_ms"]["kind"], "corehistogram");
         assert_eq!(
-            m["x-picket-series"]["feed_records_total"]["family"],
+            m["x-picket-series"]["feed_records"]["family"],
             "picket_feed_records"
         );
         assert_eq!(

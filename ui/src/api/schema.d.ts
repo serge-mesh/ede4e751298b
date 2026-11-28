@@ -3799,9 +3799,14 @@ export interface components {
             bundle_added: boolean;
             /** @description The provider or manual feed was created. */
             created: boolean;
-            /** @description Its feeds. */
+            /** @description Its feeds that exist now (each in the bundle). */
             feeds: string[];
             file_restored: boolean;
+            /**
+             * @description The preset's files whose feeds the provider adds once it lists them (each then joins the
+             *     bundle), or why they won't; absent when the install is complete.
+             */
+            pending?: components["schemas"]["Pending"] | null;
             /** @description The provider it installed (null for a manual preset). */
             provider?: string | null;
         };
@@ -4053,14 +4058,6 @@ export interface components {
             previous: components["schemas"]["PreviousRootView"][];
             /** @description `lanca.zones`: the zones the current root signs names under. */
             zones: string[];
-        };
-        /**
-         * @description A provider an older release's preset made (a preset's `legacy`): its module and its `url` (as
-         *     providers are matched by URL).
-         */
-        LegacyProvider: {
-            module: string;
-            url: string;
         };
         Limits: {
             /**
@@ -4753,7 +4750,7 @@ export interface components {
          * @description A series core records (core.md §10), by its base name: a heartbeat field path with map keys left out (`upstream.queries`; ask `upstream.<id>.queries` for one key), or core's own series name. A histogram (`histogram`, `corehistogram`) is charted as `<name>.p50` or `<name>.p99`. `x-picket-series` gives each one's kind, label keys and Prometheus family in `GET /metrics`; `x-picket-export-only` the families only the export holds (the job lanes, `GET jobs`; each bundle's current version's statistics, `GET bundles/{id}/versions`).
          * @enum {string}
          */
-        MetricSeries: "queries" | "by_decision.allow" | "by_decision.block" | "by_decision.rewrite" | "by_decision.refused" | "by_decision.servfail" | "rejected" | "refused" | "cache_hits" | "cache_misses" | "stale_served" | "latency_us" | "panics" | "fw_ack_late" | "upstream.queries" | "upstream.hedges" | "upstream.rtt_ms" | "upstream.errors" | "upstream.invalid" | "upstream.scrubbed" | "lookups.calls" | "lookups.call_ms" | "lookups.timeouts" | "lookups.late" | "lookups.errors" | "lookups.rejected" | "lookups.breaker_open" | "lookups.paused" | "lookups.cache_hits" | "lookups.set_hits" | "lookups.cache_misses" | "lookups.evictions" | "lookups.entries" | "lookups.bytes" | "cold.blocks" | "cold.unchecked" | "cold.page_reads" | "spool.bytes" | "spool.oldest_ts" | "logs.dropped" | "rss" | "mem_available" | "cpu_ms.edge" | "cpu_ms.helper" | "cgroup_mem.unit" | "cgroup_mem.helper_rss" | "disk.data_dir.used" | "disk.data_dir.free" | "disk.ssd_dir.used" | "disk.ssd_dir.free" | "fw.entries" | "fw.max" | "fw.rejects" | "fw.mon_rejects" | "log_records" | "log_dropped" | "log_answer_missing" | "queries_by_transport" | "activations_failed" | "fw_repairs" | "tls_refused_unlogged" | "fw_drift" | "convergence_lag_s" | "feed_checks" | "feed_records_added" | "feed_records_deleted" | "feed_records_total" | "feed_parse_errors" | "feed_held_runs" | "lookup_calls" | "lookup_timeouts" | "lookup_errors" | "lookup_rejected" | "lookup_verdicts" | "lookup_dropped" | "lookup_queue" | "lookup_breaker_open" | "lookup_paused" | "rechecks" | "recheck_blocks" | "lookup_call_ms" | "queue_depth" | "verdict_set_deltas" | "verdict_set_bases" | "verdict_set_records" | "verdict_set_overlay_bytes" | "feed_hits" | "trial_would_block" | "retro_hits" | "wire_mismatch" | "cold_missed_blocks" | "evidence_bytes" | "analysis_skipped" | "dnssec_results" | "dnssec_fallback" | "dnssec_answers" | "dnssec_coverage" | "dnssec_dropped" | "crosscheck" | "core_rss" | "core_cpu_ms" | "core_disk_used" | "core_disk_free" | "db_bytes" | "job_ms";
+        MetricSeries: "queries" | "by_decision.allow" | "by_decision.block" | "by_decision.rewrite" | "by_decision.refused" | "by_decision.servfail" | "rejected" | "refused" | "cache_hits" | "cache_misses" | "stale_served" | "latency_us" | "panics" | "fw_ack_late" | "upstream.queries" | "upstream.hedges" | "upstream.rtt_ms" | "upstream.errors" | "upstream.invalid" | "upstream.scrubbed" | "lookups.calls" | "lookups.call_ms" | "lookups.timeouts" | "lookups.late" | "lookups.errors" | "lookups.rejected" | "lookups.breaker_open" | "lookups.paused" | "lookups.cache_hits" | "lookups.set_hits" | "lookups.cache_misses" | "lookups.evictions" | "lookups.entries" | "lookups.bytes" | "cold.blocks" | "cold.unchecked" | "cold.page_reads" | "spool.bytes" | "spool.oldest_ts" | "logs.dropped" | "rss" | "mem_available" | "cpu_ms.edge" | "cpu_ms.helper" | "cgroup_mem.unit" | "cgroup_mem.helper_rss" | "disk.data_dir.used" | "disk.data_dir.free" | "disk.ssd_dir.used" | "disk.ssd_dir.free" | "fw.entries" | "fw.max" | "fw.rejects" | "fw.mon_rejects" | "log_records" | "log_dropped" | "log_answer_missing" | "queries_by_transport" | "activations_failed" | "fw_repairs" | "tls_refused_unlogged" | "fw_drift" | "convergence_lag_s" | "feed_checks" | "feed_records_added" | "feed_records_deleted" | "feed_records" | "feed_parse_errors" | "feed_held_runs" | "lookup_calls" | "lookup_timeouts" | "lookup_errors" | "lookup_rejected" | "lookup_verdicts" | "lookup_dropped" | "lookup_queue" | "lookup_breaker_open" | "lookup_paused" | "rechecks" | "recheck_blocks" | "lookup_call_ms" | "queue_depth" | "verdict_set_deltas" | "verdict_set_bases" | "verdict_set_records" | "verdict_set_overlay_bytes" | "feed_hits" | "trial_would_block" | "retro_hits" | "wire_mismatch" | "cold_missed_blocks" | "evidence_bytes" | "analysis_skipped" | "dnssec_results" | "dnssec_fallback" | "dnssec_answers" | "dnssec_coverage" | "dnssec_dropped" | "crosscheck" | "core_rss" | "core_cpu_ms" | "core_disk_used" | "core_disk_free" | "db_bytes" | "job_ms";
         MetricsSettings: {
             /**
              * @description Ranges that may read `GET /metrics`; empty turns the export off.
@@ -4881,15 +4878,11 @@ export interface components {
              *     entries; §4: exports and imports carry it).
              */
             misp_type?: string | null;
-            /**
-             * @description The first few of those rules: line, reason, text (cut).
-             * @default []
-             */
+            /** @description The first few of those rules: line, reason, text (cut). */
             notice_samples?: components["schemas"]["ErrorSample"][];
             /**
              * @description Rules kept that are worth a look, by reason (`BroadBrowser`: a browser rule with no
              *     restriction whose pattern matches most requests). They are entries like any other.
-             * @default {}
              */
             notices?: {
                 [key: string]: number;
@@ -4912,6 +4905,19 @@ export interface components {
             /** @description At least 12 characters. */
             new: string;
         };
+        /**
+         * @description A preset install waiting for its provider's feeds: each joins the bundle when the provider's
+         *     listing adds it (module docs).
+         */
+        Pending: {
+            /** @description The bundle the feeds go in. */
+            bundle: string;
+            /** @description What refused the feeds (`refused`): the bundle's first validation error. */
+            detail?: string | null;
+            /** @description The preset's files with no feed yet. */
+            files: string[];
+            state: components["schemas"]["PendingState"];
+        };
         /** @description An unknown key that tried to connect (core.md §4: Edges → Pending). */
         PendingEdge: {
             addr?: string | null;
@@ -4930,6 +4936,8 @@ export interface components {
             /** @description Pass as `cursor` for the next page; null on the last page. */
             next_cursor: string | null;
         };
+        /** @description Where a pending preset install stands. */
+        PendingState: "waiting" | "source_changed" | "bundle_missing" | "refused";
         /** @enum {string} */
         Platform: "unifi" | "debian";
         /** @description A rule `rule_policy` dropped. */
@@ -4969,11 +4977,10 @@ export interface components {
             id: string;
             installed: boolean;
             /**
-             * @description Providers of the same list an older release's preset made under its provider id (OISD big
-             *     was an `http` provider of `https://big.oisd.nl/`): such a provider is this preset,
-             *     installed.
+             * @description The install's feeds not yet in the bundle (the provider hasn't listed them yet), or why
+             *     they won't be; absent once every feed is there.
              */
-            legacy?: components["schemas"]["LegacyProvider"][];
+            pending?: components["schemas"]["Pending"] | null;
             /** @description The feed provider it creates (editable), whose `files` select its feeds. */
             provider?: unknown;
             title: string;
@@ -6579,7 +6586,7 @@ export interface operations {
                 /** @description open or resolved */
                 state?: "open" | "resolved";
                 /** @description An alert kind */
-                kind?: "dnssec_bogus" | "upstream_disagrees" | "category_answered" | "category_blocked" | "broad_allow" | "upstream_invalid_spike" | "edge_key_mismatch" | "feed_rules_dropped" | "feed_redirect_added" | "ui_auth_failures" | "edge_offline" | "edge_update_failed" | "edge_activation_failed" | "edge_listener_rejected" | "edge_listener_failed" | "edge_upstream_down" | "edge_spool_evicting" | "edge_memory_low" | "edge_fw_set_full" | "edge_fw_repairs" | "edge_fw_drift" | "edge_helper_unreachable" | "edge_ssd_unavailable" | "edge_crash_loop" | "edge_panic" | "edge_redirect_missing" | "edge_unifi_conflict" | "edge_fw_layout_unknown" | "edge_fw_catch_all" | "edge_helper_disabled" | "edge_page_file_refetched" | "edge_tls_version_refused" | "edge_firmware_unsupported" | "edge_firmware_check_failed" | "release_invalid" | "feed_provider_down" | "feed_down" | "feed_stale" | "feed_added" | "feed_provider_trigger_down" | "feed_provider_listing_incomplete" | "feed_limit_reached" | "config_upgraded" | "feed_held" | "bundle_build_failed" | "bundle_over_budget" | "bundle_cold_share" | "broad_block" | "allow_override" | "bundle_warning" | "warninglist_hit" | "lookup_provider_down" | "lookup_self_test_failed" | "dnssec_unavailable" | "attribution_mismatch" | "attribution_unavailable" | "wire_mismatch" | "core_disk_low" | "alert_evidence_full";
+                kind?: "dnssec_bogus" | "upstream_disagrees" | "category_answered" | "category_blocked" | "broad_allow" | "upstream_invalid_spike" | "edge_key_mismatch" | "feed_rules_dropped" | "feed_redirect_added" | "ui_auth_failures" | "edge_offline" | "edge_update_failed" | "edge_activation_failed" | "edge_listener_rejected" | "edge_listener_failed" | "edge_upstream_down" | "edge_spool_evicting" | "edge_memory_low" | "edge_fw_set_full" | "edge_fw_repairs" | "edge_fw_drift" | "edge_helper_unreachable" | "edge_ssd_unavailable" | "edge_crash_loop" | "edge_panic" | "edge_redirect_missing" | "edge_unifi_conflict" | "edge_fw_layout_unknown" | "edge_fw_catch_all" | "edge_helper_disabled" | "edge_page_file_refetched" | "edge_tls_version_refused" | "edge_firmware_unsupported" | "edge_firmware_check_failed" | "release_invalid" | "feed_provider_down" | "feed_down" | "feed_stale" | "feed_added" | "feed_provider_trigger_down" | "feed_provider_listing_incomplete" | "feed_limit_reached" | "feed_held" | "bundle_build_failed" | "bundle_over_budget" | "bundle_cold_share" | "broad_block" | "allow_override" | "bundle_warning" | "warninglist_hit" | "lookup_provider_down" | "lookup_self_test_failed" | "dnssec_unavailable" | "attribution_mismatch" | "attribution_unavailable" | "wire_mismatch" | "core_disk_low" | "alert_evidence_full";
                 /** @description An edge id */
                 edge?: string;
                 /** @description The `next_cursor` of the previous page. */

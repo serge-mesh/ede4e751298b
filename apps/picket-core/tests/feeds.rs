@@ -1160,8 +1160,9 @@ async fn presets_install_and_restore() {
         "FireHOL level 1",
         "a restored preset feed is named too"
     );
-    // The older release's OISD big (an http provider of https://big.oisd.nl/, as upgraded) is
-    // the preset, installed: shown so, and installing it leaves it as it is and bundles its feed.
+    // Issue 74: an `http` provider of https://big.oisd.nl/ under OISD big's id is no install of
+    // the (GitHub) preset: not shown installed, and installing it is refused like any other
+    // module's provider with the id, leaving it and the bundle as they are.
     let r = ui(&c, Method::POST, "/feed-providers")
         .json(
             &json!({"id": "oisd-big", "name": "OISD big", "module": "http", "enabled": false,
@@ -1180,22 +1181,16 @@ async fn presets_install_and_restore() {
             .unwrap()["installed"]
             .clone()
     };
-    assert_eq!(installed(&get_json(&c, "/feed-presets").await, "oisd-big"), true);
+    assert_eq!(installed(&get_json(&c, "/feed-presets").await, "oisd-big"), false);
     let r = ui(&c, Method::POST, "/feed-presets/oisd-big")
         .json(&json!({}))
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status(), StatusCode::OK);
-    let v: Value = r.json().await.unwrap();
-    assert_eq!(
-        (v["provider"].as_str(), v["feeds"].clone()),
-        (Some("oisd-big"), json!(["oisd-big"])),
-        "{v}"
-    );
+    assert_eq!(r.status(), StatusCode::CONFLICT);
     assert_eq!(get_json(&c, "/feed-providers/oisd-big").await["module"], "http");
     assert!(
-        get_json(&c, "/bundles/block-common").await["feeds"]
+        !get_json(&c, "/bundles/block-common").await["feeds"]
             .as_array()
             .unwrap()
             .iter()
@@ -1868,4 +1863,326 @@ async fn a_newer_run_within_the_held_runs_limit_confirms_it() {
             .all(|k| !k.contains(":example.a"))
     );
     assert_eq!(alert_state(&c, "feed_held:nh").await.as_deref(), Some("resolved"));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Issue 76: a GitHub preset's feeds join its bundle once its provider lists them
+
+async fn sql_i64(c: &Core, sql: &str) -> i64 {
+    let s = sql.to_string();
+    c.state
+        .db
+        .read(move |db| Ok::<_, anyhow::Error>(db.query_row(&s, [], |r| r.get::<_, i64>(0))?))
+        .await
+        .unwrap()
+}
+
+/// The feeds of `provider` in `block-common`.
+async fn bundled(c: &Core, provider: &str) -> Vec<String> {
+    let v = get_json(c, "/bundles/block-common").await;
+    let ids: Vec<String> = v["feeds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["feed"].as_str().map(str::to_string))
+        .collect();
+    let mut out = Vec::new();
+    for id in ids {
+        let f = get_json(c, &format!("/feeds/{id}")).await;
+        if f["provider"] == provider {
+            out.push(id);
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The preset's pending install as `GET feed-presets` shows it (null when complete).
+async fn preset_pending(c: &Core, preset: &str) -> Value {
+    get_json(c, "/feed-presets")
+        .await
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == preset)
+        .unwrap()
+        .get("pending")
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+async fn install_preset(c: &Core, preset: &str) -> (StatusCode, Value) {
+    let r = ui(c, Method::POST, &format!("/feed-presets/{preset}"))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    let st = r.status();
+    (st, r.json().await.unwrap())
+}
+
+/// The provider's feeds, sorted.
+fn provider_feed_ids(c: &Core, provider: &str) -> Vec<String> {
+    let mut v: Vec<String> = c
+        .state
+        .feeds
+        .provider_feeds(provider)
+        .into_iter()
+        .map(|f| f.id)
+        .collect();
+    v.sort();
+    v
+}
+
+/// Deletes a provider's feeds, then the provider.
+async fn delete_provider(c: &Core, provider: &str) {
+    for f in provider_feed_ids(c, provider) {
+        let r = ui(c, Method::DELETE, &format!("/feeds/{f}"))
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert!(r.status().is_success(), "{f}: {}", r.text().await.unwrap());
+    }
+    let r = ui(c, Method::DELETE, &format!("/feed-providers/{provider}"))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success(), "{provider}: {}", r.text().await.unwrap());
+}
+
+/// Stops `c` and starts a core on a copy of its data directory, fetching through `srv`.
+async fn restarted_with(c: Core, srv: &TestServer) -> Core {
+    c.stop.cancel();
+    let dir = tempfile::tempdir().unwrap();
+    common::snapshot_dir(c.dir.path(), dir.path());
+    let init = c.init.clone();
+    drop(c);
+    let stop = tokio_util::sync::CancellationToken::new();
+    let opts = picket_core::run::StartOptions {
+        release_dir: std::path::PathBuf::from("/nonexistent/picket-core/edge"),
+        feed_http: srv.http_options(),
+        any_port: true,
+        clock_synced: Some(true),
+        disk_watch: false,
+        ..Default::default()
+    };
+    let (state, info) = picket_core::run::start_with(dir.path(), stop.clone(), opts)
+        .await
+        .unwrap();
+    Core {
+        dir,
+        init,
+        state,
+        info,
+        stop,
+    }
+}
+
+const PRESET_FILES: &[(&str, &str)] = &[
+    ("adblock/tif.txt", "||tif.example^\n"),
+    ("adblock/ultimate.txt", "||ultimate.example^\n"),
+    ("adblock/other.txt", "||other.example^\n"),
+    ("abp_big.txt", "||big.example^\n"),
+    ("Filters/filter.txt", "||filter.example^\n"),
+];
+
+/// A fresh HaGeZi install while GitHub is down waits (nothing reported as done), survives a
+/// failed listing, repeated installs and a restart, and completes with the next listing: just
+/// the preset's two feeds in `block-common`, not announced for review. A file the admin selects
+/// later stays out of the bundle; a feed the admin takes out stays out until the preset is
+/// installed again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_github_preset_joins_its_bundle_once_listed() {
+    let (srv, repo) = common::github::fake().await;
+    {
+        let mut r = repo.lock().unwrap();
+        r.set(1, PRESET_FILES);
+        r.down = true;
+    }
+    let c = core_with(Some(&srv), None).await;
+    let (st, v) = install_preset(&c, "hagezi").await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(v["feeds"], json!([]), "{v}");
+    assert_eq!(v["bundle_added"], false, "{v}");
+    let waiting = json!({"bundle": "block-common", "files": ["adblock/tif.txt", "adblock/ultimate.txt"], "state": "waiting"});
+    assert_eq!(v["pending"], waiting, "{v}");
+    assert_eq!(preset_pending(&c, "hagezi").await, waiting);
+    // The first listing fails; the intent stays.
+    wait_until("the failed first check", || async {
+        sql_i64(
+            &c,
+            "SELECT count(*) FROM feed_provider_state WHERE provider_id = 'hagezi' AND failing_since IS NOT NULL",
+        )
+        .await
+            == 1
+            && !c.state.feeds.is_checking("hagezi")
+    })
+    .await;
+    // Installing again changes nothing: still one intent, waiting.
+    let (st, v) = install_preset(&c, "hagezi").await;
+    assert_eq!((st, v["pending"].clone()), (StatusCode::OK, waiting.clone()));
+    assert_eq!(sql_i64(&c, "SELECT count(*) FROM preset_pending").await, 1);
+    assert!(provider_feed_ids(&c, "hagezi").is_empty());
+    // A restart, with GitHub back: the next listing adds the feeds and puts them in the bundle.
+    repo.lock().unwrap().down = false;
+    let c = restarted_with(c, &srv).await;
+    assert_eq!(preset_pending(&c, "hagezi").await, waiting);
+    common::feeds::check_provider(&c, "hagezi").await;
+    wait_until("the listing's feeds", || async {
+        provider_feed_ids(&c, "hagezi").len() == 2 && !c.state.feeds.is_checking("hagezi")
+    })
+    .await;
+    let feeds = provider_feed_ids(&c, "hagezi");
+    assert_eq!(bundled(&c, "hagezi").await, feeds);
+    assert_eq!(preset_pending(&c, "hagezi").await, Value::Null);
+    assert_eq!(sql_i64(&c, "SELECT count(*) FROM preset_pending").await, 0);
+    for f in &feeds {
+        assert_eq!(
+            sql_i64(
+                &c,
+                &format!("SELECT added_pending FROM feed_state WHERE feed_id = '{f}'")
+            )
+            .await,
+            0,
+            "{f}: in its bundle, nothing to review"
+        );
+    }
+    // The admin selects another file of the repository: its feed is theirs to review.
+    let mut p = get_json(&c, "/feed-providers/hagezi").await;
+    p["files"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"match": "adblock/other.txt", "feed": {"format": "adblock", "category": "mixed"}}));
+    let r = ui(&c, Method::PUT, "/feed-providers/hagezi")
+        .json(&p)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK, "{}", r.text().await.unwrap());
+    wait_until("the new file's feed", || async {
+        provider_feed_ids(&c, "hagezi").len() == 3 && !c.state.feeds.is_checking("hagezi")
+    })
+    .await;
+    assert_eq!(bundled(&c, "hagezi").await, feeds, "the new file's feed isn't bundled");
+    // The admin takes one preset feed out of the bundle: it stays out through later listings.
+    let mut b = get_json(&c, "/bundles/block-common").await;
+    b["feeds"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|f| f["feed"] != feeds[0].as_str());
+    let r = ui(&c, Method::PUT, "/bundles/block-common")
+        .json(&b)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK, "{}", r.text().await.unwrap());
+    repo.lock().unwrap().set(2, PRESET_FILES);
+    common::feeds::check_provider(&c, "hagezi").await;
+    wait_until("the next check", || async {
+        sql_i64(
+            &c,
+            "SELECT count(*) FROM feed_provider_checks WHERE provider_id = 'hagezi' AND ok = 1",
+        )
+        .await
+            >= 2
+            && !c.state.feeds.is_checking("hagezi")
+    })
+    .await;
+    assert_eq!(bundled(&c, "hagezi").await, vec![feeds[1].clone()]);
+    // Installing the preset again asks again: both back, done at once.
+    let (st, v) = install_preset(&c, "hagezi").await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(v["bundle_added"], true, "{v}");
+    assert!(v.get("pending").is_none(), "{v}");
+    assert_eq!(bundled(&c, "hagezi").await, feeds);
+}
+
+/// OISD big and the AdGuard DNS filter, installed while GitHub answers, join the bundle with
+/// their first listing (discovery racing the install either way). An intent stops, saying why,
+/// when the provider's source changes or the bundle goes before the listing, and attaches
+/// nothing then; deleting the provider drops it.
+#[tokio::test(flavor = "multi_thread")]
+async fn github_presets_complete_or_say_why_not() {
+    let (srv, repo) = common::github::fake().await;
+    repo.lock().unwrap().set(1, PRESET_FILES);
+    let c = core_with(Some(&srv), None).await;
+    for (preset, provider, file) in [
+        ("oisd-big", "oisd-big", "abp_big.txt"),
+        ("adguard-dns-filter", "adguard", "Filters/filter.txt"),
+    ] {
+        let (st, v) = install_preset(&c, preset).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(v["provider"], provider, "{v}");
+        // Done at once (a listing already stored) or waiting for this file.
+        if let Some(p) = v.get("pending") {
+            assert_eq!(p["files"], json!([file]), "{v}");
+        }
+        wait_until("the preset's feed in its bundle", || async {
+            bundled(&c, provider).await.len() == 1
+        })
+        .await;
+        wait_until("the intent done", || async {
+            preset_pending(&c, preset).await.is_null()
+        })
+        .await;
+        assert_eq!(bundled(&c, provider).await, provider_feed_ids(&c, provider));
+    }
+    // A new install whose provider points elsewhere before it lists: nothing attached.
+    for p in ["oisd-big", "adguard"] {
+        delete_provider(&c, p).await;
+    }
+    assert_eq!(sql_i64(&c, "SELECT count(*) FROM preset_pending").await, 0);
+    repo.lock().unwrap().down = true;
+    let (st, v) = install_preset(&c, "adguard-dns-filter").await;
+    assert_eq!((st, v["pending"]["state"].clone()), (StatusCode::OK, json!("waiting")), "{v}");
+    let mut p = get_json(&c, "/feed-providers/adguard").await;
+    p["config"] = json!({"owner": "someone", "repo": "else"});
+    let r = ui(&c, Method::PUT, "/feed-providers/adguard")
+        .json(&p)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK, "{}", r.text().await.unwrap());
+    repo.lock().unwrap().down = false;
+    common::feeds::check_provider(&c, "adguard").await;
+    wait_until("the other source's feed", || async {
+        provider_feed_ids(&c, "adguard").len() == 1 && !c.state.feeds.is_checking("adguard")
+    })
+    .await;
+    assert!(bundled(&c, "adguard").await.is_empty());
+    assert_eq!(
+        preset_pending(&c, "adguard-dns-filter").await["state"],
+        "source_changed"
+    );
+    // The bundle gone before the listing (a stand-in bundle, deleted): nothing attached.
+    repo.lock().unwrap().down = true;
+    let (st, v) = install_preset(&c, "oisd-big").await;
+    assert_eq!((st, v["pending"]["state"].clone()), (StatusCode::OK, json!("waiting")), "{v}");
+    c.state
+        .db
+        .write(|db| {
+            db.execute(
+                "UPDATE preset_pending SET bundle_id = 'gone' WHERE provider_id = 'oisd-big'",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .unwrap();
+    repo.lock().unwrap().down = false;
+    common::feeds::check_provider(&c, "oisd-big").await;
+    wait_until("the listing's feed", || async {
+        provider_feed_ids(&c, "oisd-big").len() == 1 && !c.state.feeds.is_checking("oisd-big")
+    })
+    .await;
+    assert!(bundled(&c, "oisd-big").await.is_empty());
+    assert_eq!(
+        preset_pending(&c, "oisd-big").await,
+        json!({"bundle": "gone", "files": ["abp_big.txt"], "state": "bundle_missing"})
+    );
+    // Deleting the provider drops its intent.
+    delete_provider(&c, "oisd-big").await;
+    assert_eq!(preset_pending(&c, "oisd-big").await, Value::Null);
 }

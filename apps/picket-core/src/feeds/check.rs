@@ -1120,7 +1120,7 @@ async fn finish_feeds(
             .await;
         match r {
             Ok(a) if !a.created.is_empty() => {
-                tracing::info!(provider = %provider, feeds = ?a.created, "the provider's listing added feeds");
+                tracing::info!(provider = %provider, feeds = ?a.created, bundled = ?a.bundled, "the provider's listing added feeds");
             }
             Ok(_) => {}
             Err(e) => tracing::warn!(provider = %provider, error = %e, "cannot add the listing's new feeds"),

@@ -254,7 +254,9 @@ impl UndoJob {
 
 impl Drop for UndoJob {
     fn drop(&mut self) {
-        if !self.release {
+        // Shutting down (the lane dropped it unrun): the feed stays busy and the next start
+        // undoes the run, as for a job guard.
+        if !self.release || self.state.scheduler.heavy.is_closed() {
             return;
         }
         let (state, feed) = (self.state.clone(), std::mem::take(&mut self.feed));

@@ -113,9 +113,8 @@ pub struct State {
 #[derive(Default)]
 pub struct Module;
 
-/// The longest URL: what an older release's `base_url` (2,048 bytes) and a file path under it
-/// (2,048 bytes, up to three times that once percent-encoded) could make, so an upgraded
-/// provider's URL always fits (README §2 Compatibility).
+/// The longest URL: a 2,048-byte base and a 2,048-byte path under it, up to three times that
+/// once percent-encoded.
 pub const MAX_URL: usize = 2048 + 3 * 2048;
 
 /// Checks an `https://` URL with a host and no user info: a user name or password in a URL

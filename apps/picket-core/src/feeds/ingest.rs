@@ -393,7 +393,9 @@ fn parse_thread(
             },
         ))
     };
-    let stats = picket_rules::formats::parse_feed(&open, &cfg, |e: picket_rules::Entry| {
+    // Notices are about rules kept: counted here, past the mode and the rule policy.
+    let mut kept = picket_rules::formats::ParseStats::default();
+    let mut stats = picket_rules::formats::parse_feed(&open, &cfg, |e: picket_rules::Entry| {
         if stopped {
             return;
         }
@@ -415,6 +417,9 @@ fn parse_thread(
                 }
             }
             return; // whole rules only (feeds.md §8)
+        }
+        if let Some(n) = e.notice {
+            kept.notice(e.line_no, n, &e.raw);
         }
         let ip = rule.ip_range().map(|r| (r.first_bytes(), r.last_bytes()));
         let redirect =
@@ -439,6 +444,8 @@ fn parse_thread(
         }
     })
     .map_err(|e| format!("cannot read the file: {e}"))?;
+    stats.notices = kept.notices;
+    stats.notice_samples = kept.notice_samples;
     if stopped {
         return Err("the ingest stopped".into());
     }
@@ -1056,11 +1063,6 @@ impl IngestJob {
                 let run = self.run.as_mut().context("no run")?;
                 if !held {
                     run.parse = ParseSummary::from_stats(&stats);
-                    // Notices are about browser rules kept: none are while the mode drops them.
-                    if run.params.mode(picket_rules::RuleType::Browser) == Mode::Drop {
-                        run.parse.notices.clear();
-                        run.parse.notice_samples.clear();
-                    }
                     run.parse.errors = run.parse.errors.saturating_add(bad_dates);
                     run.parse.misp_type = misp_type;
                     run.policy_counts = counts;

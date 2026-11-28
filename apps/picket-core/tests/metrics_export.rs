@@ -399,10 +399,10 @@ fn every_heartbeat_field_is_a_registered_series() {
     assert_eq!(got.len(), HEARTBEAT_SERIES.len());
 }
 
-/// The family a series is exported as (api.md §7): `picket_` plus the name (or the export name
-/// the registry gives it) with `_` for `.`, counters ending in `_total`.
+/// The family a series is exported as (api.md §7): `picket_` plus the name with `_` for `.`,
+/// counters ending in `_total`.
 fn family_of(s: &Series) -> (String, MetricType) {
-    let base = format!("picket_{}", s.export.unwrap_or(s.name).replace('.', "_"));
+    let base = format!("picket_{}", s.name.replace('.', "_"));
     match s.kind {
         Kind::Counter | Kind::CoreCounter => (format!("{base}_total"), MetricType::Counter),
         Kind::Gauge | Kind::CoreGauge => (base, MetricType::Gauge),
@@ -630,7 +630,7 @@ async fn deleted_providers_and_feeds_leave_the_export() {
     ]
     .map(|n| (n.to_string(), p(), 1.0))
     .into_iter()
-    .chain([("feed_records_total".to_string(), f(("type", "dns")), 4.0)])
+    .chain([("feed_records".to_string(), f(("type", "dns")), 4.0)])
     .collect();
     st.metrics.gauges(db, gauges).await;
     st.metrics

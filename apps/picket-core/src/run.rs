@@ -117,30 +117,15 @@ pub async fn start_with(
 
     // System objects at every start (core.md §2).
     let dd = data_dir.to_path_buf();
-    let (upgraded, created) = db
+    let created = db
         .write(move |c| {
             let tx = c.transaction()?;
-            // What the previous release stored in a since-changed shape reads in the new one
-            // (README §2 Compatibility), before anything reads it.
-            let upgraded = crate::config::store::upgrade_stored(&tx)?;
             let created = crate::config::system::ensure(&tx, &dd)?;
             tx.commit()?;
-            Ok::<_, anyhow::Error>((upgraded, created))
+            Ok::<_, anyhow::Error>(created)
         })
         .await
-        .map_err(|e| {
-            failed(format!(
-                "cannot upgrade the stored configuration or create system objects: {e:#}"
-            ))
-        })?;
-    if !upgraded.is_empty() {
-        tracing::info!(
-            http_converted = upgraded.converted.len(),
-            http_split_off = upgraded.splits.len(),
-            alphamountain_named = upgraded.named.len(),
-            "upgraded the previous release's stored configuration (one http provider per feed's URL; alphaMountain's file named)"
-        );
-    }
+        .map_err(|e| failed(format!("cannot create system objects: {e:#}")))?;
     if !created.is_empty() {
         tracing::info!(count = created.len(), "created missing system objects");
     }
@@ -158,8 +143,6 @@ pub async fn start_with(
 
     let events = UiEvents::new();
     let alerts = Alerts::new(db.clone(), events.clone());
-    // What the upgrade at this start changed that the owner should look at.
-    crate::config::store::announce_upgrade(&alerts, &upgraded).await;
     let log_writer = crate::logs::writer::LogWriter::start(crate::logs::LogStore::new(data_dir))
         .map_err(|e| failed(format!("cannot start the log writer: {e:#}")))?;
     let state: SharedState = Arc::new(AppState {
