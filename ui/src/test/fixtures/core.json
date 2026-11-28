@@ -2643,7 +2643,6 @@
     "evidence_per_alert": 1000,
     "evidence_total_mib": 128,
     "feed_stale_days": 30,
-    "temporary_allow": false,
     "thresholds": {}
    },
    "crosscheck": {

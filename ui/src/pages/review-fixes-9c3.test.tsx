@@ -5,15 +5,15 @@
 // one; V2 a provider's unknown status isn't shown as healthy; V3 invalid JSON text blocks a save;
 // V4 a failed refresh keeps loaded charts and journal rows; V5 map values are named by their key
 // and field; V6 ordered pickers are labelled groups. And core's polish (dev/briefs/polish-core-report.md):
-// the alerts.temporary_allow switch, a restore whose upload stalls (408), the temporary_allow and
-// bundle_cold_share alerts' details.
+// a restore whose upload stalls (408), the bundle_cold_share alert's details; temporary allows are
+// history, never alerts (issue 79).
 import * as React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { EditorView } from "@codemirror/view";
-import { mockApi, mutations, reply, type Call } from "@/test/mock-api";
+import { mockApi, reply, type Call } from "@/test/mock-api";
 import { W5 } from "@/test/core-w5";
 import { renderApp } from "@/test/render";
 import { alertFrame, feedRunFrame, jobFrame, truncatedAlertFrame, truncatedRunFrame } from "@/test/events";
@@ -501,19 +501,13 @@ describe("V6: ordered pickers are labelled groups with field-specific add contro
   });
 });
 
-describe("Core's polish: the temporary_allow setting, 408, the new alert kinds (polish-core-report A1, A2, C3)", () => {
-  it("Settings → Alerts has the temporary_allow switch with its one-line explanation, and saves it", async () => {
-    const user = userEvent.setup();
-    const { fixtures } = mockApi();
-    const { calls } = mockApi([{ method: "PUT", path: "/settings", body: () => fixtures["/settings"] }]);
+describe("Core's polish: no temporary_allow setting, 408, the new alert kinds (polish-core-report A1, A2, C3)", () => {
+  it("Settings → Alerts offers no temporary-allow alert (an allow is history, issue 79)", async () => {
+    mockApi();
     renderApp("/settings?tab=alerts");
-    const toggle = await screen.findByRole("switch", { name: "Alert on temporary allows" }, T);
-    expect(toggle).not.toBeChecked();
-    expect(screen.getByText("Raises an info alert whenever an edge creates a temporary allow.")).toBeVisible();
-    await user.click(toggle);
-    await user.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(mutations(calls)).toHaveLength(1), T);
-    expect((mutations(calls)[0].body as { alerts: { temporary_allow: unknown } }).alerts.temporary_allow).toBe(true);
+    expect(await screen.findByText("Thresholds per alert kind (how long a condition must hold), the evidence limits and the feed_stale allowance.", undefined, T)).toBeVisible();
+    expect(screen.queryByRole("switch", { name: /temporary/i })).toBeNull();
+    expect(screen.queryByText(/temporary_allow/)).toBeNull();
   });
 
   it("a restore whose upload stalled (408 timeout) says nothing was changed and doesn't re-read as after a restore", async () => {
@@ -545,26 +539,6 @@ describe("Core's polish: the temporary_allow setting, 408, the new alert kinds (
     renderApp(`/alerts/${id}`);
     return calls;
   }
-
-  it("a temporary_allow alert shows the allow (target, device, profile, expiry, how) and links the temporary allows; it keeps evidence like any security alert (core captures the device's queries under the target, core.md §9)", async () => {
-    alertPage(301, {
-      type: "security",
-      severity: "info",
-      kind: "temporary_allow",
-      dedupe_key: "temporary_allow:e-1:tablet:ads.example",
-      title: "Edge gw: tablet was allowed ads.example until 2026-11-25T13:00:00.000000Z",
-      edge: "e-1",
-      details: { edge: "e-1", allow_id: "a-7", device: "tablet", client: "192.0.2.10", kind: "dns", target: "ads.example", subdomains: true, profile: "kids", block_id: "b-3", expires_at: "2026-11-25T13:00:00.000000Z", via: "extension", created_at: "2026-11-25T12:00:00.000000Z" },
-    });
-    const allow = await screen.findByTestId("temporary-allow", undefined, T);
-    expect(within(allow).getByText("ads.example and its subdomains")).toBeInTheDocument();
-    expect(within(allow).getByText("tablet (192.0.2.10)")).toBeInTheDocument();
-    expect(within(allow).getByText("kids")).toBeInTheDocument();
-    expect(within(allow).getByText("extension")).toBeInTheDocument();
-    expect(within(allow).getByText("Expires")).toBeInTheDocument();
-    expect(within(allow).getByRole("link", { name: "Temporary allows" })).toHaveAttribute("href", "/temporary-allows");
-    expect(await screen.findByText("Evidence", undefined, T)).toBeInTheDocument();
-  });
 
   it("a bundle_cold_share alert shows the share against its limit and each deciding feed's share, linked", async () => {
     alertPage(302, {

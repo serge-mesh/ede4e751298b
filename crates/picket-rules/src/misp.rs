@@ -192,6 +192,8 @@ fn map_value<F: FnMut(Entry)>(
         }
         Item::Error(e) => stats.error(index, e, value),
         Item::Warning { rule_type, .. } => stats.warnings.add(rule_type),
+        // MISP values map to DNS and IP rules only.
+        Item::Notice(_) => {}
     }
 }
 
