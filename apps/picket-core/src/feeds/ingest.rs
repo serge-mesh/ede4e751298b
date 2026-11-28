@@ -303,7 +303,8 @@ enum Msg {
     MispType(Option<String>),
     /// Bytes of the file read since the last report.
     Progress(u64),
-    Done(std::result::Result<(picket_rules::formats::ParseStats, PolicyCounts), String>),
+    /// Boxed: the stats are far larger than the other messages.
+    Done(Box<std::result::Result<(picket_rules::formats::ParseStats, PolicyCounts), String>>),
 }
 
 /// The file as the parser reads it, reporting the bytes read to the job ([`Msg::Progress`]),
@@ -352,7 +353,7 @@ fn spawn_parser(
         .name("feed-parse".into())
         .spawn(move || {
             let r = parse_thread(&path, &params, run_time, &tx);
-            let _ = tx.blocking_send(Msg::Done(r));
+            let _ = tx.blocking_send(Msg::Done(Box::new(r)));
         })
         .ok();
     Parser {
@@ -951,7 +952,7 @@ impl IngestJob {
                 Some(Msg::MispType(t)) => parser.misp_type = t,
                 Some(Msg::Progress(n)) => read = read.saturating_add(n),
                 Some(Msg::Done(r)) => {
-                    done = Some(r);
+                    done = Some(*r);
                     break;
                 }
                 None => {
