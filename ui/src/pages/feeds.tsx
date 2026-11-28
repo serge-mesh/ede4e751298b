@@ -1,11 +1,10 @@
 import * as React from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import type { ColumnDef } from "@tanstack/react-table";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { FilePlusIcon, TriangleAlertIcon, UploadIcon } from "lucide-react";
 import { PageHeader } from "@/components/common/page";
-import { DataTable } from "@/components/common/data-table";
+import { DataTable, type DataTableColumn } from "@/components/common/data-table";
 import { QueryView } from "@/components/common/states";
 import { Mono, SafeText } from "@/components/common/text";
 import { TimeAgo } from "@/components/common/time";
@@ -57,7 +56,7 @@ export function FeedsPage() {
   const [dialog, setDialog] = React.useState<"new" | "import" | null>(null);
   const byId = React.useMemo(() => new Map((statuses.data ?? []).map((s) => [s.feed, s])), [statuses.data]);
   const rows: Row[] = (feeds.data ?? []).map((f) => ({ ...f, st: byId.get(f.id ?? "") }));
-  const columns = React.useMemo<ColumnDef<Row, unknown>[]>(
+  const columns = React.useMemo<DataTableColumn<Row>[]>(
     () => [
       {
         id: "name",
