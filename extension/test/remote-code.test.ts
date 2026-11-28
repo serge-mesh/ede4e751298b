@@ -38,8 +38,9 @@ const REMOTE_OR_INLINE = tags(`
 /**
  * A remote script behind markup that only looks local: a local src in another attribute's name or
  * value, a second src, a name that U+00A0 (not HTML whitespace) or a quote extends, a `<base href>`,
- * an SVG script, and a src a browser reads as remote though its text isn't (a leading space, an
- * entity, a backslash, a scheme with no slashes, a tab or newline).
+ * a `<noscript>`, a script tag the parser doesn't make an element of, an SVG script, and a src a
+ * browser reads as remote though its text isn't (a leading space, an entity, a backslash, a scheme
+ * with no slashes, a tab or newline).
  */
 const DISGUISED = [
   ...tags(`
@@ -59,6 +60,11 @@ const DISGUISED = [
   `<script "src=main.js" src="https://example.com/x.js"></script>`,
   // A base element moves where a relative src resolves.
   '<base href="https://example.com/"><script src="main.js"></script>',
+  // Scripting-off parsing reads noscript content as markup, a browser as raw text.
+  `<noscript><p title='</noscript><script src="https://example.com/x.js"></script>'></noscript>`,
+  // A script tag the parser doesn't make an element of.
+  '<template><script src="https://example.com/x.js"></script></template>',
+  '<!-- <script src="https://example.com/x.js"></script> -->',
   // An SVG script loads with href, not src.
   '<svg><script href="https://example.com/x.js"></script></svg>',
   // Browsers drop tabs and newlines anywhere in a URL.
@@ -77,7 +83,7 @@ describe('the build check on pages', () => {
 
   it('rejects remote, protocol-relative and inline scripts in every quoting form, and disguised ones', () => {
     expect(REMOTE_OR_INLINE).toHaveLength(10);
-    expect(DISGUISED).toHaveLength(16);
+    expect(DISGUISED).toHaveLength(19);
     for (const tag of [...REMOTE_OR_INLINE, ...DISGUISED]) {
       expect(badScript(page(tag)), tag).toBeDefined();
       expect(badScript(page(LOCAL.join('') + tag)), tag).toBeDefined();

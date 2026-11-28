@@ -42,23 +42,29 @@ export function remoteSrc(src) {
 
 /**
  * The first script in `html` that is inline or may load from outside the package, as its markup,
- * or `undefined` when every script loads from the package. An SVG script (it loads with `href`)
- * counts as one that may, and so does every script on a page with a `<base href>` (its markup is
- * returned).
+ * or `undefined` when every script loads from the package. Also returned, as markup: an SVG script
+ * (it loads with `href`); a `<base href>` (it moves where every relative src resolves); a
+ * `<noscript>` (this parser reads its content as markup, a browser with scripting on as raw text,
+ * so the two can see different scripts); and, as `<script`, any page whose text holds more
+ * `<script` tags than the parsed page has script elements (one hidden in a comment, attribute,
+ * template or raw text, where this parser and a browser might disagree). The pages need none.
  * @param {string} html
  * @returns {string | undefined}
  */
 export function badScript(html) {
   const doc = new JSDOM(html).window.document;
-  // A `<base href>` moves where every relative src resolves; the pages never need one.
-  for (const b of doc.querySelectorAll('base[href]')) {
-    return b.outerHTML;
+  for (const e of doc.querySelectorAll('base[href], noscript')) {
+    return e.outerHTML;
   }
-  for (const s of doc.querySelectorAll('script')) {
+  const scripts = [...doc.querySelectorAll('script')];
+  for (const s of scripts) {
     const src = s.getAttribute('src');
     if (s.namespaceURI !== HTML_NS || src === null || remoteSrc(src) || (s.textContent ?? '').trim() !== '') {
       return s.outerHTML;
     }
+  }
+  if ([...html.matchAll(/<script/gi)].length > scripts.length) {
+    return '<script';
   }
   return undefined;
 }
