@@ -2099,6 +2099,14 @@ async fn a_github_preset_joins_its_bundle_once_listed() {
     assert_eq!(bundled(&c, "hagezi").await, feeds);
 }
 
+/// The first check of a newly installed provider has run and ended (its state row, dropped with
+/// any earlier provider of that id, has a `last_check`), so nothing else starts within
+/// `min_interval` and "Check now" runs at once.
+async fn install_check_done(c: &Core, provider: &str) -> bool {
+    let s = get_json(c, &format!("/feed-providers/{provider}/status")).await;
+    !s["last_check"].is_null() && s["checking"] == false
+}
+
 /// OISD big and the AdGuard DNS filter, installed while GitHub answers, join the bundle with
 /// their first listing (discovery racing the install either way). An intent stops, saying why,
 /// when the provider's source changes or the bundle goes before the listing, and attaches
@@ -2148,7 +2156,7 @@ async fn github_presets_complete_or_say_why_not() {
     repo.lock().unwrap().down = false;
     // The install started a check while the repository was down: a check asked for now would
     // only queue behind it, and then wait out `min_interval` after it.
-    wait_until("the install's check", || async { !c.state.feeds.is_checking("adguard") }).await;
+    wait_until("the install's check", || install_check_done(&c, "adguard")).await;
     common::feeds::check_provider(&c, "adguard").await;
     wait_until("the other source's feed", || async {
         provider_feed_ids(&c, "adguard").len() == 1 && !c.state.feeds.is_checking("adguard")
@@ -2177,7 +2185,7 @@ async fn github_presets_complete_or_say_why_not() {
     repo.lock().unwrap().down = false;
     // The install started a check while the repository was down: a check asked for now would
     // only queue behind it, and then wait out `min_interval` after it.
-    wait_until("the install's check", || async { !c.state.feeds.is_checking("oisd-big") }).await;
+    wait_until("the install's check", || install_check_done(&c, "oisd-big")).await;
     common::feeds::check_provider(&c, "oisd-big").await;
     wait_until("the listing's feed", || async {
         provider_feed_ids(&c, "oisd-big").len() == 1 && !c.state.feeds.is_checking("oisd-big")
@@ -2218,7 +2226,7 @@ async fn github_presets_complete_or_say_why_not() {
     repo.lock().unwrap().down = false;
     // The install started a check while the repository was down: a check asked for now would
     // only queue behind it, and then wait out `min_interval` after it.
-    wait_until("the install's check", || async { !c.state.feeds.is_checking("oisd-big") }).await;
+    wait_until("the install's check", || install_check_done(&c, "oisd-big")).await;
     common::feeds::check_provider(&c, "oisd-big").await;
     wait_until("the listing's feed", || async {
         provider_feed_ids(&c, "oisd-big").len() == 1 && !c.state.feeds.is_checking("oisd-big")
