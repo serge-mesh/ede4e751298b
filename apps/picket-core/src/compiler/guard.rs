@@ -344,13 +344,17 @@ pub struct CancelScan {
     cancellers: Vec<Row>,
     next: usize,
     work_left: u64,
-    /// The exception patterns ([`is_pattern_exception`]): what their chunks found against the
-    /// patterns, completed by the key sweep.
+    /// The exception patterns ([`is_pattern_exception`]) of the chunks scanned, waiting for their
+    /// own steps against the block patterns.
+    unscanned: Vec<Row>,
+    /// The exception patterns: what they were found to cancel among the patterns, completed by
+    /// the key sweep.
     pending: Vec<Pending>,
     /// The key sweep, once the chunks are done.
     sweep: Option<Sweep>,
     /// The sweep reads every keyed block of the bundle, not only the changed keys: an exception
-    /// pattern was added in an incremental build (the keys it may cancel needn't have changed).
+    /// pattern was added in an incremental build, or the scan before it was skipped (the keys
+    /// they may cancel needn't have changed).
     all_keys: bool,
     /// The keys the scan meets cover the whole bundle (fresh and full builds; an incremental
     /// build sweeping every key, or without exception patterns): a complete scan then resolves
@@ -456,13 +460,17 @@ pub async fn cancellations_step(state: &SharedState, ctx: &mut Ctx) -> Result<bo
         {
             return Ok(true);
         }
-        let (spec, runs) = (ctx.spec.clone(), ctx.runs.clone());
-        let read = state
+        let (spec, runs, skip) = (ctx.spec.clone(), ctx.runs.clone(), skip_key.clone());
+        let (read, was_skipped) = state
             .db
             .read(move |c| {
                 let view = View::new(&spec, &runs);
                 let mut bad = 0u64;
-                Ok::<_, anyhow::Error>(view.cancellers(c, MAX_CANCELLERS, &mut bad)?)
+                let cancellers = view.cancellers(c, MAX_CANCELLERS, &mut bad)?;
+                let was_skipped = c
+                    .prepare_cached("SELECT 1 FROM alerts WHERE dedupe_key = ?1 AND state = 'open'")?
+                    .exists([&skip])?;
+                Ok::<_, anyhow::Error>((cancellers, was_skipped))
             })
             .await?;
         match read {
@@ -493,12 +501,15 @@ pub async fn cancellations_step(state: &SharedState, ctx: &mut Ctx) -> Result<bo
                     return Ok(true);
                 }
                 let incremental = ctx.mode == super::build::Mode::Incremental;
-                let all_keys = incremental && ctx.touched.pattern_exception;
+                // An exception pattern added, or a skipped scan before (no unchanged key was
+                // met by its exception patterns): the keys they may cancel needn't have changed.
+                let all_keys = incremental && (ctx.touched.pattern_exception || was_skipped);
                 let any_pattern = cancellers.iter().any(|r| is_pattern_exception(&r.rule));
                 ctx.cancel = Some(CancelScan {
                     cancellers,
                     next: 0,
                     work_left: SCAN_WORK,
+                    unscanned: Vec::new(),
                     pending: Vec::new(),
                     sweep: None,
                     all_keys,
@@ -539,15 +550,41 @@ pub async fn cancellations_step(state: &SharedState, ctx: &mut Ctx) -> Result<bo
                 .await?;
             scan.work_left = scan.work_left.saturating_sub(out.spent);
             scan.gaps.extend(out.gaps);
-            scan.pending.extend(out.pending);
+            scan.unscanned.extend(out.unscanned);
             for f in out.found {
                 push_found(ctx, &bundle, f);
             }
         }
-        if scan.next < scan.cancellers.len() || !scan.pending.is_empty() {
+        if scan.next < scan.cancellers.len() || !scan.unscanned.is_empty() || !scan.pending.is_empty() {
             ctx.cancel = Some(scan);
             return Ok(false);
         }
+    } else if !scan.unscanned.is_empty() {
+        // The exception patterns against the block patterns, a chunk per step with its own work.
+        let end = CANCELLERS_PER_STEP.min(scan.unscanned.len());
+        let chunk: Vec<Row> = scan.unscanned.drain(..end).collect();
+        if scan.work_left == 0 {
+            scan.gaps.insert(gap::WORK);
+            scan.pending.extend(chunk.into_iter().map(|row| Pending {
+                row,
+                count: 0,
+                complete: false,
+                raw: None,
+                sample: Vec::new(),
+            }));
+        } else {
+            let (spec, runs) = (ctx.spec.clone(), ctx.runs.clone());
+            let work = scan.work_left.min(SCAN_WORK_PER_STEP);
+            let out = state
+                .db
+                .read(move |c| scan_patterns(c, &spec, &runs, chunk, work))
+                .await?;
+            scan.work_left = scan.work_left.saturating_sub(out.spent);
+            scan.gaps.extend(out.gaps);
+            scan.pending.extend(out.pending);
+        }
+        ctx.cancel = Some(scan);
+        return Ok(false);
     } else if !scan.pending.is_empty() {
         // The key sweep, a page per step.
         let sweep = scan.sweep.take().unwrap_or_else(|| Sweep {
@@ -581,10 +618,14 @@ pub async fn cancellations_step(state: &SharedState, ctx: &mut Ctx) -> Result<bo
                 .read(move |c| sweep_step(c, &spec, &runs, &b2, &pats, &input, work))
                 .await?;
             scan.work_left = scan.work_left.saturating_sub(out.spent);
+            let retry_from = match &out.outcome {
+                SweepOutcome::Retry { fetched, .. } => *fetched,
+                SweepOutcome::Done { .. } => sweep.page,
+            };
             let outcome = match out.outcome {
                 // Read again, smaller, while the budget allows; else keep what it proved.
                 SweepOutcome::Retry { .. } if scan.work_left > 0 => None,
-                SweepOutcome::Retry { hits } => Some(SweepOutcome::Done {
+                SweepOutcome::Retry { hits, .. } => Some(SweepOutcome::Done {
                     hits,
                     capped: true,
                     next: None,
@@ -594,7 +635,7 @@ pub async fn cancellations_step(state: &SharedState, ctx: &mut Ctx) -> Result<bo
             let next = match outcome {
                 None => Some(Sweep {
                     at: sweep.at,
-                    page: (sweep.page / 2).max(SWEEP_KEYS_MIN),
+                    page: (retry_from / 2).max(SWEEP_KEYS_MIN),
                 }),
                 Some(SweepOutcome::Retry { .. }) => None,
                 Some(SweepOutcome::Done { hits, capped, next }) => {
@@ -759,10 +800,10 @@ fn render_sample(c: &rusqlite::Connection, rows: &[&Row]) -> Vec<String> {
 }
 
 /// What one chunk's scan found: the findings of its keyed and `$badfilter` cancellers, its
-/// exception patterns so far, what it couldn't check, and the work spent.
+/// exception patterns (left for their own steps), what it couldn't check, and the work spent.
 struct ChunkOut {
     found: Vec<Found>,
-    pending: Vec<Pending>,
+    unscanned: Vec<Row>,
     gaps: BTreeSet<&'static str>,
     spent: u64,
 }
@@ -780,8 +821,8 @@ fn add_related(rows: &mut BTreeMap<OrderKey, Row>, v: Vec<Row>) -> bool {
 
 /// Scans one chunk of cancellers within `work`. Keyed and `$badfilter` cancellers meet the rules
 /// they can cancel (their keys, the keys above and, with a subdomain flag, below them, every
-/// pattern, the IP rules when one is an IP rule); exception patterns meet the block patterns
-/// here and the keyed blocks in the key sweep.
+/// pattern, the IP rules when one is an IP rule); exception patterns are left for
+/// [`scan_patterns`] and the key sweep.
 fn scan_chunk(
     c: &rusqlite::Connection,
     spec: &super::spec::Spec,
@@ -791,20 +832,20 @@ fn scan_chunk(
 ) -> Result<ChunkOut> {
     let view = View::new(spec, runs);
     let mut bad = 0u64;
-    let mut out = ChunkOut {
-        found: Vec::new(),
-        pending: Vec::new(),
-        gaps: BTreeSet::new(),
-        spent: 0,
-    };
     let (pats, keyed): (Vec<Row>, Vec<Row>) = cancellers
         .into_iter()
         .partition(|r| is_pattern_exception(&r.rule));
-    let patterns = view.patterns(c, super::build::MAX_PATTERN_RULES, &mut bad)?.ok();
-    if patterns.is_none() {
-        out.gaps.insert(gap::PATTERNS);
-    }
+    let mut out = ChunkOut {
+        found: Vec::new(),
+        unscanned: pats,
+        gaps: BTreeSet::new(),
+        spent: 0,
+    };
     if !keyed.is_empty() {
+        let patterns = view.patterns(c, super::build::MAX_PATTERN_RULES, &mut bad)?.ok();
+        if patterns.is_none() {
+            out.gaps.insert(gap::PATTERNS);
+        }
         let mut rows: BTreeMap<OrderKey, Row> = BTreeMap::new();
         let mut fits = true;
         // Cancellers whose candidates were cut.
@@ -814,14 +855,16 @@ fn scan_chunk(
             let key = super::source::domain_key(&r.rule)
                 .map(|k| (k, r.rule.flags))
                 .or_else(|| keyed_equivalent_key(&r.rule));
+            // A `$badfilter` rule or an `@@…$dnsrewrite` meets only the rules at its own key.
+            let at_key_only = r.rule.is_badfilter() || r.rule.is_rewrite();
             if let Some((k, flags)) = key {
                 fits &= add_related(&mut rows, view.key_rules(c, &k, &mut bad)?);
                 let mut s: &str = &k;
-                while let Some(i) = s.rfind('.') {
+                while let Some(i) = s.rfind('.').filter(|_| !at_key_only) {
                     s = &s[..i];
                     fits &= add_related(&mut rows, view.key_rules(c, s, &mut bad)?);
                 }
-                if flags.intersects(Flags::ALL_SUBS) {
+                if !at_key_only && flags.intersects(Flags::ALL_SUBS) {
                     // One more than it keeps tells a full page from an omission.
                     let mut below = view.below(c, &k, BELOW_PER_CANCELLER + 1, &mut bad)?;
                     if below.len() > BELOW_PER_CANCELLER {
@@ -838,7 +881,17 @@ fn scan_chunk(
         }
         match &patterns {
             Some(p) => fits &= add_related(&mut rows, p.clone()),
-            None => cut.extend(keyed.iter().map(|r| r.order.clone())),
+            // Without the patterns, those that can cancel one weren't fully checked: an
+            // exception, or a `$badfilter` rule or `@@…$dnsrewrite` written as a pattern.
+            None => cut.extend(
+                keyed
+                    .iter()
+                    .filter(|r| {
+                        !(r.rule.is_badfilter() || r.rule.is_rewrite())
+                            || matches!(r.rule.key_kind(), Kind::Pattern | Kind::Regex)
+                    })
+                    .map(|r| r.order.clone()),
+            ),
         }
         if !ip_cancellers.is_empty() {
             match view.ip_rules(c, MAX_RELATED, &mut bad)? {
@@ -902,59 +955,98 @@ fn scan_chunk(
             }
         }
     }
-    if !pats.is_empty() {
-        // Against the block patterns (their keyed-equivalent ones included).
-        let mut rows: Vec<Row> = pats.clone();
-        if let Some(p) = &patterns {
-            rows.extend(
-                p.iter()
-                    .filter(|r| !r.rule.is_exception() && !r.rule.is_badfilter())
-                    .cloned(),
-            );
-        }
-        let rules: Vec<Rule> = rows.iter().map(|r| r.rule.clone()).collect();
-        let feeds: Vec<&str> = rows.iter().map(|r| r.feed.as_str()).collect();
-        let report = cross_feed_cancellations_within(
+    Ok(out)
+}
+
+/// What a step of exception patterns found against the block patterns.
+struct PatternsOut {
+    pending: Vec<Pending>,
+    gaps: BTreeSet<&'static str>,
+    spent: u64,
+}
+
+/// Scans exception patterns against the block patterns (their keyed-equivalent ones included)
+/// within `work`; the key sweep then meets them with the keyed blocks.
+fn scan_patterns(
+    c: &rusqlite::Connection,
+    spec: &super::spec::Spec,
+    runs: &super::spec::Runs,
+    pats: Vec<Row>,
+    work: u64,
+) -> Result<PatternsOut> {
+    let view = View::new(spec, runs);
+    let mut bad = 0u64;
+    let mut out = PatternsOut {
+        pending: Vec::new(),
+        gaps: BTreeSet::new(),
+        spent: 0,
+    };
+    let blocks: Option<Vec<Row>> = view
+        .patterns(c, super::build::MAX_PATTERN_RULES, &mut bad)?
+        .ok()
+        .map(|p| {
+            p.into_iter()
+                .filter(|r| !r.rule.is_exception() && !r.rule.is_badfilter())
+                .collect()
+        });
+    if blocks.is_none() {
+        out.gaps.insert(gap::PATTERNS);
+    }
+    let blocks = blocks.unwrap_or_default();
+    let mut rows: Vec<Row> = pats.clone();
+    rows.extend(blocks.iter().cloned());
+    let rules: Vec<Rule> = rows.iter().map(|r| r.rule.clone()).collect();
+    let feeds: Vec<&str> = rows.iter().map(|r| r.feed.as_str()).collect();
+    // No block pattern: nothing for the scanner to find.
+    let report = if blocks.is_empty() {
+        CrossFeedReport::default()
+    } else {
+        cross_feed_cancellations_within(
             &rules,
             &feeds,
             ScanLimits {
-                work: work.saturating_sub(out.spent),
+                work,
                 ..ScanLimits::default()
             },
-        );
-        out.spent = out.spent.saturating_add(report.work);
-        if report.capped {
-            out.gaps.insert(gap::WORK);
-        }
-        for (i, row) in pats.into_iter().enumerate() {
-            let (count, sample) = match report.get(i) {
-                Some(rep) => (
-                    rep.count,
-                    render_sample(
-                        c,
-                        &rep.sample.iter().filter_map(|j| rows.get(*j)).collect::<Vec<_>>(),
-                    ),
+        )
+    };
+    out.spent = report.work;
+    if report.capped {
+        out.gaps.insert(gap::WORK);
+    }
+    let complete = out.gaps.is_empty();
+    for (i, row) in pats.into_iter().enumerate() {
+        let (count, sample) = match report.get(i) {
+            Some(rep) => (
+                rep.count,
+                render_sample(
+                    c,
+                    &rep.sample.iter().filter_map(|j| rows.get(*j)).collect::<Vec<_>>(),
                 ),
-                None => (0, Vec::new()),
-            };
-            let raw = super::source::raw_of(c, row.entry_id).ok();
-            out.pending.push(Pending {
-                row,
-                count,
-                complete: patterns.is_some() && !report.capped,
-                raw,
-                sample,
-            });
-        }
+            ),
+            None => (0, Vec::new()),
+        };
+        let raw = super::source::raw_of(c, row.entry_id).ok();
+        out.pending.push(Pending {
+            row,
+            count,
+            complete,
+            raw,
+            sample,
+        });
     }
     Ok(out)
 }
 
 /// What a sweep step came to.
 enum SweepOutcome {
-    /// The page didn't fit the step's work: read it again, smaller (what it proved before
-    /// running out, per exception pattern, stands only when no retry can run).
-    Retry { hits: Vec<(u64, Vec<String>)> },
+    /// The page didn't fit the step's work: read it again at half what it held (`fetched` keys or
+    /// rows), no smaller than [`SWEEP_KEYS_MIN`] (what it proved before running out, per
+    /// exception pattern, stands only when no retry can run).
+    Retry {
+        hits: Vec<(u64, Vec<String>)>,
+        fetched: usize,
+    },
     /// The page was scanned: per exception pattern, the blocks found and a sample of them;
     /// whether the work ran out in it (at the smallest page); and where the sweep goes on
     /// (`None`: done).
@@ -988,7 +1080,7 @@ fn sweep_step(
             && !r.rule.is_exception()
             && !r.rule.is_badfilter()
     };
-    let (blocks, next): (Vec<Row>, Option<SweepAt>) = match &sweep.at {
+    let (blocks, next, fetched): (Vec<Row>, Option<SweepAt>, usize) = match &sweep.at {
         SweepAt::Changed(after) => {
             let keys: Vec<String> = {
                 let mut st = c.prepare_cached(
@@ -1004,7 +1096,7 @@ fn sweep_step(
             let next = (keys.len() >= sweep.page)
                 .then(|| keys.last().cloned().map(SweepAt::Changed))
                 .flatten();
-            (blocks, next)
+            (blocks, next, keys.len())
         }
         SweepAt::All {
             feed,
@@ -1017,7 +1109,7 @@ fn sweep_step(
             let (mut fi, mut ti, mut cur) = (*feed, *rule_type, cursor.clone());
             loop {
                 let Some(&(f, _)) = feeds.get(fi) else {
-                    break (Vec::new(), None);
+                    break (Vec::new(), None, 0);
                 };
                 let Some(rt) = SWEEP_TYPES.get(ti) else {
                     (fi, ti, cur) = (fi + 1, 0, super::source::KEYS_START);
@@ -1040,7 +1132,8 @@ fn sweep_step(
                         cursor: super::source::KEYS_START,
                     },
                 };
-                break (rows.into_iter().filter(is_block).collect(), Some(next));
+                let fetched = rows.len();
+                break (rows.into_iter().filter(is_block).collect(), Some(next), fetched);
             }
         }
     };
@@ -1073,9 +1166,10 @@ fn sweep_step(
             .collect();
         *h = (rep.count, render_sample(c, &sample));
     }
-    if report.capped && sweep.page > SWEEP_KEYS_MIN {
+    // A smaller read of a page that held fewer than the page asked for must hold fewer still.
+    if report.capped && fetched > SWEEP_KEYS_MIN {
         return Ok(SweepOut {
-            outcome: SweepOutcome::Retry { hits },
+            outcome: SweepOutcome::Retry { hits, fetched },
             spent: report.work,
         });
     }

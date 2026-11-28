@@ -599,6 +599,40 @@ async fn cancellations(c: &Core, bundle: &str) -> BTreeMap<String, picket_core::
         .collect()
 }
 
+/// After a skipped scan, the next incremental scan meets every key: an exception pattern that
+/// stayed was never scanned against the keys that didn't change.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_scan_after_a_skipped_one_meets_every_key() {
+    let c = core().await;
+    manual_feed(&c, "sa", json!({})).await;
+    manual_feed(&c, "sb", json!({})).await;
+    put_entity(
+        &c,
+        "bundles",
+        "sk1",
+        json!({"id": "sk1", "name": "sk1", "feeds": [{"feed": "sa"}, {"feed": "sb"}]}),
+    )
+    .await;
+    save(&c, "sa", "||zz1.example^\n").await;
+    let many: String = (0..=picket_core::compiler::guard::MAX_CANCELLERS)
+        .map(|i| format!("@@||e{i:05}.test^|\n"))
+        .collect();
+    save(&c, "sb", &format!("{many}@@/^zz1\\.example$/\n")).await;
+    build(&c, "sk1").await.unwrap();
+    let (state, _) = alert(&c, "bundle_warning:sk1:cancel_scan").await.expect("skipped");
+    assert_eq!(state, "open");
+    assert!(cancellations(&c, "sk1").await.is_empty());
+    // The keyed exceptions leave; the pattern and the key it cancels don't change.
+    save(&c, "sb", "@@/^zz1\\.example$/\n").await;
+    build(&c, "sk1").await.unwrap();
+    let (state, _) = alert(&c, "bundle_warning:sk1:cancel_scan").await.unwrap();
+    assert_eq!(state, "resolved");
+    let found = cancellations(&c, "sk1").await;
+    let w = &found[r"@@/^zz1\.example$/"];
+    assert_eq!(w.details["cancelled"], 1, "{}", w.details);
+    assert_eq!(w.details["exhaustive"], true, "{}", w.details);
+}
+
 /// #87: an exception pattern meets every keyed block it may cancel, not a sample of the changed
 /// keys, whichever chunk of cancellers it falls in; an exception pattern added later meets the
 /// unchanged keys too.
@@ -686,6 +720,16 @@ async fn a_cut_scan_says_so_and_resolves_when_complete() {
     save(&c, "qb", "@@||elsewhere.test^\n").await;
     build(&c, "qk1").await.unwrap();
     assert!(cancellations(&c, "qk1").await.is_empty());
+    let (state, _) = alert(&c, "bundle_warning:qk1:cancel_scan_incomplete").await.unwrap();
+    assert_eq!(state, "resolved");
+    // A `$badfilter` rule meets only its own key: the keys below it aren't read, nor cut.
+    save(&c, "qa", &format!("{blocks}||example.org^\n")).await;
+    save(&c, "qb", "||example.org^$badfilter\n").await;
+    build(&c, "qk1").await.unwrap();
+    let found = cancellations(&c, "qk1").await;
+    let w = &found["||example.org^$badfilter"];
+    assert_eq!(w.details["exhaustive"], true, "{}", w.details);
+    assert_eq!(w.details["cancelled"], 1, "{}", w.details);
     let (state, _) = alert(&c, "bundle_warning:qk1:cancel_scan_incomplete").await.unwrap();
     assert_eq!(state, "resolved");
 }
