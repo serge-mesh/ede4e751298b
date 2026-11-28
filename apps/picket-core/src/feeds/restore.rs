@@ -264,7 +264,7 @@ pub fn restore_in(
         super::store::new_provider_source_gen(tx, p)?;
         tx.execute(
             "UPDATE feed_provider_state SET state_json = NULL, next_check_at = NULL, due_cause = 'first',
-                nudged_at = NULL, failing_since = NULL, check_started_at = NULL, skipped_json = NULL,
+                nudged_at = NULL, failing_since = NULL, check_started_at = NULL, skipped_json = NULL, capacity_skipped_json = NULL,
                 last_check_at = NULL, last_ok_at = NULL
              WHERE provider_id = ?1",
             [p],

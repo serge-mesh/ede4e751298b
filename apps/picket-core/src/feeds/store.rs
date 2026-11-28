@@ -1,5 +1,5 @@
 //! Feed state in `core.db` (storage.md §3): `feed_state`, `feed_provider_state`, `feed_runs`,
-//! `feed_provider_checks`, `feed_checks`, `feed_changes`, module pauses. Plain functions over a
+//! `feed_provider_checks`, `feed_checks`, `feed_changes`, rate-limit pauses. Plain functions over a
 //! connection or a transaction, so the callers decide what commits together.
 
 use jiff::Timestamp;

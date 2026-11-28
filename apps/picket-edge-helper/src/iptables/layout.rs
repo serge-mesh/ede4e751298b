@@ -452,6 +452,66 @@ pub fn unifi_external_chain(t: &Table, iface: &str) -> Result<String, String> {
     })
 }
 
+/// The set of a `! --match-set <set> dst` match on a `…local_zoned_subnets` set, when it is the
+/// rule's only such match and its set module has no other option (`--return-nomatch` and the
+/// like change what a member means).
+fn local_zoned_guard(s: &Spec) -> Option<&str> {
+    let mut found = None;
+    for m in s.modules.iter().filter(|m| m.name == "set") {
+        for o in m.opts.iter().filter(|o| o.name == "--match-set") {
+            if !o.args.first().is_some_and(|a| a.ends_with(LOCAL_ZONED_SUFFIX)) {
+                continue;
+            }
+            let exact = o.neg && o.args.len() == 2 && o.args[1] == "dst" && m.opts.len() == 1;
+            if !exact || found.is_some() {
+                return None;
+            }
+            found = Some(o.args[0].as_str());
+        }
+    }
+    found
+}
+
+/// UniFi: the `…local_zoned_subnets` set whose members `iface`'s traffic can never take to
+/// Picket's jump in `external`, its zone→External chain. Proven over the whole table, not only the dispatch path: every rule anywhere
+/// that jumps (or goes) to `external` must carry `! --match-set <set> dst` with the same set, so
+/// no packet to a member enters the chain however it got there; and no `PICKET-FWD` jump that
+/// can see `iface`'s packets may sit in another chain. Fails closed on anything else (an
+/// unparseable rule, a second set, an unguarded jump): the caller then reports the interface's
+/// local destinations as unavailable and every destination stays blockable.
+pub fn unifi_local_set(t: &Table, iface: &str, external: &str) -> Result<String, String> {
+    let mut set: Option<&str> = None;
+    for c in &t.chains {
+        for r in &c.rules {
+            let Some(s) = r.spec() else {
+                return Err(format!("unparseable rule in {}", c.name));
+            };
+            match s.target_name() {
+                Some(n) if n == external => {
+                    let Some(guard) = local_zoned_guard(s) else {
+                        return Err(format!(
+                            "{} jumps to {external} without a local-network guard",
+                            c.name
+                        ));
+                    };
+                    if set.is_some_and(|x| x != guard) {
+                        return Err(format!(
+                            "{external} is guarded by more than one local-network set"
+                        ));
+                    }
+                    set = Some(guard);
+                }
+                Some(FWD) if c.name != external && may_see(s.in_if.as_ref(), iface) => {
+                    return Err(format!("a {FWD} jump for {iface} in {}", c.name));
+                }
+                _ => {}
+            }
+        }
+    }
+    set.map(str::to_string)
+        .ok_or_else(|| format!("no local-network guard on the way into {external}"))
+}
+
 /// Catch-all of a UniFi zone→External chain, and whether it shadows rules
 /// (`unifi_conflict: shadowed_rules`).
 pub fn unifi_catch_all(c: &Chain) -> (CatchAll, bool) {
@@ -892,5 +952,46 @@ mod tests {
         assert!(dnsfilter_active(&chain(
             "-N DNSFILTER\n-A DNSFILTER -p udp -m udp --dport 53 -j DNAT --to-destination 127.0.0.1:1053\n"
         )));
+    }
+
+    const BLOCK_ALL: &str = include_str!("../../../../fixtures/unifi/filter-block-all-reject.rules");
+    const LAN_WAN: &str = "UBIOS_LAN_WAN_USER";
+
+    fn with(extra: &str) -> Table {
+        chain(&format!("{BLOCK_ALL}{extra}"))
+    }
+
+    #[test]
+    fn the_local_zoned_set_guarding_the_external_chain_is_found() {
+        let t = with("-A UBIOS_LAN_WAN_USER -i br0 -j PICKET-FWD\n");
+        assert_eq!(unifi_external_chain(&t, "br0").unwrap(), LAN_WAN);
+        assert_eq!(
+            unifi_local_set(&t, "br0", LAN_WAN).as_deref(),
+            Ok("UBIOS_local_zoned_subnets")
+        );
+        // Another interface's jump elsewhere can't see br0's packets.
+        let t = with("-A UBIOS_WAN_WAN_USER -i eth4 -j PICKET-FWD\n");
+        assert!(unifi_local_set(&t, "br0", LAN_WAN).is_ok());
+    }
+
+    #[test]
+    fn any_unguarded_way_into_the_external_chain_fails_closed() {
+        for extra in [
+            // A jump for local destinations, below the dispatch (never part of the place check).
+            "-A UBIOS_LAN_IN_USER -m set --match-set UBIOS_ADDRv4_Internal dst -j UBIOS_LAN_WAN_USER\n",
+            // From another chain altogether.
+            "-A UBIOS_FORWARD_USER_HOOK -s 192.0.2.7/32 -g UBIOS_LAN_WAN_USER\n",
+            // A guard whose set module changes what a member means.
+            "-A UBIOS_LAN_LAN_USER -m set ! --match-set UBIOS_local_zoned_subnets dst --return-nomatch -j UBIOS_LAN_WAN_USER\n",
+            // A second set.
+            "-A UBIOS_LAN_LAN_USER -m set ! --match-set UBIOS_other_local_zoned_subnets dst -j UBIOS_LAN_WAN_USER\n",
+            // Picket's jump for br0 outside the External chain.
+            "-A UBIOS_LAN_LAN_USER -i br0 -j PICKET-FWD\n",
+            "-A UBIOS_FORWARD_USER_HOOK -j PICKET-FWD\n",
+        ] {
+            let t = with(extra);
+            assert!(unifi_local_set(&t, "br0", LAN_WAN).is_err(), "{extra}");
+        }
+        assert!(unifi_local_set(&chain(BLOCK_ALL), "br0", "UBIOS_LAN_LAN_USER").is_err());
     }
 }

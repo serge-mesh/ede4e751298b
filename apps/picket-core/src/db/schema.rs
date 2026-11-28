@@ -10,7 +10,7 @@
 //! order. `metrics.db` keeps `ts` as INTEGER Unix milliseconds for cheap binning.
 
 /// `core.db` migration steps; version = index + 1.
-pub const CORE: &[&str] = &[CORE_V1, CORE_V2, CORE_V3, CORE_V4, CORE_V5];
+pub const CORE: &[&str] = &[CORE_V1, CORE_V2, CORE_V3, CORE_V4, CORE_V5, CORE_V6];
 
 /// `metrics.db` migration steps; version = index + 1.
 pub const METRICS: &[&str] = &[METRICS_V1, METRICS_V2];
@@ -796,7 +796,9 @@ ALTER TABLE feed_state ADD COLUMN added_pending INTEGER NOT NULL DEFAULT 0;
 -- feeds; last_check_at (min_interval), last_ok_at; failing_since: the current streak of checks
 -- that failed as a whole or in every file (feed_provider_down); check_started_at: the running
 -- check's start (a nudge after it makes the provider due again); skipped_json: selected files
--- left without a feed past feeds.max_per_provider (feeds.md §1); list_gen: the selection
+-- left without a feed past feeds.max_per_provider (feeds.md §1); capacity_skipped_json: how many
+-- selected files were left without a feed because the configuration holds as many feeds as it
+-- may, and a sample of them (`feeds::select::CapacitySkipped`); list_gen: the selection
 -- generation, a new id each time `module`, `config`, `files` or `exclude` changes, so a check
 -- that listed for an older selection stores no provider state or listing and adds no feeds.
 CREATE TABLE feed_provider_state (
@@ -814,6 +816,7 @@ CREATE TABLE feed_provider_state (
     failing_since TEXT,
     check_started_at TEXT,
     skipped_json TEXT,
+    capacity_skipped_json TEXT,
     list_gen INTEGER
 ) STRICT;
 
@@ -1410,7 +1413,31 @@ CREATE TABLE cold_share_state (
 ) STRICT, WITHOUT ROWID;
 "#;
 
+/// Grouped public-suffix warnings (#49).
 const CORE_V5: &str = r#"
+-- bundle_psl_hits (compiler::guard, #49): the rules of each (bundle, feed) that block a public
+-- suffix below the top level, the durable affected set behind that pair's one grouped
+-- `bundle_warning` (`bundle_warning:{bundle}:public_suffix:{feed}`). A row goes when its rule
+-- leaves the bundle (or the feed, or the bundle, goes). alerted: the alert has shown this rule's
+-- suffix; a suffix no row of which is alerted is newly affected and reopens a resolved alert.
+CREATE TABLE bundle_psl_hits (
+    bundle_id TEXT NOT NULL,
+    feed_id TEXT NOT NULL,
+    rule_hash TEXT NOT NULL,
+    suffix TEXT NOT NULL,
+    identity_json TEXT NOT NULL,
+    alerted INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (bundle_id, feed_id, rule_hash)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX bundle_psl_hits_suffix ON bundle_psl_hits(bundle_id, feed_id, suffix);
+
+-- Every bundle builds in full once, so its grouped warnings cover the rules already present and
+-- its per-rule public-suffix alerts are superseded.
+UPDATE bundle_builds SET definition_hash = '';
+"#;
+
+/// Pauses by scope and the weekly `k` choice record (#65).
+const CORE_V6: &str = r#"
 -- Pauses are keyed by the provider's pause scope (`DownloadModule::pause_scope`: `github`, or
 -- `http:<origin>`), no longer by module: after a `RateLimited` reply no check in that scope
 -- starts until `until` (providers.md §2), across restarts. Stored pauses carry over: a module
@@ -1480,6 +1507,7 @@ CREATE INDEX samples_ts ON samples(ts);
 
 /// Every table `core.db` must hold after migrating (checked by tests).
 pub const CORE_TABLES: &[&str] = &[
+    "bundle_psl_hits",
     "settings",
     "ui_account",
     "edges",

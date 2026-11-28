@@ -338,6 +338,9 @@ pub const TABLES: &[(&str, Fate)] = &[
     ("feed_checks", Fate::Restored),
     ("feed_changes", Fate::Restored),
     ("warnings", Fate::Deleted),
+    // A public-suffix warning's affected rules: derived from the feeds' entries, re-derived by the
+    // builds after the restore.
+    ("bundle_psl_hits", Fate::Deleted),
     ("policy_drops", Fate::Deleted),
     ("bundle_keys", Fate::Deleted),
     ("bundle_shards", Fate::Deleted),

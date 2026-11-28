@@ -1,4 +1,4 @@
-//! Wall-clock synchronisation (README §2 Clocks): decisions that need wall-clock time wait
+//! Wall-clock synchronisation (docs/clocks-and-lan-ca.md): decisions that need wall-clock time wait
 //! until it is synchronised; durations use the monotonic clock.
 //!
 //! Core's time decisions wait for [`Clock::synced`]: those that discard by age (retention
@@ -11,6 +11,12 @@
 //! (nothing is lost, only delayed). `PICKET_CLOCK_SYNCED=1` states
 //! that the host keeps the clock synchronised where neither can be read (the container image,
 //! pipelines.md §10: "the host must be NTP-synced").
+//!
+//! Two exceptions are created whatever the clock says, on every path that creates or recovers
+//! them (docs/clocks-and-lan-ca.md): the LAN CA's bootstrap root, whose dates are constants
+//! ([`crate::lanca::RootDates::Bootstrap`]), and the managed web certificate when no usable pair
+//! exists, re-issued once the clock is synchronised if a wrong clock dated it. Rotated roots and
+//! edge listener certificates are dated only on a synchronised clock.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};

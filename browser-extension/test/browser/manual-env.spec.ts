@@ -14,7 +14,7 @@ import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 
 import type { BlockMode } from './harness/edge';
-import { test } from './harness/fixtures';
+import { expect, test } from './harness/fixtures';
 
 const out = process.env.PICKET_MANUAL_ENV;
 
@@ -65,6 +65,7 @@ test('manual environment', async ({ certs, edge, targets }) => {
     }
   });
   await new Promise<void>((resolve) => control.listen(0, '127.0.0.1', resolve));
+  expect(control.address()).not.toBeNull();
   const subs = [targets.url('tracker.test', '/pixel.png'), targets.url('cdn.test', '/pixel.png')];
   if (ipt !== null) {
     subs.push(`http://${ipt.ip}:${String(ipt.gate)}/pixel.png`);

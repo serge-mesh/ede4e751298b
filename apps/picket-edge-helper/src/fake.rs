@@ -14,7 +14,7 @@
     reason = "a test double: a failure is the test's report, and it may cast freely"
 )]
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::{self, Cursor, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -35,6 +35,8 @@ pub struct FakeSet {
     pub maxelem: u32,
     /// Member → expiry (monotonic); `None` = permanent.
     pub members: BTreeMap<Elem, Option<Duration>>,
+    /// Members listed as `nomatch` (UniFi's own sets; Picket never adds such members).
+    pub nomatch: BTreeSet<Elem>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -348,6 +350,22 @@ impl FakeBackend {
         self.st().restore_errors.push_back(e);
     }
 
+    /// Creates or replaces a set the way UniFi does (one of its own, e.g.
+    /// `UBIOS_local_zoned_subnets`): permanent members, `true` marking a `nomatch` one.
+    pub fn put_set(&self, name: &str, set_type: SetType, family: SetFamily, members: &[(Elem, bool)]) {
+        self.st().sets.insert(
+            name.into(),
+            FakeSet {
+                set_type,
+                family,
+                timeout: None,
+                maxelem: 65_536,
+                members: members.iter().map(|(e, _)| (*e, None)).collect(),
+                nomatch: members.iter().filter(|(_, n)| *n).map(|(e, _)| *e).collect(),
+            },
+        );
+    }
+
     /// Destroys a set as a reboot or UniFi's clean-up would (ignoring references).
     pub fn destroy_behind_back(&self, name: &str) {
         self.st().sets.remove(name);
@@ -467,6 +485,7 @@ impl Backend for FakeBackend {
             elements: Some(s.members.len() as u32),
             references: Some(refs),
             timeout: s.timeout,
+            undecoded: 0,
         }))
     }
 
@@ -486,6 +505,7 @@ impl Backend for FakeBackend {
                 timeout: spec.timeout,
                 maxelem: spec.maxelem,
                 members: BTreeMap::new(),
+                nomatch: BTreeSet::new(),
             },
         );
         st.created.push(spec.name.clone());
@@ -507,21 +527,30 @@ impl Backend for FakeBackend {
     fn ipset_list(&self, name: &str, sink: &mut dyn FnMut(Member)) -> Result<SetHeader, IpsetError> {
         let h = self.ipset_header(name)?.ok_or(IpsetError::Kernel(2))?;
         let now = self.st().mono;
-        let members: Vec<(Elem, Option<Duration>)> = {
+        let members: Vec<(Elem, Option<Duration>, bool)> = {
             let st = self.st();
             st.sets
                 .get(name)
-                .map(|s| s.members.iter().map(|(e, x)| (*e, *x)).collect())
+                .map(|s| {
+                    s.members
+                        .iter()
+                        .map(|(e, x)| (*e, *x, s.nomatch.contains(e)))
+                        .collect()
+                })
                 .unwrap_or_default()
         };
         let timed = h.timeout.is_some();
-        for (e, exp) in members {
+        for (e, exp, nomatch) in members {
             let timeout = match (timed, exp) {
                 (false, _) => None,
                 (true, None) => Some(0),
                 (true, Some(x)) => Some(((x - now).as_secs() as u32).max(1)),
             };
-            sink(Member { elem: e, timeout });
+            sink(Member {
+                elem: e,
+                timeout,
+                nomatch,
+            });
         }
         Ok(h)
     }

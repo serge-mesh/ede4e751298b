@@ -79,6 +79,12 @@ Supply them at build time when building release binaries:
 When unset, binaries compile with no default release keys and fail closed unless keys are provided
 at runtime (`release_keys` in `edge.json` on edges).
 
+## Clocks and the LAN CA
+
+[Clocks, initialization and the LAN CA](docs/clocks-and-lan-ca.md) states the clock rule, the two
+things `init` creates before the clock is synchronised (the LAN CA's bootstrap root and the
+bootstrap web certificate), and the rule for rotating the LAN CA root.
+
 ## Existing installs
 
 There are no existing installs yet, so renaming a config or schema field (in `edge.json`, other

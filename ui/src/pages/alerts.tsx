@@ -528,6 +528,7 @@ export function AlertDetailPage() {
       {a.kind === "category_blocked" && <BlockedBy details={details} />}
       {a.kind === "temporary_allow" && <TemporaryAllow details={details} />}
       {a.kind === "bundle_cold_share" && <ColdShare details={details} />}
+      {a.kind === "bundle_warning" && details.warning === "public_suffix" && <PublicSuffixes details={details} />}
       {a.kind === "edge_tls_version_refused" && <TlsVersionRefused details={details} />}
       <Section title="Details" description="As core recorded them; shown as text.">
         <JsonBlock value={a.details} />
@@ -637,6 +638,133 @@ function TemporaryAllow({ details: d }: { details: Record<string, unknown> }) {
           </Link>{" "}
           lists it with the other allows, to revoke it.
         </p>
+      </div>
+    </Section>
+  );
+}
+
+const PUBLIC_SUFFIX_PAGE = 50;
+
+/**
+ * A grouped public-suffix warning (bundles.md §2, compiler/guard.rs `psl_summarise`; read
+ * defensively): how many public suffixes the bundle blocks from the feed and through how many
+ * rules, the preview and the suffixes added since it was last shown, then the full list with each
+ * suffix's rules, a page at a time (`GET /bundles/{id}/public-suffixes`).
+ */
+function PublicSuffixes({ details: d }: { details: Record<string, unknown> }) {
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const names = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+  const bundle = text(d.bundle);
+  const feed = text(d.feed);
+  const suffixes = num(d.suffixes);
+  const rules = num(d.rules);
+  const preview = names(d.preview);
+  const more = num(d.more) ?? 0;
+  const added = names(d.added);
+  const addedCount = num(d.added_count) ?? added.length;
+  const [open, setOpen] = React.useState(false);
+  const pages = useInfiniteQuery({
+    queryKey: ["bundlePublicSuffixes", bundle, feed],
+    queryFn: ({ pageParam, signal }) =>
+      unwrap(
+        client.GET("/api/ui/v1/bundles/{id}/public-suffixes", {
+          params: { path: { id: bundle ?? "" }, query: { feed: feed ?? undefined, cursor: pageParam, limit: PUBLIC_SUFFIX_PAGE } },
+          signal,
+        }),
+      ),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (p) => p.next_cursor ?? undefined,
+    enabled: open && bundle !== null,
+  });
+  const items = pages.data?.pages.flatMap((p) => p.items) ?? [];
+  const total = pages.data?.pages[pages.data.pages.length - 1]?.total;
+  return (
+    <Section
+      title="Public suffixes"
+      description="Blocking a public suffix blocks every site registered under it. Each is listed once, with every rule of the feed that blocks it."
+      actions={
+        bundle && (
+          <Link to="/bundles/$bundleId" params={{ bundleId: bundle }} className="text-sm text-primary hover:underline">
+            The bundle
+          </Link>
+        )
+      }
+    >
+      <div className="space-y-3 text-sm" data-testid="public-suffixes">
+        {suffixes !== null && (
+          <p>
+            {`${formatNumber(suffixes)} public suffix${suffixes === 1 ? "" : "es"}`}
+            {rules !== null && ` through ${formatNumber(rules)} rule${rules === 1 ? "" : "s"}`}
+            {feed && (
+              <>
+                {" from feed "}
+                <Link to="/feeds/$feedId" params={{ feedId: feed }} className="hover:underline">
+                  <SafeText>{feed}</SafeText>
+                </Link>
+              </>
+            )}
+            .
+          </p>
+        )}
+        {preview.length > 0 && (
+          <p>
+            <SafeText mono>{preview.join(", ")}</SafeText>
+            {more > 0 && <span className="text-muted-foreground">{` and ${formatNumber(more)} more`}</span>}
+          </p>
+        )}
+        {addedCount > 0 && (
+          <p data-testid="public-suffixes-added">
+            {`New since it was last shown (${formatNumber(addedCount)}): `}
+            <SafeText mono>{added.join(", ")}</SafeText>
+            {addedCount > added.length && <span className="text-muted-foreground">{` and ${formatNumber(addedCount - added.length)} more`}</span>}
+          </p>
+        )}
+        {!open ? (
+          <Button variant="outline" size="sm" onClick={() => setOpen(true)} disabled={bundle === null}>
+            Show every suffix and its rules
+          </Button>
+        ) : pages.isPending ? (
+          <LoadingState rows={3} />
+        ) : pages.error && !pages.isFetchNextPageError ? (
+          <ErrorState error={pages.error} onRetry={() => void pages.refetch()} />
+        ) : (
+          <>
+            {total !== undefined && <p className="text-muted-foreground">{`${formatNumber(items.length)} of ${formatNumber(total)} shown.`}</p>}
+            <Table aria-label="Public suffixes and their rules">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Suffix</TableHead>
+                  <TableHead>Rules (line)</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {items.map((i) => (
+                  <TableRow key={`${i.feed}\n${i.suffix}`}>
+                    <TableCell>
+                      <SafeText mono>{i.suffix}</SafeText>
+                    </TableCell>
+                    <TableCell>
+                      <ul>
+                        {i.rules.map((r, k) => (
+                          <li key={k}>
+                            <SafeText mono>{r.rule ?? "(no longer in the feed)"}</SafeText>
+                            {r.line !== null && r.line !== undefined && <span className="text-muted-foreground">{` (${r.line})`}</span>}
+                          </li>
+                        ))}
+                      </ul>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            <PagedListError query={pages} placement="bottom" what="more suffixes" />
+            {pages.hasNextPage && (
+              <Button variant="outline" size="sm" onClick={() => void pages.fetchNextPage()} disabled={pages.isFetching}>
+                Load more suffixes
+              </Button>
+            )}
+          </>
+        )}
       </div>
     </Section>
   );

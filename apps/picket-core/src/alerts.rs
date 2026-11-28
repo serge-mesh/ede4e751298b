@@ -25,8 +25,9 @@
 //!
 //! The edge kinds' raise and resolve rules live with what feeds them (`edges::status`,
 //! `logs::ingest`, `edges::releases`); the feed kinds (`feed_down`, `feed_provider_down`,
-//! `feed_stale`, `feed_added`, `feed_provider_trigger_down`, `feed_provider_listing_incomplete`,
-//! `feed_held`, `feed_rules_dropped`, `feed_redirect_added`) with `feeds::check`, `feeds::sqs`,
+//! `feed_stale`, `feed_added`, `feed_limit_reached`, `feed_provider_trigger_down`,
+//! `feed_provider_listing_incomplete`, `feed_held`, `feed_rules_dropped`, `feed_redirect_added`)
+//! with `feeds::check`, `feeds::sqs`,
 //! `feeds::select`, `feeds::stale` and `feeds::ingest`.
 //! Evidence capture, the evidence budget and `alert_evidence_full` live in
 //! `logs::evidence` (`logs::evidence::start` starts a security alert's capture); the
@@ -97,6 +98,7 @@ pub const KINDS: &[(&str, AlertType)] = &[
     ("feed_added", AlertType::Operational),
     ("feed_provider_trigger_down", AlertType::Operational),
     ("feed_provider_listing_incomplete", AlertType::Operational),
+    ("feed_limit_reached", AlertType::Operational),
     ("config_upgraded", AlertType::Operational),
     ("feed_held", AlertType::Operational),
     ("bundle_build_failed", AlertType::Operational),
@@ -787,6 +789,39 @@ impl Alerts {
         let n = tx.execute(
             &format!("UPDATE alerts SET details_json = ?2, {sets} WHERE dedupe_key = ?1"),
             args.as_slice(),
+        )?;
+        if n == 0 {
+            return Ok(false);
+        }
+        let a = tx.query_row(
+            &format!("SELECT {ALERT_COLUMNS} FROM alerts WHERE dedupe_key = ?1"),
+            [dedupe_key],
+            row_to_alert,
+        )?;
+        ch.changed.push(a);
+        Ok(true)
+    }
+
+    /// Replaces an alert's title and details without raising it again (its count, state,
+    /// `last_seen` and history stay), for a summary that follows a changing set (a grouped
+    /// public-suffix warning's count and preview, #49); announced like a raise. Details past
+    /// the size bound are left as they are. Returns false when no alert has `dedupe_key`.
+    pub fn update_summary_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        dedupe_key: &str,
+        title: &str,
+        details: &Value,
+        ch: &mut Changes,
+    ) -> rusqlite::Result<bool> {
+        let d = serde_json::to_string(details).unwrap_or_else(|_| "null".into());
+        if d.len() > MAX_DETAILS {
+            return Ok(false);
+        }
+        let title = crate::util::sanitize_for_message(title, MAX_TITLE);
+        let n = tx.execute(
+            "UPDATE alerts SET title = ?2, details_json = ?3 WHERE dedupe_key = ?1",
+            params![dedupe_key, title, d],
         )?;
         if n == 0 {
             return Ok(false);

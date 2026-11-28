@@ -213,6 +213,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/ui/v1/bundles/{id}/public-suffixes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The public suffixes the bundle blocks, by feed, with the rules that name each (the full list behind its grouped public_suffix alerts) */
+        get: operations["listBundlePublicSuffixes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/ui/v1/bundles/{id}/status": {
         parameters: {
             query?: never;
@@ -5185,6 +5202,33 @@ export interface components {
             /** @description Pass as `cursor` for the next page; null on the last page. */
             next_cursor: string | null;
         };
+        /** @description One rule behind a public-suffix block: its text and source line, as the feed lists it now. */
+        PublicSuffixRule: {
+            /** Format: int64 */
+            line?: number | null;
+            rule?: string | null;
+        };
+        /** @description One public suffix a bundle blocks below the top level, from one feed. */
+        PublicSuffixView: {
+            feed: string;
+            /** @description The feed's rules blocking it (more than one when several rules name it). */
+            rules: components["schemas"]["PublicSuffixRule"][];
+            suffix: string;
+        };
+        /**
+         * @description The public suffixes a bundle blocks below the top level, ordered by feed then suffix, with
+         *     the exact totals behind the grouped warnings.
+         */
+        PublicSuffixes: {
+            items: components["schemas"]["PublicSuffixView"][];
+            /** @description Pass as `cursor` for the next page; null on the last page. */
+            next_cursor?: string | null;
+            /**
+             * Format: uint64
+             * @description Distinct (feed, suffix) pairs in all, over every page.
+             */
+            total: number;
+        };
         Recheck: {
             /**
              * @default [
@@ -6534,7 +6578,7 @@ export interface operations {
                 /** @description open or resolved */
                 state?: "open" | "resolved";
                 /** @description An alert kind */
-                kind?: "dnssec_bogus" | "upstream_disagrees" | "category_answered" | "category_blocked" | "broad_allow" | "upstream_invalid_spike" | "edge_key_mismatch" | "feed_rules_dropped" | "feed_redirect_added" | "temporary_allow" | "ui_auth_failures" | "edge_offline" | "edge_update_failed" | "edge_activation_failed" | "edge_listener_rejected" | "edge_listener_failed" | "edge_upstream_down" | "edge_spool_evicting" | "edge_memory_low" | "edge_fw_set_full" | "edge_fw_repairs" | "edge_fw_drift" | "edge_helper_unreachable" | "edge_ssd_unavailable" | "edge_crash_loop" | "edge_panic" | "edge_redirect_missing" | "edge_unifi_conflict" | "edge_fw_layout_unknown" | "edge_fw_catch_all" | "edge_helper_disabled" | "edge_page_file_refetched" | "edge_tls_version_refused" | "edge_firmware_unsupported" | "edge_firmware_check_failed" | "release_invalid" | "feed_provider_down" | "feed_down" | "feed_stale" | "feed_added" | "feed_provider_trigger_down" | "feed_provider_listing_incomplete" | "config_upgraded" | "feed_held" | "bundle_build_failed" | "bundle_over_budget" | "bundle_cold_share" | "broad_block" | "allow_override" | "bundle_warning" | "warninglist_hit" | "lookup_provider_down" | "lookup_self_test_failed" | "dnssec_unavailable" | "attribution_mismatch" | "attribution_unavailable" | "wire_mismatch" | "core_disk_low" | "alert_evidence_full";
+                kind?: "dnssec_bogus" | "upstream_disagrees" | "category_answered" | "category_blocked" | "broad_allow" | "upstream_invalid_spike" | "edge_key_mismatch" | "feed_rules_dropped" | "feed_redirect_added" | "temporary_allow" | "ui_auth_failures" | "edge_offline" | "edge_update_failed" | "edge_activation_failed" | "edge_listener_rejected" | "edge_listener_failed" | "edge_upstream_down" | "edge_spool_evicting" | "edge_memory_low" | "edge_fw_set_full" | "edge_fw_repairs" | "edge_fw_drift" | "edge_helper_unreachable" | "edge_ssd_unavailable" | "edge_crash_loop" | "edge_panic" | "edge_redirect_missing" | "edge_unifi_conflict" | "edge_fw_layout_unknown" | "edge_fw_catch_all" | "edge_helper_disabled" | "edge_page_file_refetched" | "edge_tls_version_refused" | "edge_firmware_unsupported" | "edge_firmware_check_failed" | "release_invalid" | "feed_provider_down" | "feed_down" | "feed_stale" | "feed_added" | "feed_provider_trigger_down" | "feed_provider_listing_incomplete" | "feed_limit_reached" | "config_upgraded" | "feed_held" | "bundle_build_failed" | "bundle_over_budget" | "bundle_cold_share" | "broad_block" | "allow_override" | "bundle_warning" | "warninglist_hit" | "lookup_provider_down" | "lookup_self_test_failed" | "dnssec_unavailable" | "attribution_mismatch" | "attribution_unavailable" | "wire_mismatch" | "core_disk_low" | "alert_evidence_full";
                 /** @description An edge id */
                 edge?: string;
                 /** @description The `next_cursor` of the previous page. */
@@ -7039,6 +7083,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Explanation"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listBundlePublicSuffixes: {
+        parameters: {
+            query?: {
+                /** @description Only this feed's suffixes. */
+                feed?: string;
+                /** @description The `next_cursor` of the previous page. */
+                cursor?: string;
+                /** @description Items per page (default 100, 1 to 500; else 400). */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicSuffixes"];
                 };
             };
             /** @description Error */

@@ -669,7 +669,7 @@ pub fn upgrade_stored(tx: &Transaction<'_>) -> Result<Upgrade> {
     }
     for id in &up.converted {
         tx.execute(
-            "UPDATE feed_provider_state SET skipped_json = NULL WHERE provider_id = ?1",
+            "UPDATE feed_provider_state SET skipped_json = NULL, capacity_skipped_json = NULL WHERE provider_id = ?1",
             [id],
         )?;
     }
@@ -1424,11 +1424,16 @@ pub fn apply_with(
     // A provider save creates the feeds its `files` now select (feeds.md §1), journaled each.
     let mut feeds_added = Vec::new();
     let mut feeds_skipped = Vec::new();
+    let mut feeds_over_limit = Vec::new();
     if kind == EntityKind::FeedProvider && saves {
         let applied = crate::feeds::select::apply_in(tx, &mut after, &id, None).map_err(CoreError::Other)?;
         feeds_added = applied.created;
         feeds_skipped = applied.skipped;
+        feeds_over_limit = applied.capacity_skipped;
     }
+    // A change that left fewer feeds makes room for files skipped for lack of it (feeds.md §1).
+    crate::feeds::select::retry_capacity_in(tx, &mut after, before.count(EntityKind::Feed))
+        .map_err(CoreError::Other)?;
     let mut warnings = warnings_for(&after, kind, &id);
     for n in notes {
         warnings.push(Issue {
@@ -1451,6 +1456,20 @@ pub fn apply_with(
                 "the provider reached feeds.max_per_provider ({}); {} selected files got no feed",
                 after.settings.feeds.max_per_provider,
                 feeds_skipped.len()
+            ),
+        });
+    }
+    if !feeds_over_limit.is_empty() {
+        warnings.push(Issue {
+            severity: Severity::Warning,
+            entity: kind.as_str().into(),
+            id: id.clone(),
+            field: Some("files".into()),
+            code: "feed_limit".into(),
+            message: format!(
+                "the configuration holds as many feeds as it may ({}); {} selected files got no feed: delete feeds you don't use or select fewer files",
+                validate::max_entities(EntityKind::Feed),
+                feeds_over_limit.len()
             ),
         });
     }

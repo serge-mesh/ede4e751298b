@@ -9,7 +9,18 @@
 //!   listed files): id `<provider id>-<file>` ([`feed_id`]), name = the file, settings from the
 //!   first matching entry's `feed`, enabled and in no bundle, a new source generation and model
 //!   epoch. At most `feeds.max_per_provider` feeds per provider; the files skipped past the cap
-//!   are kept in `feed_provider_state.skipped_json`.
+//!   are kept in `feed_provider_state.skipped_json`. Never more feeds in all than the
+//!   configuration's limit ([`validate::max_entities`] of feeds, the limit a restore enforces):
+//!   the files skipped for lack of room are counted, with a bounded sample, in
+//!   `feed_provider_state.capacity_skipped_json`, checked in the same transaction that creates
+//!   the feeds, so concurrent provider saves and listings can't overshoot it together.
+//! - **Capacity:** [`announce`] raises one `feed_limit_reached` warning per provider whose
+//!   selected files got no feed for lack of room (the limit, the feeds in use, how many files
+//!   were skipped and a sample), updates its details as they change without raising it again,
+//!   and resolves it once none are skipped. Skipped files are reconsidered whenever the provider
+//!   is saved or lists its files, and, for every provider with skipped files, as soon as a
+//!   configuration change leaves fewer feeds ([`retry_capacity_in`], in that change's
+//!   transaction).
 //! - **Review:** each new feed is marked (`feed_state.added_pending`) in the same transaction,
 //!   and [`announce`] raises its `feed_added` (and the provider's "skipped past the cap" alert)
 //!   and clears the mark in one transaction, so a crash between the two loses no alert.
@@ -24,7 +35,8 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 
 use crate::alerts::{Changes as AlertChanges, RaiseSpec, Severity};
-use crate::config::model::{FeedDef, FeedProviderDef, Model};
+use crate::config::model::{EntityKind, FeedDef, FeedProviderDef, Model};
+use crate::config::validate;
 use crate::modules::download::{DownloadModule, Listing, glob};
 use crate::state::SharedState;
 
@@ -328,7 +340,31 @@ pub fn check_template(t: Option<&Value>) -> Result<(), String> {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Applied {
     pub created: Vec<String>,
+    /// Selected files left without a feed past `feeds.max_per_provider`.
     pub skipped: Vec<String>,
+    /// Selected files left without a feed because the configuration holds as many feeds as it
+    /// may ([`validate::max_entities`]).
+    pub capacity_skipped: Vec<String>,
+}
+
+/// How many skipped file names `capacity_skipped_json` and the `feed_limit_reached` alert keep.
+pub const CAPACITY_SAMPLE: usize = 20;
+
+/// The files of a provider skipped for lack of room, as stored (`capacity_skipped_json`): how
+/// many, and the first [`CAPACITY_SAMPLE`] of them.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CapacitySkipped {
+    pub count: usize,
+    pub sample: Vec<String>,
+}
+
+impl CapacitySkipped {
+    fn of(files: &[String]) -> Self {
+        Self {
+            count: files.len(),
+            sample: files.iter().take(CAPACITY_SAMPLE).cloned().collect(),
+        }
+    }
 }
 
 /// The provider's stored listing, without any empty or blank path (no file name is either).
@@ -344,7 +380,7 @@ pub fn stored_listing(tx: &rusqlite::Connection, provider: &str) -> rusqlite::Re
 }
 
 /// Creates a feed for each selected file of `provider` that has none (feeds.md §1), within the
-/// cap, in `tx`, and journals each. `model` is the configuration after the save in progress
+/// provider's cap and the configuration's feed limit, in `tx`, and journals each. `model` is the configuration after the save in progress
 /// (or as stored, for a check's listing); `listing` the listing to apply (`None`: the stored one,
 /// for a module that lists files). Returns what it created and skipped.
 pub fn apply_in(
@@ -378,6 +414,9 @@ pub fn apply_in(
         .collect();
     let mut count = have.len();
     let cap = model.settings.feeds.max_per_provider as usize;
+    // Every feed counts, manual ones and other providers' (the limit validation and a restore
+    // enforce), counted in this transaction.
+    let limit = validate::max_entities(EntityKind::Feed);
     let mut out = Applied::default();
     let now = crate::util::now_ts();
     for s in sel {
@@ -386,6 +425,10 @@ pub fn apply_in(
         }
         if count >= cap {
             out.skipped.push(s.file);
+            continue;
+        }
+        if model.count(EntityKind::Feed) >= limit {
+            out.capacity_skipped.push(s.file);
             continue;
         }
         // A deleted feed's id is free again: its purge runs before the new feed's first check.
@@ -425,17 +468,51 @@ pub fn apply_in(
         [provider],
     )?;
     tx.execute(
-        "UPDATE feed_provider_state SET skipped_json = ?2 WHERE provider_id = ?1",
+        "UPDATE feed_provider_state SET skipped_json = ?2, capacity_skipped_json = ?3 WHERE provider_id = ?1",
         params![
             provider,
             if out.skipped.is_empty() {
                 None
             } else {
                 Some(serde_json::to_string(&out.skipped)?)
+            },
+            if out.capacity_skipped.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_string(&CapacitySkipped::of(
+                    &out.capacity_skipped,
+                ))?)
             }
         ],
     )?;
     Ok(out)
+}
+
+/// The providers with selected files skipped for lack of room, in id order.
+fn capacity_skipped_providers(tx: &rusqlite::Connection) -> rusqlite::Result<Vec<String>> {
+    let mut st = tx.prepare(
+        "SELECT provider_id FROM feed_provider_state WHERE capacity_skipped_json IS NOT NULL ORDER BY provider_id",
+    )?;
+    st.query_map([], |r| r.get(0))?.collect()
+}
+
+/// Reconsiders the files skipped for lack of room (feeds.md §1) once a change in `tx` left fewer
+/// feeds than `before` had: each provider with skipped files, in id order, applies its selection
+/// again ([`apply_in`]) with `model`, the configuration after the change, so the room goes to
+/// them first come first served and the `feed_limit_reached` warning follows (resolved, or
+/// updated, by the next [`announce`]). Returns the feeds it created.
+pub fn retry_capacity_in(tx: &Transaction<'_>, model: &mut Model, before: usize) -> Result<Vec<String>> {
+    if model.count(EntityKind::Feed) >= before {
+        return Ok(Vec::new());
+    }
+    let mut created = Vec::new();
+    for p in capacity_skipped_providers(tx)? {
+        if model.count(EntityKind::Feed) >= validate::max_entities(EntityKind::Feed) {
+            break;
+        }
+        created.extend(apply_in(tx, model, &p, None)?.created);
+    }
+    Ok(created)
 }
 
 /// The provider feeds a provider no longer selects (an edit to `files` or `exclude`): asked
@@ -528,6 +605,7 @@ pub async fn announce(state: &SharedState) {
                 .feed_provider(p.clone());
                 alerts.raise_in(&tx, &spec, &mut ch)?;
             }
+            capacity_alerts(&alerts, &tx, &mut ch)?;
             tx.commit()?;
             alerts.committed(&ch);
             Ok::<_, anyhow::Error>(ch)
@@ -537,6 +615,92 @@ pub async fn announce(state: &SharedState) {
         Ok(ch) => state.alerts.announce(ch),
         Err(e) => tracing::warn!(error = %format!("{e:#}"), "cannot raise the new feeds' alerts"),
     }
+}
+
+/// The dedupe key of a provider's `feed_limit_reached` warning.
+pub fn capacity_key(provider: &str) -> String {
+    format!("feed_limit_reached:{provider}")
+}
+
+/// Raises, updates or resolves each provider's `feed_limit_reached` warning in `tx` (module
+/// docs): raised when its files are first skipped for lack of room (or again after it was
+/// resolved), its details replaced in place while they change (no new raise, so no repeated
+/// notification), resolved once none are skipped or the provider is gone.
+fn capacity_alerts(
+    alerts: &crate::alerts::Alerts,
+    tx: &Transaction<'_>,
+    ch: &mut AlertChanges,
+) -> Result<()> {
+    let limit = validate::max_entities(EntityKind::Feed);
+    let in_use: i64 = tx.query_row("SELECT count(*) FROM feeds", [], |r| r.get(0))?;
+    let rows: Vec<(String, String)> = {
+        let mut st = tx.prepare(
+            "SELECT provider_id, capacity_skipped_json FROM feed_provider_state
+             WHERE capacity_skipped_json IS NOT NULL ORDER BY provider_id",
+        )?;
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    let mut skipping = BTreeSet::new();
+    for (p, j) in rows {
+        let Some(s) = serde_json::from_str::<CapacitySkipped>(&j)
+            .ok()
+            .filter(|s| s.count > 0)
+        else {
+            continue;
+        };
+        let key = capacity_key(&p);
+        skipping.insert(key.clone());
+        let detail = json!({
+            "provider": p,
+            "limit": limit,
+            "feeds": in_use,
+            "skipped": s.count,
+            "files": s.sample,
+            "guidance": "Every feed counts toward the limit, manual ones and other providers' too. Delete feeds you don't use, or narrow this provider's files or exclude; its skipped files get feeds as soon as there is room.",
+        });
+        let open: Option<String> = tx
+            .query_row(
+                "SELECT details_json FROM alerts WHERE dedupe_key = ?1 AND state = 'open'",
+                [&key],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match open {
+            Some(d) if serde_json::from_str::<Value>(&d).ok().as_ref() == Some(&detail) => {}
+            Some(_) => {
+                alerts.update_details_in(tx, &key, &detail, &[], ch)?;
+            }
+            None => {
+                let spec = RaiseSpec::new(
+                    "feed_limit_reached",
+                    Severity::Warning,
+                    key,
+                    format!(
+                        "Feed provider {p}: {} selected files got no feed, the configuration's feed limit ({limit}) is reached",
+                        s.count
+                    ),
+                    detail,
+                )
+                .feed_provider(p.clone());
+                alerts.raise_in(tx, &spec, ch)?;
+            }
+        }
+    }
+    let open: Vec<String> = {
+        let mut st =
+            tx.prepare("SELECT dedupe_key FROM alerts WHERE kind = 'feed_limit_reached' AND state = 'open'")?;
+        st.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?
+    };
+    for key in open.into_iter().filter(|k| !skipping.contains(k)) {
+        alerts.resolve_in(
+            tx,
+            &key,
+            Some(&json!({"by": "no selected file skipped for lack of room"})),
+            ch,
+        )?;
+    }
+    Ok(())
 }
 
 /// Resolves `feed_added` for feeds that joined a bundle, were disabled or deleted (core.md §9).

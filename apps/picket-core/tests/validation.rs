@@ -858,10 +858,11 @@ fn profile_warnings() {
         out.warnings
     );
     // #50: self-service bypass needs allows that outlast a fresh block's cached answer
-    // (hold max(60 s, TTL + 5 s), then 5 s for the reload).
+    // (hold max(65 s, TTL + 5 s), then 5 s for the reload).
     for (id, ttl, max, mode) in [
         ("short5m", 600, "5m", "self"),
         ("short1m", 10, "1m", "self"),
+        ("short65s", 10, "65s", "self"),
         ("short14m", 890, "14m59s", "self"),
     ] {
         refused(
@@ -876,7 +877,7 @@ fn profile_warnings() {
     for (id, ttl, max, mode) in [
         ("fits15m", 890, "15m", "self"),
         ("fits10m", 590, "10m", "self"),
-        ("fits65s", 10, "65s", "self"),
+        ("fits70s", 10, "70s", "self"),
         // Above the cap the edge serves 890 s: 15 min still fits.
         ("capped15m", 3600, "15m", "self"),
         ("offshort", 600, "1m", "off"),

@@ -5,11 +5,13 @@
 export const DETECTION_PERMISSIONS = { permissions: ['webRequest'], origins: ['<all_urls>'] };
 
 /**
- * `storage.session` key set when Brave grants detection: its webRequest events start only with the
- * browser's next start (options.ts), which clears `storage.session`.
+ * `storage.session` key set when Brave grants detection: some Brave builds pass webRequest events
+ * only from the browser's next start, which clears `storage.session`; the first event clears it
+ * too, as the restart then isn't needed (background/index.ts).
  */
 export const DETECTION_RESTART_KEY = 'detectionAfterRestart';
 
-/** What the options page (and, until the restart, the popup) says once detection is granted. */
+/** What the options page (and the popup, while nothing is listed yet) says once detection is granted. */
 export const DETECTION_ON = 'On.';
-export const DETECTION_ON_AFTER_RESTART = 'On from the next start: restart Brave, which reports requests to the extension only after a restart.';
+export const DETECTION_ON_AFTER_RESTART =
+  'On. If Brave lists no blocked requests, restart it: some versions report requests to the extension only after a restart.';

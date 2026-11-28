@@ -685,6 +685,16 @@ fn operations() -> Vec<Op> {
         .paged()
         .ok("200", Some("BundleWarnings")),
         op(
+            Get,
+            "/bundles/{id}/public-suffixes",
+            "listBundlePublicSuffixes",
+            "The public suffixes the bundle blocks, by feed, with the rules that name each (the full list behind its grouped public_suffix alerts)",
+            "bundles",
+        )
+        .query("feed", "Only this feed's suffixes.")
+        .paged()
+        .ok("200", Some("PublicSuffixes")),
+        op(
             Post,
             "/bundles/{id}/build",
             "buildBundleNow",
@@ -1036,6 +1046,7 @@ fn schemas() -> Map<String, Value> {
     register::<crate::compiler::api::BundleDetail>(&mut g);
     register::<crate::compiler::api::VersionView>(&mut g);
     register::<crate::compiler::api::BundleWarnings>(&mut g);
+    register::<crate::compiler::api::PublicSuffixes>(&mut g);
     register::<crate::compiler::api::BuildQueued>(&mut g);
     register::<crate::compiler::api::Explanation>(&mut g);
     register::<crate::lists::ListView>(&mut g);
@@ -1513,6 +1524,7 @@ mod tests {
             "/api/ui/v1/bundles/{id}/status",
             "/api/ui/v1/bundles/{id}/versions",
             "/api/ui/v1/bundles/{id}/warnings",
+            "/api/ui/v1/bundles/{id}/public-suffixes",
             "/api/ui/v1/bundles/{id}/build",
             "/api/ui/v1/bundles/{id}/explain",
             "/api/ui/v1/browser-lists",
