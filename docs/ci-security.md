@@ -101,9 +101,10 @@ administrator should verify these under **Settings → Security → Advanced Sec
    scanning → Tool status** if GitHub reports it as stale.
 3. Require the `CI` check in the `main` branch protection or ruleset. It covers every job a PR
    runs (dependency review included) and passes only if change selection succeeded and each
-   selected job passed; unselected jobs skip. CodeQL runs after merging, so its alerts are
-   reported separately; use a code-scanning merge-protection rule to block merges based on alert
-   severity.
+   selected job passed; unselected jobs skip. CodeQL doesn't analyze PRs: it detects problems
+   after merging, on `main` and weekly, and its alerts are reported separately. Don't add a
+   code-scanning merge-protection rule for CodeQL: PRs have no CodeQL results for it to check.
+   Restore PR analysis first if merges must wait on CodeQL alerts.
 
 These features are available for this public GitHub repository. A move to a private repository
 may require GitHub Code Security for code scanning and dependency review.
