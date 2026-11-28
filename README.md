@@ -59,17 +59,16 @@ handling for previously stored data. Revisit this once there are real deployment
 `.github/workflows/ci.yml` runs on GitHub Actions. Its first job, **Changes and lint**, picks the
 jobs a change needs from the paths it touches (`dorny/paths-filter`: a PR's diff against its
 base; on `main`, the diff since the commit before the push; changing `ci.yml` picks every job)
-and runs the cheap checks before anything long starts: typos (`_typos.toml`), rustfmt (including
-the lookup modules and the fuzz workspaces, which `cargo fmt` doesn't reach) and, when workflows
+and runs the cheap checks before anything long starts: typos (`_typos.toml`) and, when workflows
 change, zizmor (`.github/zizmor.yml`). Weekly and manual runs pick every job.
 
 | Job | Runs when | What |
 |---|---|---|
-| Rust (x86_64) | Rust sources, manifests, fixtures, toolchain | updater dependency allowlist, clippy, `cargo doc` (broken links fail; links to private items are allowed), cargo-nextest over the workspace except the edge side, doctests |
+| Rust (x86_64) | Rust sources, manifests, fixtures, toolchain | rustfmt (also over the lookup modules, which `cargo fmt` doesn't reach), updater dependency allowlist, clippy, `cargo doc` (broken links fail; links to private items are allowed), cargo-nextest over the workspace except the edge side, doctests |
 | Edge tests (arm64) | the edge apps or the crates they link | the edge side's tests (`EDGE_PACKAGES` in `ci.yml`), natively on `ubuntu-24.04-arm`, where the edge ships |
 | Edge aarch64 cross-build | same | `scripts/check-edge-aarch64.sh` (zig, glibc floor 2.41); on PRs, a warning (never a failure) when an edge binary grows more than 2 % against `main` |
 | cargo deny | manifests, `Cargo.lock`, `deny.toml` | advisories, licences, bans, sources |
-| Fuzz workspaces | `fuzz/` | `cargo check --locked --all-targets` in each `fuzz/*` workspace |
+| Fuzz workspaces | `fuzz/` | rustfmt and `cargo check --locked --all-targets` in each `fuzz/*` workspace |
 | UI | `ui/` | lint, typecheck, build, tests |
 | Extension | `extension/` | build, lint, tests, reproducible packages, Chromium and Firefox tests in the Playwright image |
 | Review dependency changes | PRs changing manifests, lockfiles or workflows | rejects new high/critical vulnerabilities |
@@ -77,7 +76,10 @@ change, zizmor (`.github/zizmor.yml`). Weekly and manual runs pick every job.
 | CI | always | the one check to require: fails if change selection failed or a picked job didn't pass |
 
 A PR's new push cancels its older run; every push to `main` runs to completion (one concurrency
-group per commit), so routing by diff never skips a merge. The cross-build stays alongside the
+group per commit), so routing by diff never skips a merge. Jobs run on GitHub's free runners for
+public repositories, sized to the work: the router, the `CI` gate, dependency review and the
+SonarQube sync on `ubuntu-slim` (1 CPU, 15-minute job cap, no Rust toolchain), builds and tests
+on `ubuntu-latest` (4 CPUs), and the edge tests on `ubuntu-24.04-arm`. The cross-build stays alongside the
 arm64 tests so the edge checks still work where only x86_64 runners exist.
 
 To run the Rust checks locally:

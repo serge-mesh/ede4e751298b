@@ -36,7 +36,7 @@ jobs:
   test:
     name: Test SonarQube Cloud SARIF exporter
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim  # Python standard-library unit tests
     timeout-minutes: 10
     steps:
       - name: Checkout repository
@@ -59,7 +59,7 @@ jobs:
           github.event.check_run.conclusion != 'stale'
         )
       )
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim  # Python standard library, jq and a SARIF upload
     timeout-minutes: 10
     permissions:
       contents: read

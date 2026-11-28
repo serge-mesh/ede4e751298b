@@ -27,7 +27,8 @@ env:
 jobs:
   changes:
     name: Changes and lint
-    runs-on: ubuntu-latest
+    # Seconds of git, typos and zizmor: the 1-CPU runner (15-minute cap, no rustup).
+    runs-on: ubuntu-slim
     timeout-minutes: 10
     outputs:
       rust: ${{ steps.select.outputs.rust }}
@@ -109,6 +110,7 @@ jobs:
             fuzz:
               - 'fuzz/**'
               - rust-toolchain.toml
+              - rustfmt.toml
               - .github/workflows/ci.yml
               - '!**/*.{md,rst,adoc}'
             ui:
@@ -177,6 +179,7 @@ jobs:
           done
 
       # Cheap checks run here, before any long job starts: a mistake fails the run in a minute.
+      # rustfmt runs first in the Rust and fuzz jobs, which have the toolchain.
       - name: Install typos (pinned prebuilt)
         run: scripts/install-ci-tool.sh typos
 
@@ -192,21 +195,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: zizmor --format=github .
-
-      - name: Install the pinned Rust toolchain
-        if: steps.select.outputs.rust == 'true' || steps.select.outputs.fuzz == 'true'
-        run: |
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.cargo/bin:$PATH"
-          command -v rustup >/dev/null || { echo "GitHub-hosted Ubuntu must provide rustup" >&2; exit 1; }
-          rustup show active-toolchain || rustup toolchain install --no-self-update
-
-      - name: rustfmt
-        if: steps.select.outputs.rust == 'true' || steps.select.outputs.fuzz == 'true'
-        run: |
-          cargo fmt --all --check
-          # cargo fmt reaches neither the lookup modules nor the fuzz workspaces.
-          find crates/picket-lookup/src/modules fuzz -name '*.rs' -exec rustfmt --edition 2024 --check {} +
 
   rust:
     name: Rust (x86_64)
@@ -225,6 +213,12 @@ jobs:
           export PATH="$HOME/.cargo/bin:$PATH"
           command -v rustup >/dev/null || { echo "GitHub-hosted Ubuntu must provide rustup" >&2; exit 1; }
           rustup show active-toolchain || rustup toolchain install --no-self-update
+
+      - name: rustfmt
+        run: |
+          cargo fmt --all --check
+          # cargo fmt doesn't reach the lookup modules.
+          find crates/picket-lookup/src/modules -name '*.rs' -exec rustfmt --edition 2024 --check {} +
 
       # Dependencies compiled for clippy, docs and tests, restored from main's last run.
       - name: Cargo cache (dependencies and their build output)
@@ -490,6 +484,9 @@ jobs:
           command -v rustup >/dev/null || { echo "GitHub-hosted Ubuntu must provide rustup" >&2; exit 1; }
           rustup show active-toolchain || rustup toolchain install --no-self-update
 
+      - name: rustfmt (cargo fmt doesn't reach the fuzz workspaces)
+        run: find fuzz -name '*.rs' -exec rustfmt --edition 2024 --check {} +
+
       - name: Cargo downloads cache (no build output)
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -606,7 +603,7 @@ jobs:
     name: Review dependency changes
     needs: changes
     if: github.event_name == 'pull_request' && needs.changes.outputs.deps == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim  # one API-backed action
     timeout-minutes: 10
     steps:
       - name: Check for newly introduced vulnerabilities
@@ -687,7 +684,7 @@ jobs:
       - extension
       - dependency-review
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim  # jq over the jobs' results
     timeout-minutes: 5
     steps:
       - name: Require the selected jobs
