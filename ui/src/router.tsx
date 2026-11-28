@@ -54,7 +54,7 @@ const routes = [
   r("/lookup-providers/$providerId", () => import("@/pages/lookup-providers"), "LookupProviderDetailPage", (s) => ({ ...parseWindowSearch(s), ...parseTabSearch(s) })),
   r("/dnssec", () => import("@/pages/dnssec"), "DnssecPage", parseWindowSearch),
   r("/system", () => import("@/pages/system"), "SystemPage", parseWindowSearch),
-  r("/extension", () => import("@/pages/extension"), "ExtensionPage"),
+  r("/browser-extension", () => import("@/pages/browser-extension"), "BrowserExtensionPage"),
   r("/settings", () => import("@/pages/settings"), "SettingsPage", parseTabSearch),
 ];
 

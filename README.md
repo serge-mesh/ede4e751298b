@@ -19,7 +19,7 @@ app; and **picket-browser-extension**.
 | `apps/picket-edge-update` | The root installer and updater |
 | `apps/picket-core` | The management app (embeds `ui/dist`) |
 | `ui/` | React + Vite web UI |
-| `extension/` | Browser extension (Brave, Firefox) |
+| `browser-extension/` | Browser extension (Brave, Firefox) |
 | `dist/` | systemd units, firmware minimums, updater dependency allowlist, Docker file |
 | `fixtures/` | Recorded feeds, upstream answers, golden bundles |
 | `build-support/` | Code the build scripts share (module registry scan, release public keys) |

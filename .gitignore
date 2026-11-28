@@ -5,7 +5,7 @@
 /dist/image.pub
 **/node_modules/
 /ui/dist/
-/extension/dist/
+/browser-extension/dist/
 *.swp
 .DS_Store
 /fuzz/*/target/

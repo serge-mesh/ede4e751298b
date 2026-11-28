@@ -9,11 +9,11 @@ import { client, unwrap } from "@/api/http";
 import { formatBytes } from "@/lib/format";
 
 /**
- * Only core's own extension downloads are linked: `/extension/<file>` for the build's own file
- * (web/extension.rs serves only listed builds there, open without basic auth).
+ * Only core's own extension downloads are linked: `/browser-extension/<file>` for the build's own file
+ * (web/browser_extension.rs serves only listed builds there, open without basic auth).
  */
 export function safePath(p: string, file: string): string | null {
-  return p === `/extension/${file}` && /^[A-Za-z0-9._+-]+$/.test(file) && !file.includes("..") ? p : null;
+  return p === `/browser-extension/${file}` && /^[A-Za-z0-9._+-]+$/.test(file) && !file.includes("..") ? p : null;
 }
 
 const STEPS: Record<string, string[]> = {
@@ -39,15 +39,15 @@ const FIREFOX_RISK =
   "Turning xpinstall.signatures.required off disables signature checks for every add-on in that Firefox profile, and the SHA-256 shown here comes from core, so it doesn't protect against a compromised core. The extension is optional.";
 
 /** Browser extension: the Brave and Firefox builds, with SHA-256 sums and install steps. */
-export function ExtensionPage() {
-  const builds = useQuery({ queryKey: ["extension"], queryFn: ({ signal }) => unwrap(client.GET("/api/ui/v1/extension", { signal })), staleTime: Infinity });
+export function BrowserExtensionPage() {
+  const builds = useQuery({ queryKey: ["browser-extension"], queryFn: ({ signal }) => unwrap(client.GET("/api/ui/v1/browser-extension", { signal })), staleTime: Infinity });
   return (
     <div className="space-y-4">
       <PageHeader
         title="Browser extension"
         description="A block page and temporary allows in Brave and Firefox, served by the edge's bypass API. Check a download's SHA-256 before installing it."
       />
-      <QueryView query={builds} what="Extension builds" rows={3} empty={<p className="text-sm text-muted-foreground">No builds in this core package.</p>} isEmpty={(d) => d.items.length === 0}>
+      <QueryView query={builds} what="Browser extension builds" rows={3} empty={<p className="text-sm text-muted-foreground">No builds in this core package.</p>} isEmpty={(d) => d.items.length === 0}>
         {(d) => (
           <div className="grid gap-4 lg:grid-cols-2">
             {d.items.map((b) => {

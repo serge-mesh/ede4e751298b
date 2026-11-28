@@ -50,7 +50,7 @@ updates:
   - package-ecosystem: npm
     directories:
       - /ui
-      - /extension
+      - /browser-extension
     schedule:
       interval: weekly
       day: monday

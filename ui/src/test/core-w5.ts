@@ -85,7 +85,7 @@ export function w5Get(path: string, query: URLSearchParams): unknown {
     case "/devices":
     case "/trial-results":
     case "/dnssec/queue":
-    case "/extension":
+    case "/browser-extension":
     case "/lookup-modules":
       return W5[path];
     case "/dnssec/results":

@@ -30,7 +30,7 @@ const PAGES: [string, string | RegExp][] = [
   ["/lookup-providers", "Lookup providers"],
   ["/dnssec", "DNSSEC"],
   ["/system", "System"],
-  ["/extension", "Browser extension"],
+  ["/browser-extension", "Browser extension"],
   ["/settings", "Settings"],
   ["/feeds/manual-block?tab=overview", /manual-block|Manual block/i],
   ["/feeds/manual-block?tab=entries", /manual-block|Manual block/i],

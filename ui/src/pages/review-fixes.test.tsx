@@ -659,7 +659,7 @@ describe("UI8: create dialogs derive the id from the name and show it", () => {
 describe("UI10: Firefox install steps (browser-extension.md §1, security.md §5)", () => {
   it("describes the unsigned build, the editions and the pref, and the accepted risk", async () => {
     mockApi();
-    renderApp("/extension");
+    renderApp("/browser-extension");
     expect(await screen.findByText(/Developer Edition, Nightly or ESR/, undefined, T)).toBeInTheDocument();
     expect(screen.getByText(/xpinstall\.signatures\.required to false/)).toBeInTheDocument();
     expect(screen.getByText(/an unsigned \.xpi/)).toBeInTheDocument();
@@ -756,7 +756,7 @@ describe("UI15: 'not available yet' only for what core hasn't built (api/availab
 
   it("lists nothing core 826b4d6 serves or records", () => {
     // Wave 5 built every endpoint and series the screens use: a 404 or unknown series is an error.
-    for (const p of ["/top", "/logs", "/logs/x", "/devices", "/query-summary", "/trial-results", "/temp-allows", "/lookup-modules", "/lookup-modules/dns/presets/quad9", "/lookup-providers/q9/flush", "/lookup-providers/q9/test", "/lookup-providers/q9/status", "/alerts/1/evidence", "/dnssec/queue", "/dnssec/results", "/extension", "/config/export"]) {
+    for (const p of ["/top", "/logs", "/logs/x", "/devices", "/query-summary", "/trial-results", "/temp-allows", "/lookup-modules", "/lookup-modules/dns/presets/quad9", "/lookup-providers/q9/flush", "/lookup-providers/q9/test", "/lookup-providers/q9/status", "/alerts/1/evidence", "/dnssec/queue", "/dnssec/results", "/browser-extension", "/config/export"]) {
       expect(isNotAvailable(notFound(p)), p).toBe(false);
     }
     for (const s of ["feed_hits", "trial_would_block", "rechecks", "recheck_blocks", "core_rss", "core_cpu_ms", "core_disk_used", "core_disk_free", "db_bytes", "queue_depth", "job_ms.p50", "evidence_bytes", "dnssec_results", "dnssec_fallback", "dnssec_answers", "dnssec_coverage", "crosscheck", "retro_hits", "wire_mismatch"]) {

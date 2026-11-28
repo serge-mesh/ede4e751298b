@@ -87,7 +87,9 @@ async fn auth_where_needed_and_nowhere_else() {
         StatusCode::NOT_FOUND
     );
     assert_eq!(
-        get(&c, "/extension/picket-brave.zip", None).await.status(),
+        get(&c, "/browser-extension/picket-brave.zip", None)
+            .await
+            .status(),
         StatusCode::NOT_FOUND
     );
     // /metrics is off (404) while metrics.allow_cidrs is empty.
@@ -116,7 +118,7 @@ async fn open_paths_serve_only_their_own_resources() {
         "/lanca/anything",
         "/lanca/settings",
         "/lanca/",
-        "/extension/x/y",
+        "/browser-extension/x/y",
     ] {
         let r = get(&c, path, None).await;
         assert_eq!(r.status(), StatusCode::NOT_FOUND, "{path}");
