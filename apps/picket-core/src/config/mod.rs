@@ -173,6 +173,27 @@ impl ConfigStore {
             .await
     }
 
+    /// [`Self::change`] for a transaction that may find nothing to change: the change is
+    /// published only when `changed` says so of `f`'s result.
+    pub async fn change_when<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&rusqlite::Transaction<'_>) -> CoreResult<T> + Send + 'static,
+        changed: impl FnOnce(&T) -> bool + Send + 'static,
+    ) -> CoreResult<T> {
+        let p = self.publisher();
+        self.db
+            .write(move |c| {
+                let tx = c.transaction()?;
+                let out = f(&tx)?;
+                tx.commit()?;
+                if changed(&out) {
+                    p.publish(None);
+                }
+                Ok::<_, CoreError>(out)
+            })
+            .await
+    }
+
     /// Replaces the whole configuration in one transaction (the config restore, core.md §2):
     /// `f` gets the secrets key to seal the values the document carries; `after` runs on the
     /// writer right after the commit, before the new settings and generation are published.

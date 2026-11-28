@@ -1312,6 +1312,137 @@ async fn presets_install_and_restore() {
     );
 }
 
+/// #73: a provider with a preset's id and module that reads another source is the admin's, not
+/// the preset: not shown installed, and installing the preset is refused (409) with nothing
+/// changed (the provider, its exclusions, feeds, bundles). The same source in another spelling is
+/// the preset, installed, and a reinstall brings back its files and keeps the admin's settings.
+#[tokio::test(flavor = "multi_thread")]
+async fn preset_install_refuses_a_provider_of_another_source() {
+    let c = core_with(None, None).await;
+    let installed = |presets: Value, id: &str| {
+        presets
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == id)
+            .unwrap()["installed"]
+            .clone()
+    };
+    let snapshot = || async {
+        (
+            get_json(&c, "/feed-providers/hagezi").await,
+            get_json(&c, "/feeds").await,
+            get_json(&c, "/bundles/block-common").await,
+        )
+    };
+    let try_install = |id: &'static str| {
+        let c = &c;
+        async move {
+            let r = ui(c, Method::POST, &format!("/feed-presets/{id}"))
+                .json(&json!({}))
+                .send()
+                .await
+                .unwrap();
+            let status = r.status();
+            (status, r.json::<Value>().await.unwrap())
+        }
+    };
+    // The admin's own GitHub provider named `hagezi`, of an unrelated repository, excluding a
+    // file the preset selects.
+    let r = ui(&c, Method::POST, "/feed-providers")
+        .json(&json!({"id": "hagezi", "name": "Mine", "module": "github", "enabled": false,
+                      "config": {"owner": "someone", "repo": "lists"},
+                      "files": [{"match": "mine.txt", "feed": {"format": "plain", "category": "mixed"}}],
+                      "exclude": ["adblock/tif.txt"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::CREATED, "{}", r.text().await.unwrap());
+    for (config, why) in [
+        (json!({"owner": "someone", "repo": "lists"}), "another owner and repository"),
+        (json!({"owner": "hagezi", "repo": "lists"}), "another repository"),
+        (json!({"owner": "someone", "repo": "dns-blocklists"}), "another owner"),
+        (
+            json!({"owner": "hagezi", "repo": "dns-blocklists", "branch": "release"}),
+            "an explicit branch, not the default the preset follows",
+        ),
+    ] {
+        let mut p = get_json(&c, "/feed-providers/hagezi").await;
+        p["config"] = config;
+        let r = ui(&c, Method::PUT, "/feed-providers/hagezi")
+            .json(&p)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK, "{why}: {}", r.text().await.unwrap());
+        assert_eq!(installed(get_json(&c, "/feed-presets").await, "hagezi"), false, "{why}");
+        let before = snapshot().await;
+        let (status, body) = try_install("hagezi").await;
+        assert_eq!(status, StatusCode::CONFLICT, "{why}: {body}");
+        let msg = body["error"]["message"].as_str().unwrap();
+        assert!(
+            msg.contains("another source") && msg.contains("delete it first") && msg.contains("keep it"),
+            "{why}: {msg}"
+        );
+        assert_eq!(snapshot().await, before, "{why}: a refused install changes nothing");
+    }
+    // The preset's source in another spelling (GitHub names are case-insensitive) is the
+    // preset, installed; a reinstall brings back its files and keeps the admin's name, files
+    // entry and other exclusions.
+    let mut p = get_json(&c, "/feed-providers/hagezi").await;
+    p["config"] = json!({"owner": "HaGeZi", "repo": "DNS-Blocklists"});
+    p["exclude"] = json!(["adblock/tif.txt", "other.txt"]);
+    let r = ui(&c, Method::PUT, "/feed-providers/hagezi")
+        .json(&p)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK, "{}", r.text().await.unwrap());
+    assert_eq!(installed(get_json(&c, "/feed-presets").await, "hagezi"), true);
+    let (status, body) = try_install("hagezi").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["created"], false);
+    let p = get_json(&c, "/feed-providers/hagezi").await;
+    assert_eq!(p["name"], "Mine");
+    assert_eq!(p["exclude"], json!(["other.txt"]));
+    let files: Vec<&str> = p["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["match"].as_str().unwrap())
+        .collect();
+    assert_eq!(files, ["mine.txt", "adblock/tif.txt", "adblock/ultimate.txt"]);
+
+    // http: another URL under the preset's provider id is refused; the same canonical URL (host
+    // case, the scheme's default port spelled out) is the preset.
+    let r = ui(&c, Method::POST, "/feed-providers")
+        .json(&json!({"id": "firehol", "name": "Mine", "module": "http", "enabled": false,
+                      "config": {"url": "https://lists.example/firehol_level2.netset"}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::CREATED, "{}", r.text().await.unwrap());
+    let feeds_before = get_json(&c, "/feeds").await;
+    let bundle_before = get_json(&c, "/bundles/block-common").await;
+    assert_eq!(installed(get_json(&c, "/feed-presets").await, "firehol-level1"), false);
+    let (status, body) = try_install("firehol-level1").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(get_json(&c, "/feeds").await, feeds_before);
+    assert_eq!(get_json(&c, "/bundles/block-common").await, bundle_before);
+    let mut p = get_json(&c, "/feed-providers/firehol").await;
+    p["config"] = json!({"url": "https://IPLISTS.firehol.org:443/files/firehol_level1.netset"});
+    let r = ui(&c, Method::PUT, "/feed-providers/firehol")
+        .json(&p)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK, "{}", r.text().await.unwrap());
+    assert_eq!(installed(get_json(&c, "/feed-presets").await, "firehol-level1"), true);
+    let (status, body) = try_install("firehol-level1").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(get_json(&c, "/feed-providers/firehol").await["name"], "Mine");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_failed_or_interrupted_run_leaves_no_partial_applied_set() {
     let c = core_with(None, None).await;

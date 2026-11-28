@@ -10,6 +10,16 @@
 //! the bundle; a preset feed the admin deleted is restored by installing it again (its file
 //! leaves the provider's `exclude`), as is a preset manual feed whose file is gone. An existing
 //! provider or feed is otherwise never changed: the admin's edits stay.
+//!
+//! A provider with a preset's id is that preset only when it reads the preset's source
+//! ([`same_source`]): the same module and the same normalized source (the module's
+//! [`epoch_key`](crate::modules::download::DownloadModule::epoch_key): a GitHub repository's
+//! owner and name, case-insensitively, and its branch, the default branch when none is set; an
+//! `http` provider's canonical URL). Any other provider with the id (the admin's own, of another
+//! module or another source) isn't shown installed, and installing the preset is refused with
+//! `409 Conflict` before anything changes: ids never change, so the admin keeps theirs or
+//! deletes it first. The decision and the provider's update are one config transaction, so a
+//! concurrent edit of the provider's source can't slip between them.
 
 use std::sync::OnceLock;
 
@@ -114,16 +124,54 @@ fn id_of(v: &Value) -> CoreResult<String> {
         .ok_or_else(|| CoreError::Other(anyhow::anyhow!("a preset has no id")))
 }
 
-/// True when the preset's provider (of its module, or a [`Preset::legacy`] one: another
-/// provider with its id is no install of it) or manual feed exists.
+/// True when `cur` (a provider with a preset provider's id) reads the preset's source: the same
+/// module and the same normalized source identity, the module's `epoch_key` (GitHub: owner and
+/// repository, case-insensitively, and the branch, `HEAD` for the default branch when none is
+/// set, so an explicit branch matches only the same explicit branch; `http`: the canonical URL).
+/// Names, credentials, headers and the selection are the admin's and never count.
+pub fn same_source(preset: &FeedProviderDef, cur: &FeedProviderDef) -> bool {
+    cur.module == preset.module
+        && crate::modules::download::builtin()
+            .get(&preset.module)
+            .is_some_and(|m| {
+                let key = m.epoch_key(&preset.config);
+                !key.is_empty() && m.epoch_key(&cur.config) == key
+            })
+}
+
+/// A provider's source, for a conflict message: the module's location, and for a provider that
+/// follows a branch, which.
+fn source_label(p: &FeedProviderDef) -> String {
+    let loc = crate::modules::download::builtin()
+        .get(&p.module)
+        .map(|m| m.location(&p.config))
+        .filter(|l| !l.is_empty())
+        .unwrap_or_else(|| "an unknown source".into());
+    match (p.module.as_str(), p.config.get("branch").and_then(Value::as_str)) {
+        (_, Some(b)) => format!("{loc} (branch {b})"),
+        ("github", None) => format!("{loc} (default branch)"),
+        _ => loc,
+    }
+}
+
+/// The preset's provider definition.
+fn provider_def(p: &Preset, pv: &Value) -> CoreResult<FeedProviderDef> {
+    serde_json::from_value(pv.clone()).map_err(|e| CoreError::Other(anyhow::anyhow!("preset {}: {e}", p.id)))
+}
+
+/// True when the preset's provider (of its module and source, [`same_source`], or a
+/// [`Preset::legacy`] one: another provider with its id is no install of it) or manual feed
+/// exists.
 pub fn installed(p: &Preset, m: &crate::config::Model) -> bool {
     match (&p.provider, &p.feed) {
-        (Some(pv), _) => pv.get("id").and_then(Value::as_str).is_some_and(|id| {
-            m.feed_providers.get(id).is_some_and(|cur| {
-                Some(cur.module.as_str()) == pv.get("module").and_then(Value::as_str)
-                    || p.legacy.iter().any(|l| l.is(cur))
-            })
-        }),
+        (Some(pv), _) => {
+            let Ok(def) = provider_def(p, pv) else {
+                return false;
+            };
+            m.feed_providers
+                .get(&def.id)
+                .is_some_and(|cur| same_source(&def, cur) || p.legacy.iter().any(|l| l.is(cur)))
+        }
         (None, Some(f)) => f
             .get("id")
             .and_then(Value::as_str)
@@ -132,31 +180,95 @@ pub fn installed(p: &Preset, m: &crate::config::Model) -> bool {
     }
 }
 
+/// What the provider step of an install found and did (in one config transaction).
+enum ProviderStep {
+    Created,
+    /// The preset's provider exists (possibly updated to select the preset's files again).
+    Present,
+    /// An older release's provider of the same list: left as it is.
+    Legacy,
+}
+
+/// Creates the preset's provider, or brings back the preset's files on the existing provider of
+/// the same source, in `tx`; refuses a provider with the id that reads another source.
+fn provider_step(
+    tx: &rusqlite::Transaction<'_>,
+    p: &Preset,
+    pv: &Value,
+    def: &FeedProviderDef,
+    actor: &Actor,
+) -> CoreResult<(ProviderStep, bool)> {
+    let model = crate::config::store::load_model(tx).map_err(CoreError::Other)?;
+    let pid = &def.id;
+    let Some(cur) = model.feed_providers.get(pid) else {
+        crate::config::store::apply(tx, EntityKind::FeedProvider, Op::Create(pv.clone()), actor, None)?;
+        return Ok((ProviderStep::Created, true));
+    };
+    // An older release's provider of the same list is this preset, installed: left as it is,
+    // its feeds go in the bundle.
+    if p.legacy.iter().any(|l| l.is(cur)) {
+        return Ok((ProviderStep::Legacy, false));
+    }
+    // Another module's or another source's provider with the preset's id (the admin's) isn't
+    // merged into: the install is refused and says so (ids never change).
+    if cur.module != def.module {
+        return Err(CoreError::Conflict(format!(
+            "a feed provider {pid:?} exists with another module ({:?}, not this preset's {:?}): delete it first to install the preset, or keep it",
+            cur.module, def.module
+        )));
+    }
+    if !same_source(def, cur) {
+        return Err(CoreError::Conflict(format!(
+            "a feed provider {pid:?} exists with another source ({}, not this preset's {}): delete it first to install the preset, or keep it",
+            source_label(cur),
+            source_label(def)
+        )));
+    }
+    // A preset feed the admin deleted comes back: its files leave `exclude`, and a files entry
+    // the admin removed is added again.
+    let mut next = cur.clone();
+    for f in &def.files {
+        next.exclude.retain(|x| x != &f.pattern);
+        if !next.files.iter().any(|x| x.pattern == f.pattern) {
+            next.files.push(f.clone());
+        }
+    }
+    if next == *cur {
+        return Ok((ProviderStep::Present, false));
+    }
+    let body = serde_json::to_value(&next).map_err(|e| CoreError::Other(e.into()))?;
+    crate::config::store::apply(
+        tx,
+        EntityKind::FeedProvider,
+        Op::Update(pid.clone(), body),
+        actor,
+        None,
+    )?;
+    Ok((ProviderStep::Present, true))
+}
+
 /// Installs (or restores) a preset.
 pub async fn install(state: &SharedState, id: &str, actor: Actor) -> CoreResult<Installed> {
     let p = get(id).ok_or_else(|| CoreError::NotFound(format!("no feed preset {id:?}")))?;
     let mut out = Installed::default();
     let model = state.config.model().await?;
     if let Some(pv) = &p.provider {
-        let pid = id_of(pv)?;
-        let def: FeedProviderDef = serde_json::from_value(pv.clone())
-            .map_err(|e| CoreError::Other(anyhow::anyhow!("preset {id}: {e}")))?;
-        match model.feed_providers.get(&pid) {
-            None => {
-                state
-                    .config
-                    .apply(
-                        EntityKind::FeedProvider,
-                        Op::Create(pv.clone()),
-                        actor.clone(),
-                        None,
-                    )
-                    .await?;
-                out.created = true;
-            }
-            // An older release's provider of the same list is this preset, installed: left as
-            // it is, its feeds go in the bundle.
-            Some(cur) if p.legacy.iter().any(|l| l.is(cur)) => {
+        let def = provider_def(p, pv)?;
+        let pid = def.id.clone();
+        let (pv, a) = (pv.clone(), actor.clone());
+        let def2 = def.clone();
+        let (step, _) = state
+            .config
+            .change_when(
+                move |tx| provider_step(tx, p, &pv, &def2, &a),
+                |(_, changed)| *changed,
+            )
+            .await?;
+        match step {
+            ProviderStep::Created => out.created = true,
+            ProviderStep::Present => {}
+            ProviderStep::Legacy => {
+                let model = state.config.model().await?;
                 out.provider = Some(pid.clone());
                 out.feeds = model
                     .feeds
@@ -165,37 +277,6 @@ pub async fn install(state: &SharedState, id: &str, actor: Actor) -> CoreResult<
                     .map(|f| f.id.clone())
                     .collect();
                 return bundle_feeds(state, p, out, actor).await;
-            }
-            // Another module's provider with the preset's id (the admin's) isn't merged into:
-            // the install is refused and says so (ids never change).
-            Some(cur) if cur.module != def.module => {
-                return Err(CoreError::Conflict(format!(
-                    "a feed provider {pid:?} exists with another module ({:?}, not this preset's {:?}): delete it first to install the preset, or keep it",
-                    cur.module, def.module
-                )));
-            }
-            Some(cur) => {
-                // A preset feed the admin deleted comes back: its files leave `exclude`, and a
-                // files entry the admin removed is added again.
-                let mut next = cur.clone();
-                for f in &def.files {
-                    next.exclude.retain(|x| x != &f.pattern);
-                    if !next.files.iter().any(|x| x.pattern == f.pattern) {
-                        next.files.push(f.clone());
-                    }
-                }
-                if next != *cur {
-                    let body = serde_json::to_value(&next).map_err(|e| CoreError::Other(e.into()))?;
-                    state
-                        .config
-                        .apply(
-                            EntityKind::FeedProvider,
-                            Op::Update(pid.clone(), body),
-                            actor.clone(),
-                            None,
-                        )
-                        .await?;
-                }
             }
         }
         // Its feeds (a module that lists files adds them with its first listing, named by the
@@ -317,6 +398,82 @@ async fn write_text(state: &SharedState, feed: &str, text: &str, actor: Actor) -
 mod tests {
     use super::*;
     use crate::config::model::FeedDef;
+
+    fn provider(module: &str, config: Value) -> FeedProviderDef {
+        serde_json::from_value(
+            serde_json::json!({"id": "x", "name": "Mine", "module": module, "config": config}),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn same_source_compares_the_normalized_source_only() {
+        let gh = |c: Value| provider("github", c);
+        let preset = gh(serde_json::json!({"owner": "hagezi", "repo": "dns-blocklists"}));
+        // GitHub names are case-insensitive; names, tokens and selections never count.
+        let mut mine =
+            gh(serde_json::json!({"owner": "HaGeZi", "repo": "DNS-Blocklists", "token": "${secret:gh}"}));
+        mine.name = "Something else".into();
+        mine.exclude = vec!["adblock/*".into()];
+        assert!(same_source(&preset, &mine));
+        // Another owner or repository is another source.
+        assert!(!same_source(
+            &preset,
+            &gh(serde_json::json!({"owner": "someone", "repo": "dns-blocklists"}))
+        ));
+        assert!(!same_source(
+            &preset,
+            &gh(serde_json::json!({"owner": "hagezi", "repo": "other"}))
+        ));
+        // The default branch (none set) is not an explicit branch, which could be any other.
+        assert!(!same_source(
+            &preset,
+            &gh(serde_json::json!({"owner": "hagezi", "repo": "dns-blocklists", "branch": "main"}))
+        ));
+        let on_main = gh(serde_json::json!({"owner": "o", "repo": "r", "branch": "main"}));
+        assert!(same_source(
+            &on_main,
+            &gh(serde_json::json!({"owner": "O", "repo": "R", "branch": "main"}))
+        ));
+        assert!(!same_source(
+            &on_main,
+            &gh(serde_json::json!({"owner": "o", "repo": "r", "branch": "dev"}))
+        ));
+        assert!(!same_source(
+            &on_main,
+            &gh(serde_json::json!({"owner": "o", "repo": "r"}))
+        ));
+        // http: the canonical URL (host case and the default port don't count, the path does).
+        let http = |u: &str| provider("http", serde_json::json!({"url": u}));
+        let preset = http("https://iplists.firehol.org/files/firehol_level1.netset");
+        assert!(same_source(
+            &preset,
+            &http("https://IPLISTS.firehol.org:443/files/firehol_level1.netset")
+        ));
+        assert!(!same_source(
+            &preset,
+            &http("https://iplists.firehol.org/files/firehol_level2.netset")
+        ));
+        // Another module is never the same source.
+        assert!(!same_source(
+            &preset,
+            &gh(serde_json::json!({"owner": "o", "repo": "r"}))
+        ));
+    }
+
+    #[test]
+    fn installed_needs_the_presets_source() {
+        let p = get("hagezi").unwrap();
+        let mut m = crate::config::Model::default();
+        assert!(!installed(p, &m));
+        let mut cur = provider("github", serde_json::json!({"owner": "someone", "repo": "lists"}));
+        cur.id = "hagezi".into();
+        m.feed_providers.insert("hagezi".into(), cur.clone());
+        assert!(!installed(p, &m), "same id and module, another repository");
+        cur.config = serde_json::json!({"owner": "hagezi", "repo": "dns-blocklists"});
+        m.feed_providers.insert("hagezi".into(), cur);
+        assert!(installed(p, &m));
+    }
 
     #[test]
     fn presets_parse_and_validate() {
