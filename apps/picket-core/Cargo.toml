@@ -30,6 +30,8 @@ picket-rules.workspace = true
 picket-bundle.workspace = true
 # `${secret:name}` resolution and redaction, shared with lookup providers (providers.md §2, §4)
 picket-lookup.workspace = true
+# the `dynamic` scheduler's learner and backtests (feed-scheduling.md §4–§6)
+picket-schedule.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 clap.workspace = true

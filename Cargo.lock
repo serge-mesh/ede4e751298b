@@ -2267,6 +2267,7 @@ dependencies = [
  "picket-edge",
  "picket-lookup",
  "picket-rules",
+ "picket-schedule",
  "picket-wire",
  "prometheus-scraper",
  "publicsuffix",
@@ -2434,6 +2435,16 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "picket-schedule"
+version = "0.1.0"
+dependencies = [
+ "picket-api",
+ "schemars",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

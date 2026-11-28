@@ -13,6 +13,7 @@ app; and **picket-browser-extension**.
 | `crates/picket-bundle` | Bundle format writer (core) and reader/matcher (edge) |
 | `crates/picket-lookup` | Lookup module trait, `LookupClient`, built-in lookup modules (`src/modules/<id>/`) |
 | `crates/picket-api` | Serde types for every interface |
+| `crates/picket-schedule` | The `dynamic` feed scheduler's learner and its backtests (core re-exports them) |
 | `apps/picket-edge` | The edge service and CLI |
 | `apps/picket-edge-helper` | The ipset/iptables helper |
 | `apps/picket-edge-update` | The root installer and updater |

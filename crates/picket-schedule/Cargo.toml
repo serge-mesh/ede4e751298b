@@ -1,0 +1,18 @@
+[package]
+name = "picket-schedule"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+schemars.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+# the backtest fixtures' RFC 3339 times
+picket-api.workspace = true
