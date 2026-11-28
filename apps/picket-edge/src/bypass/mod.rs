@@ -208,8 +208,14 @@ const _: () = assert!(RETRY_BEFORE_EXPIRY_S.unsigned_abs() == RELOAD_BEFORE_EXPI
 /// end of the block's hold (a browser may use its cached block answer until then), plus the
 /// reload margin. `None` once the hold has ended (a reload now gets the fresh answer), or for an
 /// allow without its block's time and TTL.
+///
+/// Counted from the block's whole second, as `expires_at` is whole seconds: an allow of
+/// [`picket_api::edge_config::min_allow_for_block_s`] asked in the block's own second then
+/// fits, and the result is a whole second a caller can ask for. The hold's slack past the TTL
+/// covers the fraction.
 pub fn earliest_end(block_time: Option<Timestamp>, ttl: Option<u32>, now: Timestamp) -> Option<Timestamp> {
     let (t, ttl) = (block_time?, ttl?);
+    let t = Timestamp::from_second(t.as_second()).unwrap_or(t);
     let hold = SignedDuration::from_secs(i64::try_from(ring::hold_s(ttl)).unwrap_or(i64::MAX));
     let hold_end = picket_api::time::saturating_add(t, hold);
     (hold_end > now)
@@ -839,7 +845,20 @@ impl Bypass {
                     (None, Some(x)) => (x.block_time, x.block_ttl),
                     (None, None) => (None, None),
                 };
-                if let (Some(earliest), Some(ttl)) = (earliest_end(bt, ttl, now), ttl)
+                // Browsers may keep the newest block answer for the name, which can be a later
+                // block than the one the request names (another bundle head or rule).
+                let newest = match (&block, existing) {
+                    (Some(b), _) => self.ring.find_name(key, &b.name),
+                    (None, Some(x)) => WireName::from_text(&x.target)
+                        .ok()
+                        .and_then(|w| self.ring.find_name(key, w.wire())),
+                    (None, None) => None,
+                };
+                let earliest = [(bt, ttl), (newest.as_ref().map(|n| n.wall), newest.as_ref().map(|n| n.response.ttl))]
+                    .into_iter()
+                    .filter_map(|(bt, ttl)| earliest_end(bt, ttl, now).zip(ttl))
+                    .max_by_key(|(e, _)| *e);
+                if let Some((earliest, ttl)) = earliest
                     && end < earliest
                 {
                     return Err(too_short(earliest, max_end, ttl, now, i));
@@ -1725,7 +1744,7 @@ mod tests {
     /// constrains nothing.
     #[test]
     fn earliest_end_is_the_rest_of_the_hold_plus_the_reload_margin() {
-        let now = Timestamp::now();
+        let now = Timestamp::from_second(Timestamp::now().as_second()).unwrap();
         let ago = |s: i64| Some(now - SignedDuration::from_secs(s));
         let at = |s: i64| Some(now + SignedDuration::from_secs(s));
         // A fresh 600 s block: 605 s hold + 5 s, past a 5 min maximum.
@@ -1753,6 +1772,27 @@ mod tests {
             900,
             "capped"
         );
+    }
+
+    /// `expires_at` is whole seconds: the advertised minimum, asked later in the block's own
+    /// second, fits, and a refusal's advice is a whole number of seconds that a caller adding it
+    /// to the current Unix second can use.
+    #[test]
+    fn whole_second_expiries_meet_the_minimum_and_the_advice() {
+        let block = Timestamp::from_second(1_000).unwrap() + SignedDuration::from_millis(250);
+        let now = Timestamp::from_second(1_000).unwrap() + SignedDuration::from_millis(500);
+        let ttl = crate::dns::runtime::bounds::BLOCK_TTL_S;
+        let min = i64::try_from(picket_api::edge_config::min_allow_for_block_s(ttl)).unwrap();
+        let asked = Timestamp::from_second(now.as_second() + min).unwrap();
+        let earliest = earliest_end(Some(block), Some(ttl), now).unwrap();
+        assert!(asked >= earliest, "{asked} < {earliest}");
+        let block = Timestamp::from_second(100).unwrap() + SignedDuration::from_millis(500);
+        let now = Timestamp::from_second(100).unwrap() + SignedDuration::from_millis(600);
+        let earliest = earliest_end(Some(block), Some(600), now).unwrap();
+        assert_eq!(earliest.subsec_nanosecond(), 0);
+        let r = too_short(earliest, now + SignedDuration::from_secs(3600), 600, now, 0);
+        let need: i64 = r.message.rsplit(' ').nth(1).unwrap().parse().unwrap();
+        assert!(Timestamp::from_second(now.as_second() + need).unwrap() >= earliest, "{}", r.message);
     }
 
     #[test]

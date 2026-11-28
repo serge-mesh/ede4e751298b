@@ -1513,6 +1513,12 @@ impl Feeds {
                         p.trigger_next = None;
                         p.cause = Some(Cause::First);
                         p.first = true;
+                        // A retry or back-off is the old provider's: the end of its check, if it
+                        // still runs, drops the one it leaves too ([`Feeds::complete`]).
+                        p.retry_at = None;
+                        if p.checking {
+                            p.edited_during = true;
+                        }
                     }
                     Some(old) => {
                         let mut edit = false;
@@ -1836,12 +1842,14 @@ fn start_decision(i: &mut Inner, provider: &str, cause: Cause, now: Timestamp) -
         let at = picket_api::time::saturating_add(lc, min);
         p.cause = Some(cause);
         p.force = true;
+        p.retry_at = None;
         p.due = Some(p.due.map_or(at, |d| d.min(at)));
         return Err(Triggered::Scheduled(at));
     }
     if let Some(u) = pause {
         p.cause = Some(cause);
         p.force = true;
+        p.retry_at = None;
         p.due = Some(u);
         return Err(Triggered::Scheduled(u));
     }
@@ -2328,6 +2336,27 @@ mod lifecycle_tests {
         assert_eq!(tick(&f, now + secs(121)), vec![Cause::CheckNow]);
         f.complete(P, now + secs(121));
         assert!(tick(&f, now + secs(121)).is_empty(), "once");
+    }
+
+    /// An explicit cause doesn't wait for a retry, even when `min_interval` or a module pause
+    /// schedules it: a recompute before then keeps the time it reported.
+    #[test]
+    fn a_scheduled_check_now_drops_the_retry() {
+        let now = Timestamp::now();
+        for paused in [false, true] {
+            let f = feeds_with(if paused { 0 } else { 600 });
+            claimed(&f, now - secs(500));
+            f.retry_at(P, now + secs(960));
+            rt(&f, |p| p.last_check = Some(now - secs(500)));
+            f.complete(P, now);
+            if paused {
+                f.set_pause("http", now + secs(100));
+            }
+            let r = f.with(|i| start_decision(i, P, Cause::CheckNow, now)).unwrap();
+            assert_eq!(r, Err(Triggered::Scheduled(now + secs(100))), "paused: {paused}");
+            f.recompute_due(P);
+            assert_eq!(tick(&f, now + secs(101)), vec![Cause::CheckNow], "paused: {paused}");
+        }
     }
 
     #[test]
