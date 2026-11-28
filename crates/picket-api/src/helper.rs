@@ -197,7 +197,7 @@ pub mod error_code {
     pub const INVALID: &str = "invalid";
     /// Unknown frame `type`.
     pub const UNKNOWN_TYPE: &str = "unknown_type";
-    /// The helper is busy (its work queue is full); retry.
+    /// The helper is busy (request admission or its work queue is full); retry.
     pub const BUSY: &str = "busy";
     /// A `dump` cursor the helper no longer holds; restart the dump without a cursor.
     pub const CURSOR_EXPIRED: &str = "cursor_expired";

@@ -1,0 +1,1021 @@
+{
+  "date": "2026-11-28",
+  "architecture": "x86_64",
+  "rust": "1.100.0",
+  "profile": "release",
+  "allocator": "system (glibc), MALLOC_ARENA_MAX=2",
+  "baseline_commit": "9a4eab3fa058d045fbea85677f7039eaae9e4546",
+  "after_revision": "this change",
+  "notes": [
+    "Isolated helper process; injected engine stall; no cgroup OOM or live gateway test.",
+    "RSS peaks include engine execution after gate release and FakeBackend kernel-member storage.",
+    "background_mib=18 is touched anonymous storage to charge retained dump copies, not actual dump construction."
+  ],
+  "executables": {
+    "before": "395dcc66afa24352fabea4d88ad3ce831dc0ac1f1eb53f2116905cc5fb2a6090",
+    "after": "4cbd9711b763d6e00c5ad3e5e53a6f105648cac34fbb0809b5060d14c128cdb5"
+  },
+  "runs": {
+    "before-valid-default": {
+      "binary_sha256": "395dcc66afa24352fabea4d88ad3ce831dc0ac1f1eb53f2116905cc5fb2a6090",
+      "queue": "valid-duplicates",
+      "samples": [
+        {
+          "stage": "baseline",
+          "allocated": 1093129,
+          "deallocated": 1014568,
+          "hwm_kib": 3052,
+          "live_requested": 78561,
+          "rss_kib": 3052
+        },
+        {
+          "stage": "wave-0-queued",
+          "allocated": 32163437,
+          "deallocated": 1018671,
+          "hwm_kib": 53072,
+          "live_requested": 31144766,
+          "rss_kib": 53072
+        },
+        {
+          "stage": "wave-0-answered",
+          "allocated": 32167309,
+          "deallocated": 5214375,
+          "hwm_kib": 52700,
+          "live_requested": 26952934,
+          "rss_kib": 48976
+        },
+        {
+          "stage": "wave-1-queued",
+          "allocated": 63205513,
+          "deallocated": 5217163,
+          "hwm_kib": 98940,
+          "live_requested": 57988350,
+          "rss_kib": 98940
+        },
+        {
+          "stage": "wave-1-answered",
+          "allocated": 63209385,
+          "deallocated": 9412867,
+          "hwm_kib": 98940,
+          "live_requested": 53796518,
+          "rss_kib": 98940
+        },
+        {
+          "stage": "released",
+          "allocated": 98789777,
+          "deallocated": 98680189,
+          "hwm_kib": 98572,
+          "live_requested": 109588,
+          "rss_kib": 59640
+        }
+      ],
+      "responses": [
+        [
+          "internal",
+          "internal",
+          "internal",
+          "internal"
+        ],
+        [
+          "internal",
+          "internal",
+          "internal",
+          "internal"
+        ]
+      ],
+      "peak_rss_kib": 98952,
+      "rss_watchdog_killed": false,
+      "returncode": 0,
+      "timeout_ms": 120000,
+      "role": "edge",
+      "reconnect": false,
+      "background_mib": 0
+    },
+    "before-invalid-reconnect": {
+      "binary_sha256": "395dcc66afa24352fabea4d88ad3ce831dc0ac1f1eb53f2116905cc5fb2a6090",
+      "queue": "invalid-empty",
+      "samples": [
+        {
+          "stage": "baseline",
+          "allocated": 1093126,
+          "deallocated": 1014568,
+          "hwm_kib": 2988,
+          "live_requested": 78558,
+          "rss_kib": 2988
+        },
+        {
+          "stage": "wave-0-queued",
+          "allocated": 55655330,
+          "deallocated": 1018671,
+          "hwm_kib": 40140,
+          "live_requested": 54636659,
+          "rss_kib": 40140
+        },
+        {
+          "stage": "wave-0-answered",
+          "allocated": 55659202,
+          "deallocated": 5217023,
+          "hwm_kib": 39908,
+          "live_requested": 50442179,
+          "rss_kib": 36032
+        },
+        {
+          "stage": "wave-1-queued",
+          "allocated": 110211606,
+          "deallocated": 5242243,
+          "hwm_kib": 73540,
+          "live_requested": 104969363,
+          "rss_kib": 73540
+        },
+        {
+          "stage": "wave-1-answered",
+          "allocated": 110215478,
+          "deallocated": 9440595,
+          "hwm_kib": 73192,
+          "live_requested": 100774883,
+          "rss_kib": 69824
+        },
+        {
+          "stage": "released",
+          "allocated": 110508828,
+          "deallocated": 110400693,
+          "hwm_kib": 73192,
+          "live_requested": 108135,
+          "rss_kib": 4356
+        }
+      ],
+      "responses": [
+        [
+          "internal",
+          "internal",
+          "internal",
+          "internal"
+        ],
+        [
+          "internal",
+          "internal",
+          "internal",
+          "internal"
+        ]
+      ],
+      "peak_rss_kib": 73540,
+      "rss_watchdog_killed": false,
+      "returncode": 0,
+      "timeout_ms": 200,
+      "role": "edge",
+      "reconnect": true,
+      "background_mib": 0
+    },
+    "before-valid-background": {
+      "binary_sha256": "395dcc66afa24352fabea4d88ad3ce831dc0ac1f1eb53f2116905cc5fb2a6090",
+      "queue": "valid-duplicates",
+      "samples": [
+        {
+          "stage": "baseline",
+          "allocated": 19967480,
+          "deallocated": 1014544,
+          "hwm_kib": 21420,
+          "live_requested": 18952936,
+          "rss_kib": 21420
+        },
+        {
+          "stage": "wave-0-queued",
+          "allocated": 51037803,
+          "deallocated": 1018671,
+          "hwm_kib": 71488,
+          "live_requested": 50019132,
+          "rss_kib": 71488
+        },
+        {
+          "stage": "wave-0-answered",
+          "allocated": 51041675,
+          "deallocated": 5214375,
+          "hwm_kib": 71072,
+          "live_requested": 45827300,
+          "rss_kib": 67396
+        },
+        {
+          "stage": "wave-1-queued",
+          "allocated": 82079879,
+          "deallocated": 5217163,
+          "hwm_kib": 117360,
+          "live_requested": 76862716,
+          "rss_kib": 117360
+        },
+        {
+          "stage": "wave-1-answered",
+          "allocated": 82083751,
+          "deallocated": 9412867,
+          "hwm_kib": 117360,
+          "live_requested": 72670884,
+          "rss_kib": 117360
+        },
+        {
+          "stage": "released",
+          "allocated": 117664143,
+          "deallocated": 98680189,
+          "hwm_kib": 116996,
+          "live_requested": 18983954,
+          "rss_kib": 78060
+        }
+      ],
+      "responses": [
+        [
+          "internal",
+          "internal",
+          "internal",
+          "internal"
+        ],
+        [
+          "internal",
+          "internal",
+          "internal",
+          "internal"
+        ]
+      ],
+      "peak_rss_kib": 117372,
+      "rss_watchdog_killed": false,
+      "returncode": 0,
+      "timeout_ms": 200,
+      "role": "edge",
+      "reconnect": false,
+      "background_mib": 18
+    },
+    "before-unique-background": {
+      "binary_sha256": "395dcc66afa24352fabea4d88ad3ce831dc0ac1f1eb53f2116905cc5fb2a6090",
+      "queue": "valid-unique",
+      "samples": [
+        {
+          "stage": "baseline",
+          "allocated": 19967495,
+          "deallocated": 1014568,
+          "hwm_kib": 21496,
+          "live_requested": 18952927,
+          "rss_kib": 21496
+        },
+        {
+          "stage": "wave-0-queued",
+          "allocated": 39563147,
+          "deallocated": 1018671,
+          "hwm_kib": 51364,
+          "live_requested": 38544476,
+          "rss_kib": 51364
+        },
+        {
+          "stage": "wave-0-answered",
+          "allocated": 39567019,
+          "deallocated": 5215687,
+          "hwm_kib": 51140,
+          "live_requested": 34351332,
+          "rss_kib": 47272
+        },
+        {
+          "stage": "wave-1-queued",
+          "allocated": 59130567,
+          "deallocated": 5218475,
+          "hwm_kib": 77436,
+          "live_requested": 53912092,
+          "rss_kib": 77436
+        },
+        {
+          "stage": "wave-1-answered",
+          "allocated": 59134439,
+          "deallocated": 9415491,
+          "hwm_kib": 77436,
+          "live_requested": 49718948,
+          "rss_kib": 77436
+        },
+        {
+          "stage": "released",
+          "allocated": 343126063,
+          "deallocated": 310457925,
+          "hwm_kib": 97744,
+          "live_requested": 32668138,
+          "rss_kib": 76904
+        }
+      ],
+      "responses": [
+        [
+          "internal",
+          "internal",
+          "internal",
+          "internal"
+        ],
+        [
+          "internal",
+          "internal",
+          "internal",
+          "internal"
+        ]
+      ],
+      "peak_rss_kib": 97692,
+      "rss_watchdog_killed": false,
+      "deadline_killed": false,
+      "returncode": 0,
+      "timeout_ms": 200,
+      "role": "edge",
+      "reconnect": false,
+      "background_mib": 18
+    },
+    "after-valid-default": {
+      "binary_sha256": "4cbd9711b763d6e00c5ad3e5e53a6f105648cac34fbb0809b5060d14c128cdb5",
+      "queue": "valid-duplicates",
+      "samples": [
+        {
+          "stage": "baseline",
+          "allocated": 1093386,
+          "deallocated": 1014424,
+          "hwm_kib": 2968,
+          "live_requested": 78962,
+          "rss_kib": 2968
+        },
+        {
+          "stage": "wave-0-queued",
+          "allocated": 5321843,
+          "deallocated": 4163772,
+          "hwm_kib": 6668,
+          "live_requested": 1158071,
+          "rss_kib": 4172
+        },
+        {
+          "stage": "wave-0-answered",
+          "allocated": 5324863,
+          "deallocated": 5214750,
+          "hwm_kib": 6668,
+          "live_requested": 110113,
+          "rss_kib": 3148
+        },
+        {
+          "stage": "wave-1-queued",
+          "allocated": 9520671,
+          "deallocated": 9410558,
+          "hwm_kib": 7004,
+          "live_requested": 110113,
+          "rss_kib": 4292
+        },
+        {
+          "stage": "wave-1-answered",
+          "allocated": 9523407,
+          "deallocated": 9413294,
+          "hwm_kib": 7004,
+          "live_requested": 110113,
+          "rss_kib": 4292
+        },
+        {
+          "stage": "released",
+          "allocated": 10436367,
+          "deallocated": 10326396,
+          "hwm_kib": 7004,
+          "live_requested": 109971,
+          "rss_kib": 4320
+        }
+      ],
+      "responses": [
+        [
+          "busy",
+          "busy",
+          "busy",
+          "internal"
+        ],
+        [
+          "busy",
+          "busy",
+          "busy",
+          "busy"
+        ]
+      ],
+      "peak_rss_kib": 7032,
+      "rss_watchdog_killed": false,
+      "deadline_killed": false,
+      "returncode": 0,
+      "timeout_ms": 120000,
+      "role": "edge",
+      "reconnect": false,
+      "background_mib": 0
+    },
+    "after-invalid-reconnect": {
+      "binary_sha256": "4cbd9711b763d6e00c5ad3e5e53a6f105648cac34fbb0809b5060d14c128cdb5",
+      "queue": "invalid-empty",
+      "samples": [
+        {
+          "stage": "baseline",
+          "allocated": 1093413,
+          "deallocated": 1014472,
+          "hwm_kib": 2872,
+          "live_requested": 78941,
+          "rss_kib": 2872
+        },
+        {
+          "stage": "wave-0-queued",
+          "allocated": 5324853,
+          "deallocated": 5215123,
+          "hwm_kib": 5528,
+          "live_requested": 109730,
+          "rss_kib": 3152
+        },
+        {
+          "stage": "wave-0-answered",
+          "allocated": 5327589,
+          "deallocated": 5217859,
+          "hwm_kib": 5528,
+          "live_requested": 109730,
+          "rss_kib": 3152
+        },
+        {
+          "stage": "wave-1-queued",
+          "allocated": 9549165,
+          "deallocated": 9439563,
+          "hwm_kib": 6924,
+          "live_requested": 109602,
+          "rss_kib": 4300
+        },
+        {
+          "stage": "wave-1-answered",
+          "allocated": 9551901,
+          "deallocated": 9442299,
+          "hwm_kib": 6924,
+          "live_requested": 109602,
+          "rss_kib": 4300
+        },
+        {
+          "stage": "wave-2-queued",
+          "allocated": 13773477,
+          "deallocated": 13663875,
+          "hwm_kib": 7160,
+          "live_requested": 109602,
+          "rss_kib": 4436
+        },
+        {
+          "stage": "wave-2-answered",
+          "allocated": 13776213,
+          "deallocated": 13666611,
+          "hwm_kib": 7160,
+          "live_requested": 109602,
+          "rss_kib": 4436
+        },
+        {
+          "stage": "released",
+          "allocated": 14069331,
+          "deallocated": 13960717,
+          "hwm_kib": 7160,
+          "live_requested": 108614,
+          "rss_kib": 4460
+        }
+      ],
+      "responses": [
+        [
+          "invalid",
+          "invalid",
+          "invalid",
+          "invalid"
+        ],
+        [
+          "invalid",
+          "invalid",
+          "invalid",
+          "invalid"
+        ],
+        [
+          "invalid",
+          "invalid",
+          "invalid",
+          "invalid"
+        ]
+      ],
+      "peak_rss_kib": 7376,
+      "rss_watchdog_killed": false,
+      "deadline_killed": false,
+      "returncode": 0,
+      "timeout_ms": 200,
+      "role": "edge",
+      "reconnect": true,
+      "background_mib": 0
+    },
+    "after-valid-background": {
+      "binary_sha256": "4cbd9711b763d6e00c5ad3e5e53a6f105648cac34fbb0809b5060d14c128cdb5",
+      "queue": "valid-duplicates",
+      "samples": [
+        {
+          "stage": "baseline",
+          "allocated": 19967767,
+          "deallocated": 1014472,
+          "hwm_kib": 21360,
+          "live_requested": 18953295,
+          "rss_kib": 21360
+        },
+        {
+          "stage": "wave-0-queued",
+          "allocated": 24196209,
+          "deallocated": 4163772,
+          "hwm_kib": 24676,
+          "live_requested": 20032437,
+          "rss_kib": 22592
+        },
+        {
+          "stage": "wave-0-answered",
+          "allocated": 24199229,
+          "deallocated": 5214750,
+          "hwm_kib": 24676,
+          "live_requested": 18984479,
+          "rss_kib": 21572
+        },
+        {
+          "stage": "wave-1-queued",
+          "allocated": 28395037,
+          "deallocated": 9410558,
+          "hwm_kib": 25372,
+          "live_requested": 18984479,
+          "rss_kib": 21700
+        },
+        {
+          "stage": "wave-1-answered",
+          "allocated": 28397773,
+          "deallocated": 9413294,
+          "hwm_kib": 25372,
+          "live_requested": 18984479,
+          "rss_kib": 21700
+        },
+        {
+          "stage": "released",
+          "allocated": 29310877,
+          "deallocated": 10326444,
+          "hwm_kib": 25372,
+          "live_requested": 18984433,
+          "rss_kib": 21752
+        }
+      ],
+      "responses": [
+        [
+          "internal",
+          "busy",
+          "busy",
+          "busy"
+        ],
+        [
+          "busy",
+          "busy",
+          "busy",
+          "busy"
+        ]
+      ],
+      "peak_rss_kib": 25076,
+      "rss_watchdog_killed": false,
+      "deadline_killed": false,
+      "returncode": 0,
+      "timeout_ms": 200,
+      "role": "edge",
+      "reconnect": false,
+      "background_mib": 18
+    },
+    "after-unique-background": {
+      "binary_sha256": "4cbd9711b763d6e00c5ad3e5e53a6f105648cac34fbb0809b5060d14c128cdb5",
+      "queue": "valid-unique",
+      "samples": [
+        {
+          "stage": "baseline",
+          "allocated": 19967782,
+          "deallocated": 1014472,
+          "hwm_kib": 21372,
+          "live_requested": 18953310,
+          "rss_kib": 21372
+        },
+        {
+          "stage": "wave-0-queued",
+          "allocated": 30806557,
+          "deallocated": 8659980,
+          "hwm_kib": 26624,
+          "live_requested": 22146577,
+          "rss_kib": 26624
+        },
+        {
+          "stage": "wave-0-answered",
+          "allocated": 30809577,
+          "deallocated": 9711286,
+          "hwm_kib": 26252,
+          "live_requested": 21098291,
+          "rss_kib": 25600
+        },
+        {
+          "stage": "wave-1-queued",
+          "allocated": 35006697,
+          "deallocated": 13908406,
+          "hwm_kib": 27916,
+          "live_requested": 21098291,
+          "rss_kib": 26744
+        },
+        {
+          "stage": "wave-1-answered",
+          "allocated": 35009433,
+          "deallocated": 13911142,
+          "hwm_kib": 27916,
+          "live_requested": 21098291,
+          "rss_kib": 26744
+        },
+        {
+          "stage": "released",
+          "allocated": 73351365,
+          "deallocated": 40682844,
+          "hwm_kib": 45048,
+          "live_requested": 32668521,
+          "rss_kib": 42848
+        }
+      ],
+      "responses": [
+        [
+          "busy",
+          "internal",
+          "busy",
+          "busy"
+        ],
+        [
+          "busy",
+          "busy",
+          "busy",
+          "busy"
+        ]
+      ],
+      "peak_rss_kib": 45472,
+      "rss_watchdog_killed": false,
+      "deadline_killed": false,
+      "returncode": 0,
+      "timeout_ms": 200,
+      "role": "edge",
+      "reconnect": false,
+      "background_mib": 18
+    },
+    "after-valid-admin": {
+      "binary_sha256": "4cbd9711b763d6e00c5ad3e5e53a6f105648cac34fbb0809b5060d14c128cdb5",
+      "queue": "valid-duplicates",
+      "samples": [
+        {
+          "stage": "baseline",
+          "allocated": 1093414,
+          "deallocated": 1014472,
+          "hwm_kib": 2932,
+          "live_requested": 78942,
+          "rss_kib": 2932
+        },
+        {
+          "stage": "wave-0-queued",
+          "allocated": 3214201,
+          "deallocated": 2067236,
+          "hwm_kib": 4736,
+          "live_requested": 1146965,
+          "rss_kib": 4100
+        },
+        {
+          "stage": "wave-0-answered",
+          "allocated": 3217221,
+          "deallocated": 3118214,
+          "hwm_kib": 4736,
+          "live_requested": 99007,
+          "rss_kib": 3080
+        },
+        {
+          "stage": "wave-1-queued",
+          "allocated": 5316493,
+          "deallocated": 5217486,
+          "hwm_kib": 5128,
+          "live_requested": 99007,
+          "rss_kib": 5128
+        },
+        {
+          "stage": "wave-1-answered",
+          "allocated": 5319229,
+          "deallocated": 5220222,
+          "hwm_kib": 5128,
+          "live_requested": 99007,
+          "rss_kib": 5128
+        },
+        {
+          "stage": "wave-2-queued",
+          "allocated": 7418501,
+          "deallocated": 7319494,
+          "hwm_kib": 6152,
+          "live_requested": 99007,
+          "rss_kib": 6152
+        },
+        {
+          "stage": "wave-2-answered",
+          "allocated": 7421237,
+          "deallocated": 7322230,
+          "hwm_kib": 6152,
+          "live_requested": 99007,
+          "rss_kib": 6152
+        },
+        {
+          "stage": "released",
+          "allocated": 8334197,
+          "deallocated": 8235332,
+          "hwm_kib": 6184,
+          "live_requested": 98865,
+          "rss_kib": 6184
+        }
+      ],
+      "responses": [
+        [
+          "internal",
+          "busy"
+        ],
+        [
+          "busy",
+          "busy"
+        ],
+        [
+          "busy",
+          "busy"
+        ]
+      ],
+      "peak_rss_kib": 6152,
+      "rss_watchdog_killed": false,
+      "deadline_killed": false,
+      "returncode": 0,
+      "timeout_ms": 200,
+      "role": "admin",
+      "reconnect": false,
+      "background_mib": 0
+    },
+    "after-small": {
+      "binary_sha256": "4cbd9711b763d6e00c5ad3e5e53a6f105648cac34fbb0809b5060d14c128cdb5",
+      "queue": "small",
+      "samples": [
+        {
+          "stage": "baseline",
+          "allocated": 1093235,
+          "deallocated": 1014400,
+          "hwm_kib": 2860,
+          "live_requested": 78835,
+          "rss_kib": 2860
+        },
+        {
+          "stage": "wave-0-queued",
+          "allocated": 1130100,
+          "deallocated": 1019813,
+          "hwm_kib": 3100,
+          "live_requested": 110287,
+          "rss_kib": 3100
+        },
+        {
+          "stage": "wave-0-answered",
+          "allocated": 1133120,
+          "deallocated": 1022833,
+          "hwm_kib": 3100,
+          "live_requested": 110287,
+          "rss_kib": 3100
+        },
+        {
+          "stage": "wave-1-queued",
+          "allocated": 1137096,
+          "deallocated": 1026809,
+          "hwm_kib": 3100,
+          "live_requested": 110287,
+          "rss_kib": 3100
+        },
+        {
+          "stage": "wave-1-answered",
+          "allocated": 1139832,
+          "deallocated": 1029545,
+          "hwm_kib": 3100,
+          "live_requested": 110287,
+          "rss_kib": 3100
+        },
+        {
+          "stage": "released",
+          "allocated": 2306958,
+          "deallocated": 2199154,
+          "hwm_kib": 3356,
+          "live_requested": 107804,
+          "rss_kib": 3356
+        }
+      ],
+      "responses": [
+        [
+          "internal",
+          "busy",
+          "busy",
+          "busy"
+        ],
+        [
+          "busy",
+          "busy",
+          "busy",
+          "busy"
+        ]
+      ],
+      "peak_rss_kib": 3356,
+      "rss_watchdog_killed": false,
+      "deadline_killed": false,
+      "returncode": 0,
+      "timeout_ms": 200,
+      "role": "edge",
+      "reconnect": false,
+      "background_mib": 0
+    }
+  },
+  "decode": {
+    "before": {
+      "small": {
+        "after_drop": {
+          "allocated": 5348,
+          "deallocated": 3153,
+          "hwm_kib": 2528,
+          "live_requested": 2195,
+          "rss_kib": 2528
+        },
+        "decode_allocated": 353,
+        "decode_live": 340,
+        "decoded": true,
+        "memory": {
+          "allocated": 1940,
+          "deallocated": 85,
+          "hwm_kib": 2528,
+          "live_requested": 1855,
+          "rss_kib": 2528
+        },
+        "wire_bytes": 102
+      },
+      "valid-duplicates": {
+        "after_drop": {
+          "allocated": 7763535,
+          "deallocated": 6713517,
+          "hwm_kib": 14888,
+          "live_requested": 1050018,
+          "rss_kib": 9976
+        },
+        "decode_allocated": 6710717,
+        "decode_live": 6710704,
+        "decoded": true,
+        "memory": {
+          "allocated": 7760127,
+          "deallocated": 85,
+          "hwm_kib": 14892,
+          "live_requested": 7760042,
+          "rss_kib": 14892
+        },
+        "wire_bytes": 1047914
+      },
+      "valid-unique": {
+        "after_drop": {
+          "allocated": 4894867,
+          "deallocated": 3844525,
+          "hwm_kib": 9784,
+          "live_requested": 1050342,
+          "rss_kib": 7112
+        },
+        "decode_allocated": 3841725,
+        "decode_live": 3841712,
+        "decoded": true,
+        "memory": {
+          "allocated": 4891459,
+          "deallocated": 85,
+          "hwm_kib": 9868,
+          "live_requested": 4891374,
+          "rss_kib": 9868
+        },
+        "wire_bytes": 1048242
+      },
+      "invalid-empty": {
+        "after_drop": {
+          "allocated": 13636506,
+          "deallocated": 12585829,
+          "hwm_kib": 11768,
+          "live_requested": 1050677,
+          "rss_kib": 3600
+        },
+        "decode_allocated": 12583029,
+        "decode_live": 12583016,
+        "decoded": true,
+        "memory": {
+          "allocated": 13633098,
+          "deallocated": 85,
+          "hwm_kib": 11792,
+          "live_requested": 13633013,
+          "rss_kib": 11792
+        },
+        "wire_bytes": 1048576
+      },
+      "invalid-escaped-name": {
+        "after_drop": {
+          "allocated": 1490466,
+          "deallocated": 439919,
+          "hwm_kib": 3896,
+          "live_requested": 1050547,
+          "rss_kib": 3560
+        },
+        "decode_allocated": 437119,
+        "decode_live": 174962,
+        "decoded": true,
+        "memory": {
+          "allocated": 1487058,
+          "deallocated": 262229,
+          "hwm_kib": 3896,
+          "live_requested": 1224829,
+          "rss_kib": 3732
+        },
+        "wire_bytes": 1048439
+      }
+    },
+    "after": {
+      "small": {
+        "after_drop": {
+          "allocated": 5559,
+          "deallocated": 3365,
+          "hwm_kib": 2520,
+          "live_requested": 2194,
+          "rss_kib": 2520
+        },
+        "decode_allocated": 565,
+        "decode_live": 205,
+        "decoded": true,
+        "memory": {
+          "allocated": 2151,
+          "deallocated": 432,
+          "hwm_kib": 2456,
+          "live_requested": 1719,
+          "rss_kib": 2456
+        },
+        "wire_bytes": 102
+      },
+      "valid-duplicates": {
+        "after_drop": {
+          "allocated": 1053450,
+          "deallocated": 3433,
+          "hwm_kib": 3500,
+          "live_requested": 1050017,
+          "rss_kib": 3500
+        },
+        "decode_allocated": 633,
+        "decode_live": 188,
+        "decoded": true,
+        "memory": {
+          "allocated": 1050042,
+          "deallocated": 517,
+          "hwm_kib": 3500,
+          "live_requested": 1049525,
+          "rss_kib": 3500
+        },
+        "wire_bytes": 1047914
+      },
+      "valid-unique": {
+        "after_drop": {
+          "allocated": 7662810,
+          "deallocated": 6612469,
+          "hwm_kib": 7416,
+          "live_requested": 1050341,
+          "rss_kib": 3640
+        },
+        "decode_allocated": 6609669,
+        "decode_live": 2114000,
+        "decoded": true,
+        "memory": {
+          "allocated": 7659402,
+          "deallocated": 4495741,
+          "hwm_kib": 7416,
+          "live_requested": 3163661,
+          "rss_kib": 5712
+        },
+        "wire_bytes": 1048242
+      },
+      "invalid-empty": {
+        "after_drop": {
+          "allocated": 1053756,
+          "deallocated": 3080,
+          "hwm_kib": 3536,
+          "live_requested": 1050676,
+          "rss_kib": 3536
+        },
+        "decode_allocated": 280,
+        "decode_live": 55,
+        "decoded": false,
+        "memory": {
+          "allocated": 1050348,
+          "deallocated": 297,
+          "hwm_kib": 3536,
+          "live_requested": 1050051,
+          "rss_kib": 3536
+        },
+        "wire_bytes": 1048576
+      },
+      "invalid-escaped-name": {
+        "after_drop": {
+          "allocated": 1315700,
+          "deallocated": 265154,
+          "hwm_kib": 3816,
+          "live_requested": 1050546,
+          "rss_kib": 3736
+        },
+        "decode_allocated": 262354,
+        "decode_live": 95,
+        "decoded": false,
+        "memory": {
+          "allocated": 1312292,
+          "deallocated": 262331,
+          "hwm_kib": 3816,
+          "live_requested": 1049961,
+          "rss_kib": 3736
+        },
+        "wire_bytes": 1048439
+      }
+    }
+  }
+}

@@ -20,6 +20,8 @@ pub const MAX_INTERFACES: usize = 64;
 /// `maxelem` of the static and exempt sets, and the most entries each may hold after
 /// normalisation (a `/0` counts as the two halves it is stored as).
 pub const STATIC_MAX: u32 = 65_536;
+/// Most raw entries in each static/exempt input list, before normalisation.
+pub const MAX_INPUT_NETS: usize = 2 * STATIC_MAX as usize;
 /// `IFNAMSIZ` - 1.
 pub const MAX_IFNAME: usize = 15;
 /// Longest CIDR string accepted.
@@ -66,9 +68,9 @@ pub fn parse_cidr(s: &str) -> Option<IpNet> {
 
 /// `hash:net` rejects a zero prefix (kernel `IPSET_ERR_INVALID_CIDR`), so a `/0` is stored as
 /// its two halves.
-fn expand(n: IpNet) -> Vec<IpNet> {
+pub(crate) fn expand(n: IpNet) -> impl Iterator<Item = IpNet> {
     if n.prefix_len() > 0 {
-        return vec![n];
+        return [Some(n), None].into_iter().flatten();
     }
     // Checked at compile time: `new_assert` in a const panics in the build, never at run time.
     const V4: [Ipv4Net; 2] = [
@@ -79,17 +81,18 @@ fn expand(n: IpNet) -> Vec<IpNet> {
         Ipv6Net::new_assert(std::net::Ipv6Addr::from_bits(0), 1),
         Ipv6Net::new_assert(std::net::Ipv6Addr::from_bits(1 << 127), 1),
     ];
-    match n {
-        IpNet::V4(_) => V4.map(IpNet::V4).to_vec(),
-        IpNet::V6(_) => V6.map(IpNet::V6).to_vec(),
-    }
+    let pair = match n {
+        IpNet::V4(_) => V4.map(IpNet::V4),
+        IpNet::V6(_) => V6.map(IpNet::V6),
+    };
+    pair.map(Some).into_iter().flatten()
 }
 
 /// Splits CIDR strings into IPv4 and IPv6 lists: normalised, expanded, deduplicated, sorted,
 /// each at most [`STATIC_MAX`].
 fn split_nets(what: &str, list: &[String]) -> Result<(Vec<IpNet>, Vec<IpNet>), String> {
     // A list longer than twice the limit can't fit even if every entry were a duplicate pair.
-    if list.len() > 2 * STATIC_MAX as usize {
+    if list.len() > MAX_INPUT_NETS {
         return Err(format!("{what}: too many entries"));
     }
     let mut v4 = BTreeSet::new();

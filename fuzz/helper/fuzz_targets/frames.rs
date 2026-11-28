@@ -25,10 +25,8 @@ fn check(f: &[u8]) {
     let Ok((_, req)) = parse_request(f) else { return };
     match req {
         Request::Apply(r) => {
-            if let Ok(d) = Desired::from_request(&r) {
-                // The persisted form validates again to the same rules.
-                assert_eq!(Desired::from_request(&d.to_request()).as_ref(), Ok(&d));
-            }
+            // The persisted form validates again to the same rules.
+            assert_eq!(Desired::from_request(&r.to_request()).as_ref(), Ok(&*r));
         }
         Request::Ensure(r) => {
             for e in &r.entries {
