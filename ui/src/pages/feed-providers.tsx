@@ -475,7 +475,12 @@ export function presetPendingText(p: PresetPending): string {
 
 function PresetDialog({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
-  const presets = useQuery({ queryKey: qk.presets, queryFn: ({ signal }) => unwrap(client.GET("/api/ui/v1/feed-presets", { signal })) });
+  const presets = useQuery({
+    queryKey: qk.presets,
+    queryFn: ({ signal }) => unwrap(client.GET("/api/ui/v1/feed-presets", { signal })),
+    // A preset waiting for its feeds completes with a provider listing: poll until none waits.
+    refetchInterval: (q) => (q.state.data?.some((p) => p.pending?.state === "waiting") ? 3000 : false),
+  });
   const install = useMutation({
     mutationFn: (id: string) => unwrap(client.POST("/api/ui/v1/feed-presets/{id}", { params: { path: { id } } })),
     onSuccess: (r) => {
