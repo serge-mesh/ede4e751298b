@@ -18,10 +18,23 @@ ignored), then the basic network rule (`block` / `allow`), then hosts rules with
 It also has a response mode (§5) and a Go-regex mode (§6). The protocol is documented at the top of
 `main.go`.
 
+**Go versions.** `go.mod`'s `go 1.26.4` is the minimum the module (and its dependencies) needs:
+any Go from 1.26.4 builds it, and an older `go` command with `GOTOOLCHAIN=auto` (Go's default)
+fetches 1.26.4 itself. The recommended toolchain is the one the recorded tables and the results
+below were produced with, Go 1.27.4: the oracle's Go-regex mode (§6) reports what the building
+Go's `regexp` accepts, so a different Go release can disagree on that mode's edge cases. The two
+are allowed to differ; raise the `go` line only when a dependency needs it, and record the Go
+release in the results when the tables are regenerated with a new one.
+
+**Maintenance.** Dependabot proposes updates to the oracle's Go modules (`gomod`,
+`/tools/urlfilter-oracle`, weekly, grouped). `github.com/AdguardTeam/urlfilter` and `golibs` are
+the behaviour under comparison: an update to either is merged together with a parity run against
+the new oracle (and regenerated tables, §3), never on its own.
+
 Build and run:
 
 ```sh
-# Go, user-locally (no root): the official tarball, checked against go.dev's SHA-256
+# Go 1.27.4 (recommended; 1.26.4 is the minimum), user-locally (no root): the official tarball, checked against go.dev's SHA-256
 curl -sSLO https://go.dev/dl/go1.27.4.linux-amd64.tar.gz
 tar -C ~/.local/opt -xzf go1.27.4.linux-amd64.tar.gz
 export PATH=$HOME/.local/opt/go/bin:$PATH
