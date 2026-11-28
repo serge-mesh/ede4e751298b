@@ -1,8 +1,9 @@
-//! Allocation budget (build-and-test.md §4): a filter evaluation makes zero heap allocations — the
-//! per-bundle name lookup over hot keys (hit and miss, 2–5 suffix probes) and plain patterns
-//! (including a name where more than 16 shortcuts occur), and address checks in the response phase
-//! (an IPv4 set hit, IPv4 and IPv6 misses, IPv6 hits). Counted by a global allocator; this
-//! binary holds one test so no other thread allocates meanwhile.
+//! Allocation budget: a filter evaluation makes zero heap allocation operations (allocations
+//! and reallocations both count, as in the edge's and the wire's budgets) — the per-bundle name
+//! lookup over hot keys (hit and miss, 2–5 suffix probes) and plain patterns (including a name
+//! where more than 16 shortcuts occur), and address checks in the response phase (an IPv4 set
+//! hit, IPv4 and IPv6 misses, IPv6 hits). Counted by a global allocator after a warm-up pass;
+//! this binary holds one test so no other thread allocates meanwhile.
 
 #![allow(
     clippy::unwrap_used,
@@ -111,7 +112,11 @@ fn filter_evaluation_allocates_nothing() {
         }
     }
     let stats = region.change();
-    assert_eq!(stats.allocations, 0, "{stats:?}");
+    assert_eq!(
+        stats.allocations + stats.reallocations,
+        0,
+        "allocations and reallocations: {stats:?}"
+    );
     // Per round: x.y.ads, exact, adserver.tracker, banner42, the 20-shortcut name, 1.2.3.4,
     // 2001:db8::1 and 2001:db8:1::77.
     assert_eq!(blocks, 100 * 8, "the lookups did match");

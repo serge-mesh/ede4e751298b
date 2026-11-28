@@ -1,11 +1,13 @@
-//! Allocation budgets (build-and-test.md §4): on the baseline query fixtures, a cache hit and a
-//! block reply, query decoding included, make at most 2 heap allocations, and serving after
-//! decoding makes none. Other query shapes and the upstream-answer pipeline have the committed
-//! per-fixture budgets in the tables below; a change that needs more changes the table in the
-//! same commit, reviewed like code.
+//! Allocation budgets, with this file as their source of truth: on the baseline query fixtures,
+//! a cache hit and a block reply, query decoding included, make at most 2 heap allocation
+//! operations, and serving after decoding makes none. Other query shapes and the upstream-answer
+//! pipeline have the committed per-fixture budgets in the tables below; a change that needs more
+//! changes the table in the same commit, reviewed like code.
 //!
-//! Counted with a counting global allocator; everything runs in one test so no other test thread
-//! allocates during a measurement. Allocations and reallocations both count.
+//! **Metric:** allocation operations, allocations plus reallocations (a buffer that grows counts
+//! each time it moves), as `picket-edge`'s `alloc` and `picket-bundle`'s `alloc` count. Counted
+//! with a counting global allocator; everything runs in one test so no other test thread
+//! allocates during a measurement.
 
 #![allow(
     clippy::unwrap_used,
@@ -30,7 +32,8 @@ use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 #[global_allocator]
 static GLOBAL: &StatsAlloc<std::alloc::System> = &INSTRUMENTED_SYSTEM;
 
-/// The baseline query fixtures: at most 2 allocations for decode + serve or decode + block.
+/// The baseline query fixtures: at most 2 allocation operations for decode + serve or decode +
+/// block.
 const BASELINE: &[&str] = &["a-no-opt", "a-opt", "aaaa-opt-do", "https-opt-padded"];
 const BASELINE_MAX: usize = 2;
 
