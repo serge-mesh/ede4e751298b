@@ -110,4 +110,32 @@ How each browser gets the extension: Chromium loads the unpacked build (`--load-
 | IP literal: firewall reject | `net::ERR_CONNECTION_REFUSED` | `NS_ERROR_CONNECTION_REFUSED` |
 | IP literal: allow ends mid-load | reset, retried by the browser, refused: `net::ERR_CONNECTION_REFUSED` | `NS_ERROR_CONNECTION_REFUSED` |
 
-Not covered here: Brave's own builds and Firefox ESR or Developer Edition; the native permission prompts; the unsigned `.xpi` install (Playwright's Firefox requires signed add-ons, like release Firefox); the toolbar popup itself (the popup page opens in a background tab next to the page, so it reads that tab as the active one); a wrong-name certificate on Chromium (its trust by key lifts every certificate error of a chain holding the test CA); HTTPS upgrades in Chromium (Playwright turns them off).
+Not covered by that run (checked by hand below): Brave's own builds and Firefox ESR or Developer Edition; the native permission prompts; the unsigned `.xpi` install (Playwright's Firefox requires signed add-ons, like release Firefox); the toolbar popup itself (the popup page opens in a background tab next to the page, so it reads that tab as the active one); a wrong-name certificate on Chromium (its trust by key lifts every certificate error of a chain holding the test CA); HTTPS upgrades in Chromium (Playwright turns them off).
+
+### Checked by hand in real browsers
+
+On 2026-11-28 (issue #43) the packaged builds (`npm run package`, version 0.1.0) went through the checklist below in **Brave 1.100.59 (Chromium 158.0.8127.92)** and **Firefox ESR 153.8.0esr**, on Linux (Ubuntu 24.04, X11), each started by hand with its debugging port on (`--remote-debugging-port`), with a fresh profile, as a non-root user. Every click, including the native permission prompts, the file pickers and the toolbar icon, was a real X input event on the browser's own UI, and the results were read from screenshots, from the edge's request log and, on Brave, from the extension's storage over CDP. The edge was the fake edge of the Playwright harness (DoH and the bypass API over HTTPS), kept running by `test/browser/manual-env.spec.ts`:
+
+```sh
+PICKET_MANUAL_ENV=/tmp/env.json npx playwright test manual-env --project=chromium
+```
+
+It writes the edge's URLs, the test CA and the sites to the file. Each browser trusted the test CA as a user trusts the LAN CA root (Brave: the NSS database; Firefox: the profile's Authorities), used the edge as its only resolver (Brave: secure DNS with a custom provider; Firefox: TRR mode 3), and the edge gave DNS allows its real `retry_after_s` (blocked answers live 10 s).
+
+| Check | Brave | Firefox ESR |
+|---|---|---|
+| Install | Load unpacked from the unzipped `.zip` in Developer mode; fixed ID `aagdcikeegoglnhilmlaonmjnmlckdgk` | `xpinstall.signatures.required` false, then *Install Add-on From File…*: the unverified-extension prompt, then installed; options page opened on install |
+| *Save and test*: the native host-permission prompt | shown for the edge's host; Deny gives "Access to the edge was not granted…", Allow gives "Connected." | the same |
+| Blocked top-level page | block page with name, bundle and block ID; *Go back* returns to the page before; the 15 min allow reloaded the page about 57 s later (the edge's `retry_after_s`) and it loaded | the same, about 36 s; after the allow, Back goes to the page before and Forward to the loaded page: the block page left the history (`loadReplace`) |
+| Detection: the native all-sites prompt | shown; the options page then says to restart Brave | shown; on at once |
+| Real toolbar popup on a page with blocked sub-resources | before the restart: the restart hint (but see below); after it: both blocked hosts (DNS and firewall) with the badge | without a restart: the blocked host with the badge |
+| *Allow*, *Reload page*, *End now* from the toolbar popup | the allow for both hosts, *Reload page* once the countdown ended (the badge cleared), *End now* removed the allow at the edge | the same |
+| Update in place | folder contents replaced (version 0.1.1), *Reload*: settings, the edge's access and `<all_urls>` kept, detection still working | 0.1.1 `.xpi` installed over 0.1.0: settings and detection kept, same internal UUID |
+| custom_ip with a certificate for another name, an untrusted certificate, null_ip | block page for each (with the CA trusted as a root, not by key) | not repeated (Playwright covers them) |
+
+Brave's default HTTPS upgrade setting didn't get in the way: the `http://` sites loaded, and blocked loads got the block page.
+
+Found: real Brave delivered `webRequest` events as soon as detection was granted. Before any restart, the extension had already recorded both blocked hosts of the page and set the badge to 2, but the popup showed the restart hint instead of the list, because the options page assumes every Chromium needs a restart (`detectionNeedsRestart`). Playwright's Chrome for Testing 159, which loads the extension with `--load-extension`, does need the restart (the `popup` spec). #61 tracks it.
+
+Not checked by hand: a signed `.xpi`, Firefox Developer Edition or Nightly, Brave Shields set to aggressive, macOS and Windows, and a real Picket edge and core (the fake edge answers as the edge does, see above).
+
