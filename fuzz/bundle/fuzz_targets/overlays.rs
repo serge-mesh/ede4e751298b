@@ -31,7 +31,10 @@ fuzz_target!(|data: &[u8]| {
             let first = u32::from(op[0]);
             let last = (first + u32::from(op[1] % 32)).min(SPACE as u32 - 1);
             if op[2] & 1 == 0 {
-                ops.push(RangeOp::Delete { first: first.into(), last: last.into() });
+                ops.push(RangeOp::Delete {
+                    first: first.into(),
+                    last: last.into(),
+                });
             } else {
                 ops.push(RangeOp::Upsert {
                     first: first.into(),
@@ -63,7 +66,8 @@ fuzz_target!(|data: &[u8]| {
         }
         let mut st = RangeStage::new(&prev, true, cs);
         let seq = seq as u64 + 1;
-        st.apply(&ops, seq, cs, want, &base).expect("the model's checksum");
+        st.apply(&ops, seq, cs, want, &base)
+            .expect("the model's checksum");
         let (o, got) = st.finish().expect("within limits");
         assert_eq!(got, want);
         for (a, m) in model.iter().enumerate() {
@@ -84,10 +88,16 @@ fuzz_target!(|data: &[u8]| {
         .chunks_exact(16)
         .map(|c| u128::from_le_bytes(c.try_into().unwrap()))
         .collect();
-    let entries = hashes
-        .iter()
-        .enumerate()
-        .map(|(i, h)| (*h, if i % 5 == 0 { Entry::Tombstone } else { Entry::Upsert(i as u64) }));
+    let entries = hashes.iter().enumerate().map(|(i, h)| {
+        (
+            *h,
+            if i % 5 == 0 {
+                Entry::Tombstone
+            } else {
+                Entry::Upsert(i as u64)
+            },
+        )
+    });
     let o = HashOverlay::from_entries(entries).unwrap();
     let mut last = std::collections::HashMap::new();
     for (i, h) in hashes.iter().enumerate() {
@@ -95,7 +105,17 @@ fuzz_target!(|data: &[u8]| {
     }
     assert_eq!(o.len(), last.len());
     for (h, i) in &last {
-        let want = if i % 5 == 0 { Entry::Tombstone } else { Entry::Upsert(*i as u64) };
-        assert_eq!(o.get(*h).map(|e| match e { Entry::Upsert(v) => Entry::Upsert(*v), Entry::Tombstone => Entry::Tombstone }), Some(want));
+        let want = if i % 5 == 0 {
+            Entry::Tombstone
+        } else {
+            Entry::Upsert(*i as u64)
+        };
+        assert_eq!(
+            o.get(*h).map(|e| match e {
+                Entry::Upsert(v) => Entry::Upsert(*v),
+                Entry::Tombstone => Entry::Tombstone,
+            }),
+            Some(want)
+        );
     }
 });

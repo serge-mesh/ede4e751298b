@@ -57,10 +57,22 @@ fuzz_target!(|data: &[u8]| {
         }
         None => head = data[1..].to_vec(),
     }
-    let pages = MemPages { files: store.clone().into_iter().collect() };
+    let pages = MemPages {
+        files: store.clone().into_iter().collect(),
+    };
     if let Ok(bundle) = load_bundle(&head, &store, Some(&pages), 4 * 1024 * 1024) {
-        let ctx = QueryCtx { qtype: 1, ..Default::default() };
-        for n in ["ads.example", "x.ok.ads.example", "rw.example", "ads1.track.example", "cold.example", "1.2.3.4"] {
+        let ctx = QueryCtx {
+            qtype: 1,
+            ..Default::default()
+        };
+        for n in [
+            "ads.example",
+            "x.ok.ads.example",
+            "rw.example",
+            "ads1.track.example",
+            "cold.example",
+            "1.2.3.4",
+        ] {
             let labels: Vec<&[u8]> = n.split('.').map(str::as_bytes).collect();
             let _ = bundle.lookup_labels_full(&labels, &ctx, &pages);
         }

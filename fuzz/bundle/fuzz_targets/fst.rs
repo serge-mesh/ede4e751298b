@@ -21,7 +21,11 @@ fn crc32c(buf: &[u8]) -> u32 {
     for &b in buf {
         crc ^= u32::from(b);
         for _ in 0..8 {
-            crc = if crc & 1 == 1 { (crc >> 1) ^ 0x82F6_3B78 } else { crc >> 1 };
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0x82F6_3B78
+            } else {
+                crc >> 1
+            };
         }
     }
     let sum = !crc;
@@ -49,7 +53,10 @@ fuzz_target!(|data: &[u8]| {
             (b, u64::from(data[1]))
         }
         _ => {
-            let mut ks: Vec<&[u8]> = data[3..].split(|&b| b == b'\n').filter(|k| !k.is_empty() && k.len() <= 253).collect();
+            let mut ks: Vec<&[u8]> = data[3..]
+                .split(|&b| b == b'\n')
+                .filter(|k| !k.is_empty() && k.len() <= 253)
+                .collect();
             ks.sort_unstable();
             ks.dedup();
             let mut w = FstWriter::new();
@@ -68,7 +75,14 @@ fuzz_target!(|data: &[u8]| {
     let Ok(f) = DomainsFst::from_bytes(bytes, keys) else {
         return;
     };
-    for k in [&b"com"[..], b"com.example", b"org.example.ads", b"", b"\xff\xff", &data[2..data.len().min(40)]] {
+    for k in [
+        &b"com"[..],
+        b"com.example",
+        b"org.example.ads",
+        b"",
+        b"\xff\xff",
+        &data[2..data.len().min(40)],
+    ] {
         let _ = f.get(k);
     }
     for (k, _) in f.entries() {

@@ -16,7 +16,12 @@ fuzz_target!(|data: &[u8]| {
     for s in 0..seg.set_count().min(64) as u32 {
         for &r in seg.set(s) {
             if let Some(rule) = seg.rule(r) {
-                let _ = rule.conditions_match(&labels, "a.tracker.com", &QueryCtx::default(), picket_rules::modifiers::NameSemantics::Labels);
+                let _ = rule.conditions_match(
+                    &labels,
+                    "a.tracker.com",
+                    &QueryCtx::default(),
+                    picket_rules::modifiers::NameSemantics::Labels,
+                );
             }
         }
     }

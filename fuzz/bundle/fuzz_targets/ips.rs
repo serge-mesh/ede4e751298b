@@ -9,7 +9,13 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     let (lo, hi) = b.shard().bounds();
-    for a in [lo, hi, lo.wrapping_add(1), lo / 2 + hi / 2, u128::from(data.len() as u32)] {
+    for a in [
+        lo,
+        hi,
+        lo.wrapping_add(1),
+        lo / 2 + hi / 2,
+        u128::from(data.len() as u32),
+    ] {
         let _ = b.get(a);
     }
     if data.len() < 64 * 1024 {

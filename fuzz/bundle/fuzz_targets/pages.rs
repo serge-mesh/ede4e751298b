@@ -3,7 +3,9 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use picket_bundle::page::{PAGE_SIZE, PageFileHeader, check_page, find_in_page, page_for, seal_header_page, seal_record_page};
+use picket_bundle::page::{
+    PAGE_SIZE, PageFileHeader, check_page, find_in_page, page_for, seal_header_page, seal_record_page,
+};
 
 fuzz_target!(|data: &[u8]| {
     if data.len() < 2 {
@@ -14,7 +16,9 @@ fuzz_target!(|data: &[u8]| {
     let mut page = [0u8; PAGE_SIZE];
     let n = body.len().min(PAGE_SIZE);
     page[..n].copy_from_slice(&body[..n]);
-    let identity = body.get(n..).map_or(0, |t| t.iter().fold(0u128, |a, &b| a.rotate_left(8) ^ u128::from(b)));
+    let identity = body.get(n..).map_or(0, |t| {
+        t.iter().fold(0u128, |a, &b| a.rotate_left(8) ^ u128::from(b))
+    });
     let p = u32::from(data[0] >> 2);
     match mode {
         1 => seal_header_page(&mut page),

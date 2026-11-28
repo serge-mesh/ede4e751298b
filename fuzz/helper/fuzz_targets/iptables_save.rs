@@ -24,12 +24,24 @@ fuzz_target!(|data: &[u8]| {
     assert_eq!(restore_bytes(&text), data);
     let Ok(t) = Table::parse(&text) else { return };
     let start = Instant::now();
-    let ifs = vec![("br0".to_string(), FwMode::Enforce), ("br10".to_string(), FwMode::Monitor)];
+    let ifs = vec![
+        ("br0".to_string(), FwMode::Enforce),
+        ("br10".to_string(), FwMode::Monitor),
+    ];
     let dns6 = vec!["br0".to_string()];
     for platform in [Platform::Unifi, Platform::Debian] {
         for (family, d) in [(Family::V4, &[][..]), (Family::V6, &dns6[..])] {
             for disabled in [false, true] {
-                let p = plan(&t, &Want { family, platform, interfaces: &ifs, dns6: d, disabled });
+                let p = plan(
+                    &t,
+                    &Want {
+                        family,
+                        platform,
+                        interfaces: &ifs,
+                        dns6: d,
+                        disabled,
+                    },
+                );
                 if let Some(r) = &p.restore {
                     // The restore text only ever names Picket's chains as declared chains.
                     for l in r.lines().filter(|l| l.starts_with(':')) {
@@ -41,8 +53,16 @@ fuzz_target!(|data: &[u8]| {
         let _ = layout::place(&t, platform, "br0");
     }
     let addrs = vec![
-        IfAddr { ifname: "br0".into(), addr: "192.168.1.1".parse().unwrap(), prefix: 24 },
-        IfAddr { ifname: "br0".into(), addr: "fd00::1".parse().unwrap(), prefix: 64 },
+        IfAddr {
+            ifname: "br0".into(),
+            addr: "192.168.1.1".parse().unwrap(),
+            prefix: 24,
+        },
+        IfAddr {
+            ifname: "br0".into(),
+            addr: "fd00::1".parse().unwrap(),
+            prefix: 64,
+        },
     ];
     for f in [Family::V4, Family::V6] {
         let _ = redirect_present(&t, f, &["br0".to_string()], 5335, &addrs);
