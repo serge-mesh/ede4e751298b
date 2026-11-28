@@ -1358,7 +1358,7 @@ async fn a_k_choice_shows_only_while_it_still_applies() {
         json!({"name": "p", "provider": "http", "provider_config": cfg("a.txt"), "schedule": cron}),
     )
     .await;
-    let v = get_json(&c, "/feed-providers/p/status").await;
+    let v = status_once_reloaded(&c, "cron").await;
     assert!(v["k_choice"].is_null(), "{v}");
 
     // Back to `dynamic` on another URL: a new model epoch, so the old record is gone.
@@ -1369,7 +1369,7 @@ async fn a_k_choice_shows_only_while_it_still_applies() {
         json!({"name": "p", "provider": "http", "provider_config": cfg("a.txt"), "schedule": dynamic}),
     )
     .await;
-    let v = get_json(&c, "/feed-providers/p/status").await;
+    let v = status_once_reloaded(&c, "dynamic").await;
     assert_eq!(v["k_choice"]["choice"]["budget"], "slowed", "same source: {v}");
     update_feed(
         &c,
@@ -1379,6 +1379,16 @@ async fn a_k_choice_shows_only_while_it_still_applies() {
     .await;
     let v = get_json(&c, "/feed-providers/p/status").await;
     assert!(v["k_choice"].is_null(), "another source: {v}");
+}
+
+/// Provider `p`'s status once the runtime has reloaded its edited trigger (the status reads the
+/// runtime's definition, which an edit reaches a moment after it is saved).
+async fn status_once_reloaded(c: &Core, trigger: &str) -> Value {
+    wait_until("the edited trigger to reach the runtime", || async {
+        get_json(c, "/feed-providers/p/status").await["trigger"] == trigger
+    })
+    .await;
+    get_json(c, "/feed-providers/p/status").await
 }
 
 /// F10: a client that stops sending its upload holds neither the feed's save lock nor a

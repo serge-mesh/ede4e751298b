@@ -1939,8 +1939,11 @@ pub async fn choose_ks(state: &SharedState) {
             feeds: chosen.impacts,
         });
         // Stored only if no source edit landed during the replay (it starts a new model epoch and
-        // drops the old choice); the check and the write commit together.
-        let (pid, rec) = (p.id.clone(), record.clone());
+        // drops the old choice); the check and the write commit together. The learners take the
+        // choice in the same writer call, before any later transaction (a retarget's among them)
+        // can run, and only those still there: one dropped for a new epoch isn't recreated.
+        let (pid, rec, s2) = (p.id.clone(), record.clone(), state.clone());
+        let ids: Vec<String> = feeds.iter().map(|f| f.id.clone()).collect();
         let current = state
             .db
             .write(move |c| {
@@ -1950,21 +1953,19 @@ pub async fn choose_ks(state: &SharedState) {
                 if let Some(rec) = &rec {
                     store::set_k_choice(c, &pid, rec.choice.k, rec)?;
                 }
+                for id in &ids {
+                    s2.feeds.with_existing_learner(id, |l| {
+                        if let Some(r) = &rec {
+                            l.k = r.choice.k;
+                        }
+                        l.k_chosen_at = Some(end);
+                    });
+                }
                 Ok(true)
             })
             .await;
         if !matches!(current, Ok(true)) {
             continue;
-        }
-        // Only learners still there: a source edit committed since the write drops them, and the
-        // old choice mustn't recreate them in the new epoch.
-        for f in &feeds {
-            state.feeds.with_existing_learner(&f.id, |l| {
-                if let Some(r) = &record {
-                    l.k = r.choice.k;
-                }
-                l.k_chosen_at = Some(end);
-            });
         }
         if let Some(record) = &record {
             log_k_choice(&p.id, record);
