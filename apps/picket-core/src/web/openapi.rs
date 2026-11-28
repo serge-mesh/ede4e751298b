@@ -695,6 +695,19 @@ fn operations() -> Vec<Op> {
         .paged()
         .ok("200", Some("PublicSuffixes")),
         op(
+            Get,
+            "/bundles/{id}/public-suffixes/rules",
+            "listBundlePublicSuffixRules",
+            "The rules that name one public suffix the bundle blocks from one feed, a page at a time (the rest of a public-suffix item's rules, from its rules_cursor)",
+            "bundles",
+        )
+        .query("feed", "The feed.")
+        .required()
+        .query("suffix", "The public suffix.")
+        .required()
+        .paged()
+        .ok("200", Some("PublicSuffixRulePage")),
+        op(
             Post,
             "/bundles/{id}/build",
             "buildBundleNow",
@@ -1177,6 +1190,7 @@ fn schemas() -> Map<String, Value> {
             "PolicyDrop",
             "VersionView",
             "TempAllowView",
+            "PublicSuffixRule",
         ]
         .map(String::from),
     );

@@ -8975,18 +8975,54 @@
         },
         "type": "object"
       },
+      "PublicSuffixRulePage": {
+        "description": "A page of PublicSuffixRule items (cursor pagination).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PublicSuffixRule"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "description": "Pass as `cursor` for the next page; null on the last page.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
       "PublicSuffixView": {
         "description": "One public suffix a bundle blocks below the top level, from one feed.",
         "properties": {
           "feed": {
             "type": "string"
           },
+          "rule_count": {
+            "description": "How many of the feed's rules block it, over every page.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
           "rules": {
-            "description": "The feed's rules blocking it (more than one when several rules name it).",
+            "description": "The feed's first rules blocking it (more than one when several rules name it), at most\n10; `rules_cursor` pages through the rest.",
             "items": {
               "$ref": "#/components/schemas/PublicSuffixRule"
             },
             "type": "array"
+          },
+          "rules_cursor": {
+            "description": "Pass as `cursor` to `GET bundles/{id}/public-suffixes/rules` for the rules after\n`rules`; null when `rules` holds them all.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "suffix": {
             "type": "string"
@@ -8995,7 +9031,8 @@
         "required": [
           "feed",
           "suffix",
-          "rules"
+          "rules",
+          "rule_count"
         ],
         "type": "object"
       },
@@ -13304,6 +13341,85 @@
           }
         },
         "summary": "The public suffixes the bundle blocks, by feed, with the rules that name each (the full list behind its grouped public_suffix alerts)",
+        "tags": [
+          "bundles"
+        ]
+      }
+    },
+    "/api/ui/v1/bundles/{id}/public-suffixes/rules": {
+      "get": {
+        "operationId": "listBundlePublicSuffixRules",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feed.",
+            "in": "query",
+            "name": "feed",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The public suffix.",
+            "in": "query",
+            "name": "suffix",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The `next_cursor` of the previous page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Items per page (default 100, 1 to 500; else 400).",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicSuffixRulePage"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "The rules that name one public suffix the bundle blocks from one feed, a page at a time (the rest of a public-suffix item's rules, from its rules_cursor)",
         "tags": [
           "bundles"
         ]

@@ -17,7 +17,7 @@ import { qk, useAlertMutation, useAlerts, type AlertFilter } from "@/api/queries
 import { client, request, unwrap } from "@/api/http";
 import { errorMessage } from "@/api/errors";
 import { alertsOf, invalidateFresh, useUiEvent } from "@/api/events";
-import type { Alert } from "@/api/types";
+import type { Alert, PublicSuffixItem, PublicSuffixRule } from "@/api/types";
 import { formatNumber, formatPercent, formatTime } from "@/lib/format";
 import { escapeControl } from "@/lib/text";
 import { queryEnum } from "@/lib/openapi";
@@ -709,14 +709,7 @@ function PublicSuffixes({ details: d }: { details: Record<string, unknown> }) {
                       <SafeText mono>{i.suffix}</SafeText>
                     </TableCell>
                     <TableCell>
-                      <ul>
-                        {i.rules.map((r, k) => (
-                          <li key={k}>
-                            <SafeText mono>{r.rule ?? "(no longer in the feed)"}</SafeText>
-                            {r.line !== null && r.line !== undefined && <span className="text-muted-foreground">{` (${r.line})`}</span>}
-                          </li>
-                        ))}
-                      </ul>
+                      <SuffixRules bundle={bundle ?? ""} item={i} />
                     </TableCell>
                   </TableRow>
                 ))}
@@ -732,6 +725,65 @@ function PublicSuffixes({ details: d }: { details: Record<string, unknown> }) {
         )}
       </div>
     </Section>
+  );
+}
+
+function RuleLine({ rule: r }: { rule: PublicSuffixRule }) {
+  return (
+    <li>
+      <SafeText mono>{r.rule ?? "(no longer in the feed)"}</SafeText>
+      {r.line !== null && r.line !== undefined && <span className="text-muted-foreground">{` (${r.line})`}</span>}
+    </li>
+  );
+}
+
+/**
+ * One suffix's rules: the first few that come with the suffix page, then the rest a page at a
+ * time from `GET /bundles/{id}/public-suffixes/rules` when asked for (issue 115).
+ */
+function SuffixRules({ bundle, item }: { bundle: string; item: PublicSuffixItem }) {
+  const [open, setOpen] = React.useState(false);
+  const more = useInfiniteQuery({
+    // Under the suffix list's key, so the events that refresh the list refresh these too.
+    queryKey: ["bundlePublicSuffixes", bundle, item.feed, "rules", item.suffix, item.rules_cursor],
+    queryFn: ({ pageParam, signal }) =>
+      unwrap(
+        client.GET("/api/ui/v1/bundles/{id}/public-suffixes/rules", {
+          params: { path: { id: bundle }, query: { feed: item.feed, suffix: item.suffix, cursor: pageParam, limit: PUBLIC_SUFFIX_PAGE } },
+          signal,
+        }),
+      ),
+    initialPageParam: item.rules_cursor ?? undefined,
+    getNextPageParam: (p) => p.next_cursor ?? undefined,
+    enabled: open && !!item.rules_cursor,
+  });
+  // Pages cached from an earlier visit show only once asked for again, like the list above.
+  const loaded = open ? (more.data?.pages.flatMap((p) => p.items) ?? []) : [];
+  const rules = [...item.rules, ...loaded];
+  const count = typeof item.rule_count === "number" ? item.rule_count : rules.length;
+  const left = Math.max(count - rules.length, 0);
+  const hasMore = !!item.rules_cursor && (!open || more.hasNextPage);
+  return (
+    <div className="space-y-1">
+      <ul>
+        {rules.map((r, k) => (
+          <RuleLine key={k} rule={r} />
+        ))}
+      </ul>
+      {open && more.error && !more.isFetchNextPageError && <RefetchError error={more.error} onRetry={() => void more.refetch()} />}
+      {open && <PagedListError query={more} placement="bottom" what="more rules" />}
+      {hasMore && (
+        <Button
+          variant="link"
+          size="sm"
+          className="h-auto p-0"
+          onClick={() => (open ? void more.fetchNextPage() : setOpen(true))}
+          disabled={open && more.isFetching}
+        >
+          {left > 0 ? `Show ${formatNumber(left)} more rule${left === 1 ? "" : "s"}` : "Show more rules"}
+        </Button>
+      )}
+    </div>
   );
 }
 

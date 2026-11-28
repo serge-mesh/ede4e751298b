@@ -1441,6 +1441,78 @@ async fn public_suffix_warnings_are_grouped_per_bundle_and_feed() {
     .await;
 }
 
+/// Issue 115: a suffix named by many rules lists only the first few of them in the suffix page,
+/// with how many there are and a cursor to the rest, which its own paged endpoint walks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn public_suffix_pages_bound_the_rules_of_each_suffix() {
+    use picket_core::compiler::api::PUBLIC_SUFFIX_RULES;
+    let c = core().await;
+    manual_feed(&c, "pm", json!({})).await;
+    put_entity(&c, "bundles", "pm1", json!({"id": "pm1", "name": "pm1", "feeds": [{"feed": "pm"}]})).await;
+    let n = PUBLIC_SUFFIX_RULES * 2 + 5;
+    let mut text: String = (0..n).map(|i| format!("||co.uk^$ctag=tag{i}\n")).collect();
+    text.push_str("||org.uk^\n");
+    save(&c, "pm", &text).await;
+    build(&c, "pm1").await.unwrap();
+    assert_eq!(alert_of(&c, &psl_key("pm1", "pm")).await.details["rules"], n + 1);
+
+    // One suffix a page: co.uk with its first rules only, then org.uk.
+    let (st, page) = get(&c, "/bundles/pm1/public-suffixes?feed=pm&limit=1").await;
+    assert_eq!(st, 200, "{page}");
+    assert_eq!(page["total"], 2);
+    let items = page["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    let co = &items[0];
+    assert_eq!(co["suffix"], "co.uk");
+    assert_eq!(co["rule_count"], n);
+    let first = co["rules"].as_array().unwrap();
+    assert_eq!(first.len(), PUBLIC_SUFFIX_RULES, "{co}");
+    let cursor = co["rules_cursor"].as_str().expect("more rules").to_string();
+    let next = page["next_cursor"].as_str().unwrap();
+    let (_, page2) = get(&c, &format!("/bundles/pm1/public-suffixes?feed=pm&limit=1&cursor={next}")).await;
+    let org = &page2["items"][0];
+    assert_eq!((org["suffix"].clone(), org["rule_count"].clone()), (json!("org.uk"), json!(1)));
+    assert_eq!(org["rules"][0]["rule"], "||org.uk^");
+    assert!(org["rules_cursor"].is_null(), "{org}");
+    assert!(page2["next_cursor"].is_null());
+
+    // The rest of co.uk's rules, a page at a time, each once.
+    let mut rules: Vec<String> = first.iter().map(|r| r["rule"].as_str().unwrap().to_string()).collect();
+    let mut cursor = Some(cursor);
+    let mut pages = 0;
+    while let Some(cur) = cursor {
+        let (st, p) = get(
+            &c,
+            &format!("/bundles/pm1/public-suffixes/rules?feed=pm&suffix=co.uk&limit={PUBLIC_SUFFIX_RULES}&cursor={cur}"),
+        )
+        .await;
+        assert_eq!(st, 200, "{p}");
+        let items = p["items"].as_array().unwrap();
+        assert!(items.len() <= PUBLIC_SUFFIX_RULES);
+        rules.extend(items.iter().map(|r| r["rule"].as_str().unwrap().to_string()));
+        assert!(items.iter().all(|r| r["line"].as_i64().unwrap() > 0));
+        cursor = p["next_cursor"].as_str().map(str::to_string);
+        pages += 1;
+    }
+    assert_eq!(pages, 2);
+    rules.sort_unstable();
+    let mut want: Vec<String> = (0..n).map(|i| format!("||co.uk^$ctag=tag{i}")).collect();
+    want.sort_unstable();
+    assert_eq!(rules, want);
+
+    // Without a cursor the rules start from the first; a bad cursor, a missing suffix and an
+    // unknown bundle are refused.
+    let (_, p) = get(&c, "/bundles/pm1/public-suffixes/rules?feed=pm&suffix=co.uk&limit=3").await;
+    let firsts: Vec<&Value> = p["items"].as_array().unwrap().iter().collect();
+    assert_eq!(firsts, first.iter().take(3).collect::<Vec<_>>());
+    assert_eq!(get(&c, "/bundles/pm1/public-suffixes/rules?feed=pm&suffix=co.uk&cursor=%25").await.0, 400);
+    assert_eq!(get(&c, "/bundles/pm1/public-suffixes/rules?feed=pm").await.0, 400);
+    assert_eq!(get(&c, "/bundles/nope/public-suffixes/rules?feed=pm&suffix=co.uk").await.0, 404);
+    let (_, none) = get(&c, "/bundles/pm1/public-suffixes/rules?feed=pm&suffix=com.au").await;
+    assert_eq!(none["items"], json!([]));
+    assert!(none["next_cursor"].is_null());
+}
+
 /// #49 follow-ups: a rule added or removed for a suffix already listed updates the rule count; a
 /// rule replaced by another for the same suffix keeps a hand resolve (the suffix never left);
 /// a bundle that stops taking the feed's DNS rules, or stops blocking, drops the rows and
