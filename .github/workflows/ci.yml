@@ -23,7 +23,7 @@ on:
           - deny
           - fuzz
           - ui
-          - extension
+          - browser-extension
           - codeql
           - codeql-fuzz
 permissions:
@@ -54,7 +54,7 @@ jobs:
       deny: ${{ steps.select.outputs.deny }}
       fuzz: ${{ steps.select.outputs.fuzz }}
       ui: ${{ steps.select.outputs.ui }}
-      extension: ${{ steps.select.outputs.extension }}
+      browser_extension: ${{ steps.select.outputs.browser_extension }}
       deps: ${{ steps.select.outputs.deps }}
       codeql_rust: ${{ steps.select.outputs.codeql_rust }}
       codeql_js: ${{ steps.select.outputs.codeql_js }}
@@ -137,8 +137,8 @@ jobs:
               - .node-version
               - .github/workflows/ci.yml
               - '!**/*.{md,rst,adoc}'
-            extension:
-              - 'extension/**'
+            browser_extension:
+              - 'browser-extension/**'
               - .node-version
               - .github/workflows/ci.yml
               - '!**/*.{md,rst,adoc}'
@@ -182,7 +182,7 @@ jobs:
           DENY: ${{ steps.filter.outputs.deny }}
           FUZZ: ${{ steps.filter.outputs.fuzz }}
           UI: ${{ steps.filter.outputs.ui }}
-          EXTENSION: ${{ steps.filter.outputs.extension }}
+          BROWSER_EXTENSION: ${{ steps.filter.outputs.browser_extension }}
           DEPS: ${{ steps.filter.outputs.deps }}
           CODEQL_RUST: ${{ steps.filter.outputs.codeql_rust }}
           CODEQL_JS: ${{ steps.filter.outputs.codeql_js }}
@@ -196,7 +196,7 @@ jobs:
             *) mode=weekly ;;
           esac
           for pair in rust:"$RUST":rust edge:"$EDGE":edge deny:"$DENY":deny fuzz:"$FUZZ":fuzz \
-            ui:"$UI":ui extension:"$EXTENSION":extension deps:"$DEPS":- \
+            ui:"$UI":ui browser_extension:"$BROWSER_EXTENSION":browser-extension deps:"$DEPS":- \
             codeql_rust:"$CODEQL_RUST":codeql codeql_js:"$CODEQL_JS":codeql codeql_fuzz:false:codeql-fuzz; do
             name=${pair%%:*}
             rest=${pair#*:}
@@ -574,10 +574,10 @@ jobs:
           npm run build
           npm test
 
-  extension:
-    name: Extension
+  browser-extension:
+    name: Browser extension
     needs: changes
-    if: needs.changes.outputs.extension == 'true'
+    if: needs.changes.outputs.browser_extension == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     container:
@@ -597,10 +597,10 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.npm
-          key: extension-npm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.node-version') }}-${{ hashFiles('extension/package-lock.json') }}
+          key: browser-extension-npm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.node-version') }}-${{ hashFiles('browser-extension/package-lock.json') }}
 
-      - name: Extension build, lint, test and reproducible packages
-        working-directory: extension
+      - name: Browser extension build, lint, test and reproducible packages
+        working-directory: browser-extension
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
           npm run build
@@ -614,7 +614,7 @@ jobs:
           for f in "$first"/*.sha256; do cmp "$f" "dist/$(basename "$f")"; done
 
       - name: Real-browser tests (Chromium and Firefox)
-        working-directory: extension
+        working-directory: browser-extension
         run: |
           # The tests make their certificates with the openssl CLI.
           command -v openssl >/dev/null || { apt-get update && apt-get install -y --no-install-recommends openssl; }
@@ -629,8 +629,8 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: extension-browser-test-results
-          path: extension/test-results/
+          name: browser-extension-test-results
+          path: browser-extension/test-results/
           retention-days: 7
 
   dependency-review:
@@ -744,7 +744,7 @@ jobs:
       - deny
       - fuzz
       - ui
-      - extension
+      - browser-extension
       - dependency-review
     if: always()
     runs-on: ubuntu-slim  # jq over the jobs' results

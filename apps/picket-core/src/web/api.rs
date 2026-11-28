@@ -1101,7 +1101,7 @@ pub fn router() -> Router<SharedState> {
     r = r.merge(crate::logs::api::routes());
     r = r.merge(crate::lookups::api::routes());
     r = r.merge(crate::dnssec::api::routes());
-    r = r.route("/extension", get(super::extension::list));
+    r = r.route("/browser-extension", get(super::browser_extension::list));
     r = r.route("/browser-lists", get(browser_lists));
     // After every route (nested ones are flattened into this router), so each takes it.
     r.method_not_allowed_fallback(method_not_allowed)

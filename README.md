@@ -19,7 +19,7 @@ app; and **picket-browser-extension**.
 | `apps/picket-edge-update` | The root installer and updater |
 | `apps/picket-core` | The management app (embeds `ui/dist`) |
 | `ui/` | React + Vite web UI |
-| `extension/` | Browser extension (Brave, Firefox) |
+| `browser-extension/` | Browser extension (Brave, Firefox) |
 | `dist/` | systemd units, firmware minimums, updater dependency allowlist, Docker file |
 | `fixtures/` | Recorded feeds, upstream answers, golden bundles |
 | `build-support/` | Code the build scripts share (module registry scan, release public keys) |
@@ -62,7 +62,7 @@ base; on `main`, the diff since the commit before the push; changing `ci.yml` pi
 and runs the cheap checks before anything long starts: typos (`_typos.toml`) and, when workflows
 change, zizmor (`.github/zizmor.yml`). Weekly runs pick every job but the fuzz CodeQL scan, which
 runs monthly. Manual runs (**Actions → ci → Run workflow**) pick every job, or one group: `rust`,
-`edge`, `deny`, `fuzz`, `ui`, `extension`, `codeql` or `codeql-fuzz`.
+`edge`, `deny`, `fuzz`, `ui`, `browser-extension`, `codeql` or `codeql-fuzz`.
 
 | Job | Runs when | What |
 |---|---|---|
@@ -72,7 +72,7 @@ runs monthly. Manual runs (**Actions → ci → Run workflow**) pick every job, 
 | cargo deny | manifests, `Cargo.lock`, `deny.toml` | advisories, licences, bans, sources |
 | Fuzz workspaces | `fuzz/` | rustfmt and `cargo check --locked --all-targets` in each `fuzz/*` workspace |
 | UI | `ui/` | lint, typecheck, build, tests |
-| Extension | `extension/` | build, lint, tests, reproducible packages, Chromium and Firefox tests in the Playwright image |
+| Browser extension | `browser-extension/` | build, lint, tests, reproducible packages, Chromium and Firefox tests in the Playwright image |
 | Review dependency changes | PRs changing manifests, lockfiles or workflows | rejects new high/critical vulnerabilities |
 | CodeQL (rust, javascript-typescript) | pushes to `main` changing that language; weekly; manual | `security-extended`, `fuzz/` excluded (`.github/codeql/codeql-config.yml`); not on PRs |
 | CodeQL (rust, fuzz workspaces) | monthly; manual | the harness code in `fuzz/` only, under its own category (`.github/codeql/codeql-fuzz-config.yml`) |

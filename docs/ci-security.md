@@ -65,7 +65,7 @@ Bugs, and Code Smells) into **Security → Code scanning** under the `SonarQube 
 
 - GitHub Actions in `.github/workflows`.
 - The root Cargo workspace and all independent `fuzz/*` workspaces and lockfiles.
-- The npm manifests and lockfiles in `ui` and `extension`.
+- The npm manifests and lockfiles in `ui` and `browser-extension`.
 - The Debian base image in `dist/docker/Dockerfile`.
 
 Cargo and npm minor/patch updates and major updates use separate groups across their directories.
@@ -79,7 +79,7 @@ delay them. Path selection runs the CI jobs a change needs. Updates still requir
 checks before merging.
 
 When updating `@playwright/test`, update the Playwright container tag and digest in `ci.yml`
-in the same PR. `extension/test/ci.test.ts` rejects a mismatch. Dependabot's npm update may
+in the same PR. `browser-extension/test/ci.test.ts` rejects a mismatch. Dependabot's npm update may
 need that companion image change before it passes CI.
 
 The `Review dependency changes` job in `ci.yml` (PRs that change a manifest, a lockfile or a

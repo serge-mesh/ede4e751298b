@@ -1,7 +1,7 @@
 //! The browser extension downloads (core.md §1 `web`, §11 `lists.allow_cidrs`, §12 "Browser
 //! extension"; browser-extension.md §1; build-and-test.md §3).
 //!
-//! The core package carries the CI-built extension under `/usr/share/picket-core/extension/`
+//! The core package carries the CI-built extension under `/usr/share/picket-core/browser-extension/`
 //! (build-and-test.md §3: "the edge release tarballs and extension builds are under
 //! `/usr/share/picket-core/`"; the release pipeline adds them to the `.deb` beside the edge
 //! release): `picket-browser-extension-<version>-brave.zip` and
@@ -13,10 +13,10 @@
 //!   ignored) and each build's SHA-256 is computed then; callers meanwhile wait without holding a
 //!   runtime worker. Released files never change while core runs. Newest version first per
 //!   browser, versions compared part by part, numbers as numbers (`0.10` after `0.9`).
-//! - `GET /extension/<file>` streams a listed build (never read whole into memory), open under
+//! - `GET /browser-extension/<file>` streams a listed build (never read whole into memory), open under
 //!   `lists.allow_cidrs` without basic auth (devices and browsers fetch it without credentials,
 //!   core.md §12); any other name is `404`, so no path outside the listing is ever read.
-//! - `GET /api/ui/v1/extension` lists the builds: browser, version, file, download path, size
+//! - `GET /api/ui/v1/browser-extension` lists the builds: browser, version, file, download path, size
 //!   and SHA-256.
 
 use std::cmp::Ordering;
@@ -34,7 +34,7 @@ use sha2::Digest;
 use crate::state::SharedState;
 
 /// Where the package puts the builds.
-pub const DEFAULT_DIR: &str = "/usr/share/picket-core/extension";
+pub const DEFAULT_DIR: &str = "/usr/share/picket-core/browser-extension";
 /// Files read from the directory at most (README §2 Bounded).
 pub const MAX_FILES: usize = 16;
 /// The largest build served.
@@ -43,13 +43,13 @@ const PREFIX: &str = "picket-browser-extension-";
 
 /// One extension build.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
-pub struct ExtensionBuild {
+pub struct BrowserExtensionBuild {
     /// `brave` or `firefox`.
     pub browser: String,
     pub version: String,
     /// The file name.
     pub file: String,
-    /// Where to download it: `/extension/<file>` (open, no basic auth).
+    /// Where to download it: `/browser-extension/<file>` (open, no basic auth).
     pub path: String,
     pub size: u64,
     /// The file's SHA-256, hex.
@@ -58,14 +58,14 @@ pub struct ExtensionBuild {
 
 /// The builds in the package.
 #[derive(Clone, Debug, Default, Serialize, JsonSchema)]
-pub struct ExtensionBuilds {
-    pub items: Vec<ExtensionBuild>,
+pub struct BrowserExtensionBuilds {
+    pub items: Vec<BrowserExtensionBuild>,
 }
 
 /// The builds core serves, read once from the package directory.
 pub struct Builds {
     dir: PathBuf,
-    list: tokio::sync::OnceCell<Arc<[ExtensionBuild]>>,
+    list: tokio::sync::OnceCell<Arc<[BrowserExtensionBuild]>>,
 }
 
 impl Builds {
@@ -77,7 +77,7 @@ impl Builds {
     }
 
     /// The builds (read and hashed on first use, on a blocking thread; a read error lists none).
-    pub async fn list(&self) -> Arc<[ExtensionBuild]> {
+    pub async fn list(&self) -> Arc<[BrowserExtensionBuild]> {
         self.list
             .get_or_init(|| async {
                 let dir = self.dir.clone();
@@ -99,7 +99,7 @@ impl Builds {
             .clone()
     }
 
-    async fn file(&self, name: &str) -> Option<(ExtensionBuild, PathBuf)> {
+    async fn file(&self, name: &str) -> Option<(BrowserExtensionBuild, PathBuf)> {
         self.list()
             .await
             .iter()
@@ -163,7 +163,7 @@ pub fn parse_name(name: &str) -> Option<(&'static str, String)> {
 }
 
 /// Reads the builds in `dir`, newest version first per browser.
-pub fn scan(dir: &Path) -> std::io::Result<Vec<ExtensionBuild>> {
+pub fn scan(dir: &Path) -> std::io::Result<Vec<BrowserExtensionBuild>> {
     let mut out = Vec::new();
     for e in std::fs::read_dir(dir)?.take(256) {
         let e = e?;
@@ -190,10 +190,10 @@ pub fn scan(dir: &Path) -> std::io::Result<Vec<ExtensionBuild>> {
         if n > MAX_FILE_BYTES {
             continue;
         }
-        out.push(ExtensionBuild {
+        out.push(BrowserExtensionBuild {
             browser: browser.into(),
             version,
-            path: format!("/extension/{name}"),
+            path: format!("/browser-extension/{name}"),
             file: name,
             size: n,
             sha256: hex::encode(h.finalize()),
@@ -210,10 +210,10 @@ pub fn scan(dir: &Path) -> std::io::Result<Vec<ExtensionBuild>> {
     Ok(out)
 }
 
-/// `GET /extension/<file>`: streamed, at most the listed size.
+/// `GET /browser-extension/<file>`: streamed, at most the listed size.
 pub async fn download(State(s): State<SharedState>, AxPath(name): AxPath<String>) -> Response {
     let not_found = || (StatusCode::NOT_FOUND, "not found\n").into_response();
-    let Some((b, path)) = s.extension.file(&name).await else {
+    let Some((b, path)) = s.browser_extension.file(&name).await else {
         return not_found();
     };
     let Ok(f) = tokio::fs::File::open(path).await else {
@@ -243,10 +243,10 @@ pub async fn download(State(s): State<SharedState>, AxPath(name): AxPath<String>
         .into_response()
 }
 
-/// `GET /api/ui/v1/extension`.
-pub async fn list(State(s): State<SharedState>) -> Json<ExtensionBuilds> {
-    Json(ExtensionBuilds {
-        items: s.extension.list().await.to_vec(),
+/// `GET /api/ui/v1/browser-extension`.
+pub async fn list(State(s): State<SharedState>) -> Json<BrowserExtensionBuilds> {
+    Json(BrowserExtensionBuilds {
+        items: s.browser_extension.list().await.to_vec(),
     })
 }
 
@@ -283,7 +283,10 @@ mod tests {
         assert_eq!(l.len(), 2);
         assert_eq!(l[0].browser, "brave");
         assert_eq!(l[0].sha256, hex::encode(sha2::Sha256::digest(b"zip")));
-        assert_eq!(l[1].path, "/extension/picket-browser-extension-0.1.0-firefox.xpi");
+        assert_eq!(
+            l[1].path,
+            "/browser-extension/picket-browser-extension-0.1.0-firefox.xpi"
+        );
     }
 
     #[test]

@@ -13,7 +13,7 @@ import { W5, captured } from "@/test/core-w5";
 import { captureDownloads } from "@/test/downloads";
 import { contractViolations } from "@/test/contract";
 import { exportRefusal, scanExportText } from "./settings";
-import { safePath } from "./extension";
+import { safePath } from "./browser-extension";
 import { forProvider } from "./lookup-providers";
 import { ApiError } from "@/api/errors";
 
@@ -226,24 +226,24 @@ describe("DNSSEC (GET dnssec/queue, GET dnssec/results)", () => {
   });
 });
 
-describe("browser extension builds (GET extension)", () => {
+describe("browser extension builds (GET browser-extension)", () => {
   it("lists each build with its size and SHA-256, linking only core's own download path", async () => {
-    const build = { browser: "firefox", version: "0.1.0", file: "picket-browser-extension-0.1.0-firefox.xpi", path: "/extension/picket-browser-extension-0.1.0-firefox.xpi", size: 51234, sha256: "ab".repeat(32) };
+    const build = { browser: "firefox", version: "0.1.0", file: "picket-browser-extension-0.1.0-firefox.xpi", path: "/browser-extension/picket-browser-extension-0.1.0-firefox.xpi", size: 51234, sha256: "ab".repeat(32) };
     const odd = { ...build, browser: "brave", file: "picket-browser-extension-0.1.0-brave.zip", path: "https://elsewhere.example/x.zip" };
-    mockApi([{ method: "GET", path: "/extension", body: { items: [build, odd] } }]);
-    renderApp("/extension");
+    mockApi([{ method: "GET", path: "/browser-extension", body: { items: [build, odd] } }]);
+    renderApp("/browser-extension");
     expect(await screen.findAllByText("Version 0.1.0, 50.0 KiB", undefined, T)).toHaveLength(2);
     const links = screen.getAllByRole("link", { name: /Download/ });
     expect(links).toHaveLength(1);
     expect(links[0]).toHaveAttribute("href", build.path);
-    expect(safePath("/extension/a.zip", "a.zip")).toBe("/extension/a.zip");
-    expect(safePath("/extension/../a.zip", "../a.zip")).toBeNull();
-    expect(safePath("/extension/b.zip", "a.zip")).toBeNull();
+    expect(safePath("/browser-extension/a.zip", "a.zip")).toBe("/browser-extension/a.zip");
+    expect(safePath("/browser-extension/../a.zip", "../a.zip")).toBeNull();
+    expect(safePath("/browser-extension/b.zip", "a.zip")).toBeNull();
   });
 
   it("says when the package carries no builds (captured: none installed)", async () => {
     mockApi();
-    renderApp("/extension");
+    renderApp("/browser-extension");
     expect(await screen.findByText("No builds in this core package.", undefined, T)).toBeInTheDocument();
   });
 });

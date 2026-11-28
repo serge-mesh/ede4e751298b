@@ -131,7 +131,7 @@ picket-api = { workspace = true, features = ["testkit"] }
 # The release pipeline adds the bundled edge release under /usr/share/picket-core/edge/<version>/
 # (core.md §5, pipelines.md §4) after building the edge tarballs, and the browser extension builds
 # (`picket-browser-extension-<version>-brave.zip`, `-firefox.xpi`) under
-# /usr/share/picket-core/extension/, which core serves at /extension/ (core.md §12,
+# /usr/share/picket-core/browser-extension/, which core serves at /browser-extension/ (core.md §12,
 # build-and-test.md §3).
 [package.metadata.deb]
 name = "picket-core"

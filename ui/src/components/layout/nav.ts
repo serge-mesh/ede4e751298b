@@ -61,7 +61,7 @@ export const NAV: { group: string; items: NavItem[] }[] = [
     items: [
       { to: "/dnssec", label: "DNSSEC", icon: KeyRoundIcon },
       { to: "/system", label: "System", icon: CpuIcon },
-      { to: "/extension", label: "Browser extension", icon: PuzzleIcon },
+      { to: "/browser-extension", label: "Browser extension", icon: PuzzleIcon },
       { to: "/settings", label: "Settings", icon: SettingsIcon },
     ],
   },

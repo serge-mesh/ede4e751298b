@@ -131,7 +131,7 @@ pub struct AppState {
     /// Async DNSSEC validation and the cross-check (core.md §8).
     pub dnssec: Arc<crate::dnssec::Dnssec>,
     /// The browser extension builds in the package (core.md §12).
-    pub extension: Arc<crate::web::extension::Builds>,
+    pub browser_extension: Arc<crate::web::browser_extension::Builds>,
     /// The config restore's generation: work that began before a restore never commits after
     /// it (core.md §2).
     pub restore: Arc<crate::config::export::RestoreGate>,
