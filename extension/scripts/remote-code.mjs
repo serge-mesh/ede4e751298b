@@ -53,8 +53,9 @@ export function remoteSrc(src) {
  */
 export function badScript(html) {
   const doc = new JSDOM(html).window.document;
-  for (const e of doc.querySelectorAll('base[href], noscript')) {
-    return e.outerHTML;
+  const [unwanted] = doc.querySelectorAll('base[href], noscript');
+  if (unwanted !== undefined) {
+    return unwanted.outerHTML;
   }
   const scripts = [...doc.querySelectorAll('script')];
   for (const s of scripts) {
