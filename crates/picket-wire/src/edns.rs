@@ -106,7 +106,33 @@ pub(crate) fn read_item(dec: &mut BinDecoder<'_>) -> Result<Item, ItemError> {
     // decoder refuses empty data (an A, a DS, a CNAME, …), so it is refused here; types whose
     // empty form is valid (NULL, unknown types) keep hickory's representation.
     let rdata_at = dec.index();
-    let rdata = if rdlen == 0 {
+    let alias = if matches!(rtype, rtype::SVCB | rtype::HTTPS) {
+        let at = u16::try_from(rdata_at).map_err(|_| ItemError::Decode)?;
+        let raw = dec
+            .clone(at)
+            .read_slice(usize::from(rdlen))
+            .map_err(|_| ItemError::Decode)?
+            .unverified(/*checked by svcb::alias*/);
+        crate::svcb::is_alias_rdata(raw).then_some(raw)
+    } else {
+        None
+    };
+    let rdata = if let Some(raw) = alias {
+        // AliasMode: its structure is checked and its bytes kept as received, never handed to
+        // hickory's parameter decoder (RFC 9460 §2.4.2; crate::svcb).
+        match crate::svcb::alias(raw) {
+            Ok(_) => {}
+            Err(crate::svcb::AliasError::Malformed) => return Err(ItemError::Decode),
+            Err(crate::svcb::AliasError::Compressed) => return Err(ItemError::BadSvcb),
+        }
+        let data = raw.to_vec();
+        dec.read_slice(usize::from(rdlen))
+            .map_err(|_| ItemError::Decode)?;
+        RData::Unknown {
+            code: record_type,
+            rdata: NULL::with(data),
+        }
+    } else if rdlen == 0 {
         // RFC 1035 §3.3.14: TXT data is one or more character strings.
         if rtype == rtype::TXT {
             return Err(ItemError::Decode);

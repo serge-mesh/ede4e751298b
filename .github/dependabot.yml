@@ -85,6 +85,23 @@ updates:
       - dependency-name: typescript
         update-types:
           - version-update:semver-major
+  # The urlfilter parity oracle (crates/picket-rules/PARITY.md): a test tool, not shipped. An
+  # update to urlfilter or golibs changes the behaviour compared against, so its PR is merged with
+  # a parity run against the rebuilt oracle (PARITY.md "Maintenance").
+  - package-ecosystem: gomod
+    directory: /tools/urlfilter-oracle
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Australia/Sydney
+    cooldown:
+      default-days: 3
+    open-pull-requests-limit: 1
+    groups:
+      urlfilter-oracle:
+        patterns:
+          - '*'
   - package-ecosystem: docker
     directory: /dist/docker
     schedule:

@@ -330,6 +330,109 @@ fn alias_mode_params_are_ignored_on_both_sides() {
     }
 }
 
+/// Issue #94 (RFC 9460 §2.4.2): a received AliasMode record whose known parameters carry values
+/// that are framed but semantically invalid (a short, empty or overlong `port`, an empty `alpn`
+/// list or id, a `no-default-alpn` with a value, partial hint addresses, `mandatory` naming
+/// itself) is accepted with its target and no parameter-derived hints, and kept byte for byte
+/// (hickory would refuse some and rewrite others, which could break a covering RRSIG). Bad
+/// framing, a compressed target and duplicate or unordered keys stay refused.
+#[test]
+fn alias_mode_records_are_kept_byte_for_byte() {
+    let s = sent_for(9, "svc.example", rtype::HTTPS);
+    let cases: [&[(u16, Vec<u8>)]; 6] = [
+        &[(3, vec![0, 80, 0])],
+        &[(3, vec![80])],
+        &[(3, vec![])],
+        &[
+            (0, vec![0, 0]),
+            (1, vec![]),
+            (2, vec![1]),
+            (3, vec![0, 80, 0, 0]),
+            (4, vec![192, 0, 2]),
+            (6, vec![0; 15]),
+        ],
+        &[(1, vec![0]), (4, a("192.0.2.1")), (6, aaaa("2001:db8::1"))],
+        &[(4, vec![192, 0, 2, 1, 9]), (65_000, b"opaque".to_vec())],
+    ];
+    for params in cases {
+        // Mixed case in the target: its bytes are kept as received, the fact lowercased.
+        let rdata = svcb(0, "Pool.Example", params);
+        let mut m = Msg::response(9, "svc.example", rtype::HTTPS, 0);
+        m.rr(1, &ptr(12), rtype::HTTPS, 60, &rdata);
+        let msg = m.build();
+        assert!(judge(&msg, &s), "{params:?}");
+        let ans = check_answer(&msg, &s.sent(), &AnswerLimits::default()).unwrap();
+        assert!(ans.facts.addrs.is_empty(), "{params:?}: {:?}", ans.facts.addrs);
+        assert_eq!(
+            ans.facts.targets.iter().map(|t| t.log_text()).collect::<Vec<_>>(),
+            ["pool.example"]
+        );
+        let mut framed = u16::try_from(rdata.len()).unwrap().to_be_bytes().to_vec();
+        framed.extend_from_slice(&rdata);
+        for wire in [ans.wire(), &msg] {
+            assert!(
+                wire.windows(framed.len()).any(|w| w == framed),
+                "{params:?}: RDATA changed"
+            );
+        }
+        assert_eq!(ans.wire().len(), msg.len(), "{params:?}");
+        // The same parameters in ServiceMode are refused, by hickory or by the RFC 9460 checks.
+        let mut m = Msg::response(9, "svc.example", rtype::HTTPS, 0);
+        m.rr(1, &ptr(12), rtype::HTTPS, 60, &svcb(1, "Pool.Example", params));
+        assert!(
+            check_answer(&m.build(), &s.sent(), &AnswerLimits::default()).is_err(),
+            "ServiceMode {params:?}"
+        );
+    }
+
+    use crate::answer::Invalid;
+    let base = svcb(0, "pool.example", &[]);
+    let with = |tail: &[u8]| [base.as_slice(), tail].concat();
+    let refused: [(&str, Vec<u8>, Invalid); 8] = [
+        (
+            "a value past the RDATA",
+            with(&[0, 3, 0, 5, 0, 80]),
+            Invalid::Undecodable,
+        ),
+        ("a key with no length", with(&[0, 3]), Invalid::Undecodable),
+        ("one stray byte", with(&[0]), Invalid::Undecodable),
+        (
+            "duplicate keys",
+            svcb(0, "pool.example", &[(3, vec![0, 80]), (3, vec![0, 81])]),
+            Invalid::Undecodable,
+        ),
+        (
+            "unordered keys",
+            svcb(0, "pool.example", &[(4, a("192.0.2.1")), (3, vec![0, 80])]),
+            Invalid::Undecodable,
+        ),
+        (
+            "a target past the RDATA",
+            vec![0, 0, 4, b'p', b'o'],
+            Invalid::Undecodable,
+        ),
+        (
+            "an extended label type",
+            vec![0, 0, 0x41, 0],
+            Invalid::Undecodable,
+        ),
+        (
+            "a compressed target",
+            [&[0u8, 0][..], &ptr(12)].concat(),
+            Invalid::BadSvcb,
+        ),
+    ];
+    for (what, rdata, expect) in refused {
+        let mut m = Msg::response(9, "svc.example", rtype::HTTPS, 0);
+        m.rr(1, &ptr(12), rtype::HTTPS, 60, &rdata);
+        assert_eq!(
+            check_answer(&m.build(), &s.sent(), &AnswerLimits::default()).unwrap_err(),
+            expect,
+            "{what}"
+        );
+    }
+}
+
 /// Generated messages: byte mutations, truncations and splices of the recordings. Whatever the
 /// pipeline accepts, the oracle must too, with the same names and addresses.
 #[test]
