@@ -95,12 +95,30 @@ describe('the popup', () => {
     });
   });
 
-  it('says detection starts with the browser\'s next start while Brave waits for it, rather than list nothing', async () => {
-    const got = background({ getState: () => state({ detection: true, detectionAfterRestart: true }), listAllows: () => list([]) });
+  it('says Brave may need a restart while a grant awaits its first request, rather than list nothing', async () => {
+    const got = background({
+      getState: () => state({ detection: true, detectionAfterRestart: true }),
+      listAllows: () => list([]),
+      tabBlocks: () => ({ ok: true, value: [] }),
+    });
     await startPopup(env());
     expect($('blocks-hint').textContent).toBe(DETECTION_ON_AFTER_RESTART);
     expect($('blocks-actions').hidden).toBe(true);
-    expect(got.map((m) => m.type)).not.toContain('tabBlocks');
+    expect(got.map((m) => m.type)).toContain('tabBlocks');
+  });
+
+  it('lists what Brave already reported though the restart note is still set (issue #61)', async () => {
+    background({
+      getState: () => state({ detection: true, detectionAfterRestart: true }),
+      listAllows: () => list([]),
+      tabBlocks: () => ({ ok: true, value: blocks }),
+    });
+    await startPopup(env());
+    await vi.waitFor(() => {
+      expect(rows('blocks')).toHaveLength(3);
+    });
+    expect($('blocks-hint').hidden).toBe(true);
+    expect($('blocks-actions').hidden).toBe(false);
   });
 
   it('hints at sub-resource detection while it is off', async () => {

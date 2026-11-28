@@ -325,7 +325,13 @@ browser.runtime.onInstalled.addListener((d) => {
 // API is there, so the browser wakes the script for its events; the check then confirms it.
 type RequestEvent = typeof browser.webRequest.onErrorOccurred;
 let detecting: RequestEvent | null = null;
+/** Whether a webRequest event arrived since the last grant: the restart note is then moot. */
+let requestSeen = false;
 function onRequestError(d: RequestErrorDetails): void {
+  if (!requestSeen) {
+    requestSeen = true;
+    void browser.storage.session.remove(DETECTION_RESTART_KEY).catch(() => undefined);
+  }
   subresources.onErrorOccurred(d);
 }
 function liveWebRequest(): typeof browser.webRequest | undefined {
@@ -360,13 +366,16 @@ function syncDetection(): void {
   });
 }
 /**
- * Brave passes webRequest events for access granted at run time only from its next start (seen in
- * the browser tests; an extension reload doesn't help): a grant is noted in `storage.session`,
- * which that start clears, so the popup can say why it lists nothing yet. An extension reload or
- * update clears it too, while detection still waits; the options page said so at the grant.
+ * Some Chromium builds pass webRequest events for access granted at run time only from the
+ * browser's next start (Chrome for Testing in the browser tests; an extension reload doesn't help),
+ * others at once (Brave 1.100 installed with Load unpacked, issue #61). A grant is noted in
+ * `storage.session`, which that start clears, and so does the first event: until either, the
+ * popup can say why it may list nothing yet. An extension reload or update clears it too; the
+ * options page said so at the grant.
  */
 function noteDetectionGrant(p: { permissions?: string[] } | undefined): void {
   if (!FIREFOX && (p?.permissions ?? []).includes('webRequest')) {
+    requestSeen = false;
     void browser.storage.session.set({ [DETECTION_RESTART_KEY]: true }).catch(() => undefined);
   }
 }

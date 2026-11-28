@@ -77,7 +77,7 @@ Same-URL navigations: Firefox starts a load from an extension page (the block pa
 
 Then, in the options page: the edge API URL (e.g. `https://dns.home.arpa:9853`) and optionally core's UI URL; *Save and test* grants access to the edge and checks `GET /v1/temporary-allows`. The browser must trust the LAN CA root.
 
-Blocked sub-resource detection on Brave works from the browser's next start: Chromium passes `webRequest` events for access granted at run time only after a restart (an extension reload doesn't help), and the options page says so when it is turned on. Firefox starts at once.
+Blocked sub-resource detection on Brave may work only from the browser's next start: some Chromium builds pass `webRequest` events for access granted at run time only after a restart (Playwright's Chrome for Testing; an extension reload doesn't help), others at once (real Brave 1.100 with *Load unpacked*). The options page says to restart if nothing is listed; the popup lists whatever was detected, and shows that hint only while the list is empty and no request has been seen since the grant. Firefox starts at once.
 
 ## Real-browser tests
 
@@ -88,7 +88,7 @@ Blocked sub-resource detection on Brave works from the browser's next start: Chr
 | Setup | options page opened on install, https-only edge URL, the edge's host permission, the test `GET` with `X-Picket-Client`, only the two URLs stored | `setup` |
 | Block detection | DoH probe (type A, extension header) for every block mode; PTR probe for a firewall-blocked IP literal; no block page for failures that aren't blocks | `blocks` |
 | Block page | name and bundle, lookup provider and verdict, or IP and stage; 15 min / 1 h allows as `PATCH` (`block_id` or `ip`, `subdomains` only when ticked); countdown, reload, and the second attempt after a stale answer; `403` (only "ask an admin / open core UI") and other errors (Retry); *Go back* | `blocks` |
-| Popup | blocked sub-resources (DNS and firewall) with the badge, allowing selected hosts, *End now*, *Reload page*; on Brave before its restart, no detection and the restart hint instead of a list | `popup` |
+| Popup | blocked sub-resources (DNS and firewall) with the badge, allowing selected hosts, *End now*, *Reload page*; on Brave before its restart, no detection and the restart hint instead of an empty list | `popup` |
 | Browser-list URLs | pruned, full and bundle URLs on core's address, the `-full` check, Copy | `lists` |
 | `details.error` per block type | every block response, custom_ip targets that reset, close, fail TLS (handshake, wrong name, untrusted) or drop; IP-literal refusals, resets and drops; page loads and sub-resources; Firefox with HTTPS-First too | `errors` |
 | Block page for blocked loads | 24 blocked loads across the modes and IP literals, back to back: 24/24 on both. That bounds the miss rate below about 12 % (95 % confidence), not the 1 % of §5, which takes about 300 loads (`PICKET_BROWSER_LOADS=300`, which the slow run sets: 300/300 on both, 2026-11-26). Slow: blocked loads after the background script went idle (Firefox unloads its event page after ~30 s; Chromium keeps its worker while Playwright is attached, so it is stopped after 30 s idle) | `blocks`, `slow` |
@@ -135,7 +135,7 @@ It writes the edge's URLs, the test CA and the sites to the file. Each browser t
 
 Brave's default HTTPS upgrade setting didn't get in the way: the `http://` sites loaded, and blocked loads got the block page.
 
-Found: real Brave delivered `webRequest` events as soon as detection was granted. Before any restart, the extension had already recorded both blocked hosts of the page and set the badge to 2, but the popup showed the restart hint instead of the list, because the options page assumes every Chromium needs a restart (`detectionNeedsRestart`). Playwright's Chrome for Testing 159, which loads the extension with `--load-extension`, does need the restart (the `popup` spec). #61 tracks it.
+Found: real Brave delivered `webRequest` events as soon as detection was granted. Before any restart, the extension had already recorded both blocked hosts of the page and set the badge to 2, but the popup showed the restart hint instead of the list, because the options page assumes every Chromium needs a restart (`detectionNeedsRestart`). Playwright's Chrome for Testing 159, which loads the extension with `--load-extension`, does need the restart (the `popup` spec). Fixed for #61: the first `webRequest` event drops the restart note, and the popup lists what was detected even while the note is set.
 
 Not checked by hand: a signed `.xpi`, Firefox Developer Edition or Nightly, Brave Shields set to aggressive, macOS and Windows, and a real Picket edge and core (the fake edge answers as the edge does, see above).
 
