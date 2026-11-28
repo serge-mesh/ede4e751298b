@@ -39,7 +39,7 @@ const REMOTE_OR_INLINE = tags(`
  * A remote script behind markup that only looks local: a local src in another attribute's name or
  * value, a second src, a name that U+00A0 (not HTML whitespace) or a quote extends, an SVG script,
  * and a src a browser reads as remote though its text isn't (a leading space, an entity, a
- * backslash, a tab or newline).
+ * backslash, a scheme with no slashes, a tab or newline).
  */
 const DISGUISED = [
   ...tags(`
@@ -49,6 +49,8 @@ const DISGUISED = [
     <script src=" https://example.com/x.js"></script>
     <script src="https&#58;//example.com/x.js"></script>
     <script src="/\\example.com/x.js"></script>
+    <script src="https:example.com/x.js"></script>
+    <script src="HTTPS:example.com/x.js"></script>
   `),
   '<script src ="main.js" src="https://example.com/x.js"></script>',
   '<script x src="main.js" src="https://example.com/x.js"></script>',
@@ -73,7 +75,7 @@ describe('the build check on pages', () => {
 
   it('rejects remote, protocol-relative and inline scripts in every quoting form, and disguised ones', () => {
     expect(REMOTE_OR_INLINE).toHaveLength(10);
-    expect(DISGUISED).toHaveLength(13);
+    expect(DISGUISED).toHaveLength(15);
     for (const tag of [...REMOTE_OR_INLINE, ...DISGUISED]) {
       expect(badScript(page(tag)), tag).toBeDefined();
       expect(badScript(page(LOCAL.join('') + tag)), tag).toBeDefined();

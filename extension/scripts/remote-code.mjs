@@ -11,23 +11,33 @@ import { JSDOM } from 'jsdom';
 
 const HTML_NS = 'http://www.w3.org/1999/xhtml';
 
-/** Where the page stands in for the URL check: any other origin is outside the package. */
-const BASE = new URL('https://package.invalid/pages/page.html');
+/**
+ * Where the page stands for the URL check, under the extension's own (non-special) scheme, where
+ * `https:host/x.js` is an absolute URL, and under a special one, where a backslash is a slash. A
+ * src must stay on the page's scheme and host under both.
+ */
+const BASES = [
+  new URL('chrome-extension://package-check/pages/page.html'),
+  new URL('https://package.invalid/pages/page.html'),
+];
 
 /**
- * True for a `src` that loads from outside the package: one that resolves to another origin
- * (another scheme, a host, `data:` or `blob:`), or an empty one.
+ * True for a `src` that loads from outside the package: one that resolves to another scheme or
+ * host (an absolute or protocol-relative URL, `data:`, `blob:`), or an empty one.
  * @param {string} src the attribute's value, entities decoded
  */
 export function remoteSrc(src) {
   if (src.trim() === '') {
     return true;
   }
-  try {
-    return new URL(src, BASE).origin !== BASE.origin;
-  } catch {
-    return true;
-  }
+  return BASES.some((base) => {
+    try {
+      const url = new URL(src, base);
+      return url.protocol !== base.protocol || url.host !== base.host;
+    } catch {
+      return true;
+    }
+  });
 }
 
 /**
