@@ -82,10 +82,19 @@ async fn auth_where_needed_and_nowhere_else() {
         c.state.lanca.load().cert_der.as_slice()
     );
     assert_eq!(get(&c, "/lanca/ca.pem", None).await.status(), StatusCode::OK);
+    // A bundle no config has: core builds its own lists in the background from start, so
+    // block-common may already be served (200) or not yet (404). Either way, no auth is asked.
     assert_eq!(
-        get(&c, "/lists/block-common.txt", None).await.status(),
+        get(&c, "/lists/no-such-bundle.txt", None).await.status(),
         StatusCode::NOT_FOUND
     );
+    let lists = get(&c, "/lists/block-common.txt", None).await;
+    assert!(
+        matches!(lists.status(), StatusCode::OK | StatusCode::NOT_FOUND),
+        "{}",
+        lists.status()
+    );
+    assert!(lists.headers().get("www-authenticate").is_none());
     assert_eq!(
         get(&c, "/browser-extension/picket-brave.zip", None)
             .await
