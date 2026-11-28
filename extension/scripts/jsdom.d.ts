@@ -1,7 +1,7 @@
 // The part of jsdom's API the build's page check uses (jsdom ships no types; remote-code.mjs).
 
 declare module 'jsdom' {
-  interface ScriptElement {
+  interface Element {
     readonly namespaceURI: string | null;
     readonly textContent: string | null;
     readonly outerHTML: string;
@@ -11,7 +11,7 @@ declare module 'jsdom' {
   export class JSDOM {
     constructor(html?: string);
     readonly window: {
-      readonly document: { querySelectorAll(selectors: 'script'): Iterable<ScriptElement> };
+      readonly document: { querySelectorAll(selectors: string): Iterable<Element> };
     };
   }
 }

@@ -43,12 +43,17 @@ export function remoteSrc(src) {
 /**
  * The first script in `html` that is inline or may load from outside the package, as its markup,
  * or `undefined` when every script loads from the package. An SVG script (it loads with `href`)
- * counts as one that may.
+ * counts as one that may, and so does every script on a page with a `<base href>` (its markup is
+ * returned).
  * @param {string} html
  * @returns {string | undefined}
  */
 export function badScript(html) {
   const doc = new JSDOM(html).window.document;
+  // A `<base href>` moves where every relative src resolves; the pages never need one.
+  for (const b of doc.querySelectorAll('base[href]')) {
+    return b.outerHTML;
+  }
   for (const s of doc.querySelectorAll('script')) {
     const src = s.getAttribute('src');
     if (s.namespaceURI !== HTML_NS || src === null || remoteSrc(src) || (s.textContent ?? '').trim() !== '') {
