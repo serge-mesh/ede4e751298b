@@ -1878,6 +1878,22 @@ pub async fn choose_ks(state: &SharedState) {
         if !due {
             continue;
         }
+        // The source the replay reads: a choice made from it is stored only while it is current.
+        let pid = p.id.clone();
+        let Ok(source_gen) = state
+            .db
+            .read(move |c| Ok::<_, anyhow::Error>(store::load_provider_state(c, &pid)?.source_gen))
+            .await
+        else {
+            continue;
+        };
+        if state
+            .feeds
+            .provider_def(&p.id)
+            .is_none_or(|d| d.module != p.module || d.config != p.config)
+        {
+            continue;
+        }
         let Ok(inputs) = replay_inputs(state, &p, now).await else {
             continue;
         };
@@ -1913,17 +1929,7 @@ pub async fn choose_ks(state: &SharedState) {
         else {
             continue;
         };
-        for f in &feeds {
-            state.feeds.with_learner(&f.id, |l| {
-                if let Some(c) = &chosen {
-                    l.k = c.choice.k;
-                }
-                l.k_chosen_at = Some(end);
-            });
-        }
-        let Some(chosen) = chosen else { continue };
-        let k = chosen.choice.k;
-        let record = schedule::KChoiceRecord {
+        let record = chosen.map(|chosen| schedule::KChoiceRecord {
             chosen_at: crate::util::ts(&now),
             window_start: crate::util::ts(&schedule::from_unix(chosen.window_start)),
             window_end: crate::util::ts(&now),
@@ -1931,16 +1937,36 @@ pub async fn choose_ks(state: &SharedState) {
             budget_per_day: schedule::learner::BUDGET_PER_DAY,
             choice: chosen.choice,
             feeds: chosen.impacts,
-        };
+        });
+        // Stored only if no source edit landed during the replay (it starts a new model epoch and
+        // drops the old choice); the check and the write commit together.
         let (pid, rec) = (p.id.clone(), record.clone());
-        let _ = state
+        let current = state
             .db
             .write(move |c| {
-                store::set_k_choice(c, &pid, k, &rec)?;
-                Ok::<_, anyhow::Error>(())
+                if !store::provider_source_current(c, &pid, source_gen)? {
+                    return Ok::<_, anyhow::Error>(false);
+                }
+                if let Some(rec) = &rec {
+                    store::set_k_choice(c, &pid, rec.choice.k, rec)?;
+                }
+                Ok(true)
             })
             .await;
-        log_k_choice(&p.id, &record);
+        if !matches!(current, Ok(true)) {
+            continue;
+        }
+        for f in &feeds {
+            state.feeds.with_learner(&f.id, |l| {
+                if let Some(r) = &record {
+                    l.k = r.choice.k;
+                }
+                l.k_chosen_at = Some(end);
+            });
+        }
+        if let Some(record) = &record {
+            log_k_choice(&p.id, record);
+        }
     }
 }
 
