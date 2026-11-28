@@ -365,7 +365,7 @@ pub struct CancelScan {
 struct Pending {
     row: Row,
     count: u64,
-    /// Every rule it may cancel was checked so far.
+    /// Every rule it may cancel was checked so far (among the keys the sweep reads).
     complete: bool,
     raw: Option<(String, Option<i64>)>,
     sample: Vec<String>,
@@ -383,8 +383,9 @@ impl Pending {
     }
 
     /// What the scan reports for it: nothing when it was found to cancel nothing in a complete
-    /// scan.
-    fn into_found(self) -> Option<Found> {
+    /// scan. Its count is exact only when the sweep read every key (`whole`): a sweep of the
+    /// changed keys finds what they add, so its count is a lower bound.
+    fn into_found(self, whole: bool) -> Option<Found> {
         if self.count == 0 && self.complete {
             return None;
         }
@@ -393,7 +394,7 @@ impl Pending {
             kind: CancelKind::Exception,
             count: self.count,
             proven: self.count > 0,
-            exhaustive: self.complete,
+            exhaustive: self.complete && whole,
             raw: self.raw,
             sample: self.sample,
         })
@@ -580,12 +581,23 @@ pub async fn cancellations_step(state: &SharedState, ctx: &mut Ctx) -> Result<bo
                 .read(move |c| sweep_step(c, &spec, &runs, &b2, &pats, &input, work))
                 .await?;
             scan.work_left = scan.work_left.saturating_sub(out.spent);
-            let next = match out.outcome {
-                SweepOutcome::Retry => Some(Sweep {
+            let outcome = match out.outcome {
+                // Read again, smaller, while the budget allows; else keep what it proved.
+                SweepOutcome::Retry { .. } if scan.work_left > 0 => None,
+                SweepOutcome::Retry { hits } => Some(SweepOutcome::Done {
+                    hits,
+                    capped: true,
+                    next: None,
+                }),
+                done @ SweepOutcome::Done { .. } => Some(done),
+            };
+            let next = match outcome {
+                None => Some(Sweep {
                     at: sweep.at,
                     page: (sweep.page / 2).max(SWEEP_KEYS_MIN),
                 }),
-                SweepOutcome::Done { hits, capped, next } => {
+                Some(SweepOutcome::Retry { .. }) => None,
+                Some(SweepOutcome::Done { hits, capped, next }) => {
                     if capped {
                         scan.gaps.insert(gap::WORK);
                         for p in &mut scan.pending {
@@ -613,8 +625,9 @@ pub async fn cancellations_step(state: &SharedState, ctx: &mut Ctx) -> Result<bo
         }
     }
     // Done: the exception patterns' findings, and whether the scan was complete.
+    let whole = scan.covers_all;
     for p in std::mem::take(&mut scan.pending) {
-        if let Some(f) = p.into_found() {
+        if let Some(f) = p.into_found(whole) {
             push_found(ctx, &bundle, f);
         }
     }
@@ -654,7 +667,7 @@ fn incomplete_condition(
 
 /// Raises one canceller's finding.
 fn push_found(ctx: &mut Ctx, bundle: &str, f: Found) {
-    let (rule, line) = f.raw.unwrap_or_default();
+    let raw = f.raw;
     let how = match f.kind {
         CancelKind::Badfilter => "$badfilter",
         CancelKind::Exception => "exception",
@@ -672,17 +685,22 @@ fn push_found(ctx: &mut Ctx, bundle: &str, f: Found) {
             "An {how} in feed {feed} may cancel rules of other feeds in bundle {bundle} (not proven within the scan's limits)"
         ),
     };
+    let mut detail = json!({
+        "warning": "cross_feed_cancellation",
+        "proven": f.proven, "exhaustive": f.exhaustive, "cancelled": count, "sample": f.sample,
+    });
+    // Without its raw text here, the commit looks the rule and line up by identity.
+    if let (Some((rule, line)), Some(d)) = (raw, detail.as_object_mut()) {
+        d.insert("rule".into(), json!(rule));
+        d.insert("line".into(), json!(line));
+    }
     ctx.findings.push(Finding {
         kind: "bundle_warning",
         severity: Severity::Warning,
         dedupe_key: format!("bundle_warning:{bundle}:cancel:{}", f.ident.short()),
         title,
         identity: f.ident,
-        detail: json!({
-            "warning": "cross_feed_cancellation",
-            "rule": rule, "line": line, "proven": f.proven, "exhaustive": f.exhaustive,
-            "cancelled": count, "sample": f.sample,
-        }),
+        detail,
     });
 }
 
@@ -804,8 +822,10 @@ fn scan_chunk(
                     fits &= add_related(&mut rows, view.key_rules(c, s, &mut bad)?);
                 }
                 if flags.intersects(Flags::ALL_SUBS) {
-                    let below = view.below(c, &k, BELOW_PER_CANCELLER, &mut bad)?;
-                    if below.len() >= BELOW_PER_CANCELLER {
+                    // One more than it keeps tells a full page from an omission.
+                    let mut below = view.below(c, &k, BELOW_PER_CANCELLER + 1, &mut bad)?;
+                    if below.len() > BELOW_PER_CANCELLER {
+                        below.truncate(BELOW_PER_CANCELLER);
                         out.gaps.insert(gap::BELOW);
                         cut.insert(r.order.clone());
                     }
@@ -876,7 +896,9 @@ fn scan_chunk(
         // Found cancelling nothing among candidates that were cut: it may still.
         for row in rows.iter().filter(|r| mine.contains(&r.order)) {
             if cut.contains(&row.order) && !reported.contains(&row.order) {
-                out.found.push(Found::unchecked(row));
+                let mut f = Found::unchecked(row);
+                f.raw = super::source::raw_of(c, row.entry_id).ok();
+                out.found.push(f);
             }
         }
     }
@@ -930,8 +952,9 @@ fn scan_chunk(
 
 /// What a sweep step came to.
 enum SweepOutcome {
-    /// The page didn't fit the step's work: read it again, smaller.
-    Retry,
+    /// The page didn't fit the step's work: read it again, smaller (what it proved before
+    /// running out, per exception pattern, stands only when no retry can run).
+    Retry { hits: Vec<(u64, Vec<String>)> },
     /// The page was scanned: per exception pattern, the blocks found and a sample of them;
     /// whether the work ran out in it (at the smallest page); and where the sweep goes on
     /// (`None`: done).
@@ -1038,12 +1061,6 @@ fn sweep_step(
             },
         )
     };
-    if report.capped && sweep.page > SWEEP_KEYS_MIN {
-        return Ok(SweepOut {
-            outcome: SweepOutcome::Retry,
-            spent: report.work,
-        });
-    }
     let mut hits = vec![(0u64, Vec::new()); n];
     for rep in &report.cancellers {
         let Some(h) = hits.get_mut(rep.canceller) else {
@@ -1055,6 +1072,12 @@ fn sweep_step(
             .filter_map(|i| i.checked_sub(n).and_then(|b| blocks.get(b)))
             .collect();
         *h = (rep.count, render_sample(c, &sample));
+    }
+    if report.capped && sweep.page > SWEEP_KEYS_MIN {
+        return Ok(SweepOut {
+            outcome: SweepOutcome::Retry { hits },
+            spent: report.work,
+        });
     }
     Ok(SweepOut {
         outcome: SweepOutcome::Done {
@@ -1503,15 +1526,24 @@ mod tests {
             raw: None,
             sample: Vec::new(),
         };
-        assert!(pending(0, true).into_found().is_none(), "a complete negative");
-        let f = pending(0, false).into_found().expect("unchecked: may cancel");
+        assert!(pending(0, true).into_found(true).is_none(), "a complete negative");
+        assert!(
+            pending(0, true).into_found(false).is_none(),
+            "nothing new among the changed keys"
+        );
+        let f = pending(0, false).into_found(true).expect("unchecked: may cancel");
         assert!(!f.proven && !f.exhaustive);
-        let f = pending(3, false).into_found().unwrap();
+        let f = pending(3, true).into_found(false).unwrap();
+        assert!(
+            f.proven && !f.exhaustive,
+            "the changed keys' count is a lower bound"
+        );
+        let f = pending(3, false).into_found(true).unwrap();
         assert!(
             f.proven && !f.exhaustive,
             "a count of a cut scan is a lower bound"
         );
-        let f = pending(3, true).into_found().unwrap();
+        let f = pending(3, true).into_found(true).unwrap();
         assert!(f.proven && f.exhaustive);
         // Samples gather across sweep pages, bounded.
         let mut p = pending(0, true);
