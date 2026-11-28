@@ -744,7 +744,8 @@ function RuleLine({ rule: r }: { rule: PublicSuffixRule }) {
 function SuffixRules({ bundle, item }: { bundle: string; item: PublicSuffixItem }) {
   const [open, setOpen] = React.useState(false);
   const more = useInfiniteQuery({
-    queryKey: ["bundlePublicSuffixRules", bundle, item.feed, item.suffix, item.rules_cursor],
+    // Under the suffix list's key, so the events that refresh the list refresh these too.
+    queryKey: ["bundlePublicSuffixes", bundle, item.feed, "rules", item.suffix, item.rules_cursor],
     queryFn: ({ pageParam, signal }) =>
       unwrap(
         client.GET("/api/ui/v1/bundles/{id}/public-suffixes/rules", {

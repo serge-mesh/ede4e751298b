@@ -34,6 +34,8 @@ describe("UI WebSocket events (api.md §7)", () => {
     expect(keys()).toEqual(expect.arrayContaining(['["bundles"]', '["bundlePublicSuffixes"]', '["browser-lists"]']));
     // Events keep it fresh, so the socket's first open reads it once more.
     expect(keptByEvents(["bundlePublicSuffixes", "b", "f"])).toBe(true);
+    // A suffix's further rules (issue 115) sit under the same key, so they follow too.
+    expect(keptByEvents(["bundlePublicSuffixes", "b", "f", "rules", "co.uk", "c1"])).toBe(true);
     spy.mockClear();
     applyEvent(qc, { type: "lagged", data: { missed: 3 } });
     // Everything, and (round 3, W7) closed editors' manual files marked stale.
