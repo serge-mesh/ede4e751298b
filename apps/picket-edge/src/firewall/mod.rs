@@ -383,6 +383,9 @@ pub struct FwClient {
     rejects: AtomicU64,
     mon_rejects: AtomicU64,
     seeded: AtomicBool,
+    /// The fast connection's first `hello` matched: with `seeded`, startup may count the helper
+    /// as seeded (a mismatch there must stop startup whichever connection answers first).
+    fast_hello: AtomicBool,
     seed_done: Notify,
     reconcile_now: Notify,
     apply_now: Notify,
@@ -447,6 +450,7 @@ impl FwClient {
             rejects: AtomicU64::new(0),
             mon_rejects: AtomicU64::new(0),
             seeded: AtomicBool::new(false),
+            fast_hello: AtomicBool::new(false),
             seed_done: Notify::new(),
             reconcile_now: Notify::new(),
             apply_now: Notify::new(),
@@ -588,22 +592,28 @@ impl FwClient {
 
     /// Waits up to `seed_wait` for the seed; an incompatible helper ends the wait at once.
     async fn wait_seeded(&self) -> Seeding {
-        let n = self.seed_done.notified();
-        tokio::pin!(n);
-        n.as_mut().enable();
-        if let Some(s) = self.seeding() {
-            return s;
+        let deadline = tokio::time::Instant::now() + self.tuning.seed_wait;
+        loop {
+            let n = self.seed_done.notified();
+            tokio::pin!(n);
+            n.as_mut().enable();
+            if let Some(s) = self.seeding() {
+                return s;
+            }
+            // One connection's news may leave the other's outstanding: wait on, to the deadline.
+            if tokio::time::timeout_at(deadline, n).await.is_err() {
+                return self.seeding().unwrap_or(Seeding::Pending);
+            }
         }
-        let _ = tokio::time::timeout(self.tuning.seed_wait, n).await;
-        self.seeding().unwrap_or(Seeding::Pending)
     }
 
-    /// Seeded or incompatible (which wins), or neither yet.
+    /// Incompatible (which wins), seeded once both connections' first `hello` matched and the
+    /// control connection's seed finished, or neither yet.
     fn seeding(&self) -> Option<Seeding> {
         if let Some(reason) = self.incompatible() {
             return Some(Seeding::Incompatible(reason));
         }
-        self.seeded.load(Relaxed).then_some(Seeding::Seeded)
+        (self.seeded.load(Relaxed) && self.fast_hello.load(Relaxed)).then_some(Seeding::Seeded)
     }
 
     /// Why the helper is incompatible, once a connection found it speaking another protocol.
@@ -2177,7 +2187,12 @@ impl FwClient {
                         )
                         .await;
                     match hello {
-                        Ok(h) if h.proto_version == PROTO_VERSION => Some(c),
+                        Ok(h) if h.proto_version == PROTO_VERSION => {
+                            if !self.fast_hello.swap(true, Relaxed) {
+                                self.seed_done.notify_waiters();
+                            }
+                            Some(c)
+                        }
                         Ok(h) => {
                             // Never an `ensure` to a helper speaking another protocol: the edge
                             // refuses to run, whichever connection sees it first (§4).
@@ -2562,6 +2577,8 @@ mod tests {
         hellos: usize,
         /// Hold every `dump` until notified.
         pause_dump: Option<Arc<Notify>>,
+        /// Hold the fast connection's `hello` until notified.
+        pause_fast_hello: Option<Arc<Notify>>,
         /// `dump` pages per set name.
         dump: HashMap<String, Vec<picket_api::helper::SetEntry>>,
         ensured: Vec<picket_api::helper::SetEntry>,
@@ -2660,6 +2677,10 @@ mod tests {
                         let data = match f.kind.as_str() {
                             kind::HELLO => {
                                 let r: HelloRequest = f.parse_data().unwrap();
+                                let pause = st.lock().unwrap().pause_fast_hello.clone();
+                                if let (false, Some(p)) = (r.events, pause) {
+                                    p.notified().await;
+                                }
                                 let mut g = st.lock().unwrap();
                                 g.hellos += 1;
                                 if r.events {
@@ -4394,6 +4415,31 @@ mod tests {
         assert_eq!(ctl, fast);
         assert!(w.mismatch_events().is_empty(), "reported once");
         hold.notify_waiters();
+    }
+
+    /// #69: the control connection seeding first doesn't make the helper seeded while the fast
+    /// connection's `hello` is outstanding; its mismatch then still refuses the config.
+    #[tokio::test]
+    async fn a_late_fast_connection_mismatch_still_refuses_the_config() {
+        let f = fake(Duration::ZERO);
+        f.st().fast_proto = Some(PROTO_VERSION + 1);
+        let hold = Arc::new(Notify::new());
+        f.st().pause_fast_hello = Some(Arc::clone(&hold));
+        let mut w = client_w(&f.path, |t| t.seed_wait = Duration::from_secs(5));
+        let c = Arc::clone(&w.c);
+        let prep = tokio::spawn(async move { c.prepare(&cfg(50)).await });
+        assert!(until(Duration::from_secs(5), || w.c.seeded.load(Relaxed)).await);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!prep.is_finished(), "not seeded until the fast hello answers");
+        hold.notify_waiters();
+        let r = tokio::time::timeout(Duration::from_secs(5), prep)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(r.as_ref().is_err_and(|e| e.contains("speaks protocol")), "{r:?}");
+        let ev = w.mismatch_events();
+        assert_eq!(ev.len(), 1, "{ev:?}");
+        assert_eq!(ev[0]["connection"], "fast");
     }
 
     /// #69: an unreachable helper is temporary, not incompatible: the wait runs out, the config
