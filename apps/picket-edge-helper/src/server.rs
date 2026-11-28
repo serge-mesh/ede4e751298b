@@ -733,4 +733,36 @@ mod apply_tests {
             "{hello}"
         );
     }
+
+    #[tokio::test]
+    async fn back_to_back_applies_do_not_hold_off_a_queued_disable() {
+        let b = Arc::new(FakeBackend::new());
+        let shared = Shared::new();
+        let (tx, rx) = sync_channel(16);
+        let desired = || match parse_request(&apply("br0")) {
+            Ok((_, Request::Apply(d))) => d,
+            other => panic!("{other:?}"),
+        };
+        shared.put_apply(desired(), oneshot::channel().0);
+        let (dtx, drx) = oneshot::channel();
+        tx.send(Cmd::Disable(dtx)).unwrap();
+        // Keep the slot refilled as fast as the engine empties it.
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let refill = std::thread::spawn({
+            let (shared, stop) = (shared.clone(), stop.clone());
+            let d = desired();
+            move || {
+                while !stop.load(Ordering::Relaxed) {
+                    shared.put_apply(d.clone(), oneshot::channel().0);
+                    std::thread::yield_now();
+                }
+            }
+        });
+        let engine = Engine::new(b.clone(), shared.clone(), Platform::Debian);
+        std::thread::spawn(move || engine::run(engine, rx));
+        let r = timeout(Duration::from_secs(1), drx).await;
+        stop.store(true, Ordering::Relaxed);
+        refill.join().unwrap();
+        assert!(r.expect("the disable waited behind the applies").is_ok());
+    }
 }

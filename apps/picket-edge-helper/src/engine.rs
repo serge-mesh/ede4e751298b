@@ -1000,18 +1000,30 @@ pub fn run<B: Backend>(mut engine: Engine<B>, rx: Receiver<Cmd>) {
     loop {
         // The newest socket apply, ahead of the next command: when the queue was full its wake
         // was dropped, and the commands still queued bring the engine back here.
-        if let Some(p) = engine.shared.take_apply() {
-            let response = engine.apply_desired(*p.desired);
-            for w in p.waiters {
-                let _ = w.send(response.clone());
+        let applied = match engine.shared.take_apply() {
+            Some(p) => {
+                let response = engine.apply_desired(*p.desired);
+                for w in p.waiters {
+                    let _ = w.send(response.clone());
+                }
+                last_end = Instant::now();
+                next = last_end + REASSERT;
+                true
             }
-            last_end = Instant::now();
-            next = last_end + REASSERT;
-            continue;
-        }
-        let deadline = follow_up.map_or(next, |f| f.min(next));
-        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            None => false,
+        };
+        // After an apply, take at most one queued command without waiting before looking at the
+        // slot again: applies arriving back to back can't hold off a `disable` or a shutdown.
+        let wait = if applied {
+            Duration::ZERO
+        } else {
+            follow_up
+                .map_or(next, |f| f.min(next))
+                .saturating_duration_since(Instant::now())
+        };
+        match rx.recv_timeout(wait) {
             Ok(Cmd::ApplyPending) => {}
+            Err(RecvTimeoutError::Timeout) if applied => {}
             Ok(Cmd::Disable(tx)) => {
                 let _ = tx.send(engine.disable());
                 last_end = Instant::now();
