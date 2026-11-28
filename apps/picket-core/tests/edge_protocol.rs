@@ -2654,3 +2654,166 @@ async fn hourly_tls_refusals_never_crowd_other_events_off_the_edge_page() {
     assert!(refusals > 0 && refusals <= 20, "{refusals}");
     assert!(v.events.windows(2).all(|w| w[0].at >= w[1].at), "newest first");
 }
+
+// #71: log batches across a config restore ----------------------------------------------------
+
+/// Decodes JSON lines into a batch as the ingest would.
+fn batch_of(lines: &[Value]) -> picket_core::logs::decode::Batch {
+    let now = Timestamp::now();
+    let ctx = picket_core::logs::decode::Context {
+        now,
+        oldest: now - jiff::SignedDuration::from_hours(72),
+    };
+    let text = lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n");
+    picket_core::logs::decode::decode_lines(text.as_bytes(), &ctx, &picket_core::logs::decode::LIMITS).unwrap()
+}
+
+/// Exports the configuration and restores it (the edge and its key are kept).
+async fn restore_same(c: &common::Core) {
+    let dir = c.state.data_dir.clone();
+    let doc = c
+        .state
+        .db
+        .read(move |db| picket_core::config::export::export(db, &dir))
+        .await
+        .unwrap();
+    picket_core::config::export::restore(&c.state, doc, None).await.unwrap();
+    assert!(!c.state.restore.logs_pending(), "the restore emptied the logs");
+}
+
+/// Stores `lines` in a task, holds it at `point`, restores the configuration meanwhile, then
+/// lets it go on: the batch's result.
+async fn store_across_a_restore(
+    c: &common::Core,
+    a: &FakeEdge,
+    lines: &[Value],
+    point: picket_core::logs::ingest::IngestPoint,
+) -> Result<picket_core::logs::ingest::IngestReport, picket_core::logs::ingest::IngestError> {
+    let pause = c.state.logs.pause_at(point);
+    let (st, id, fp, b) = (c.state.clone(), a.id.clone(), a.fingerprint.clone(), batch_of(lines));
+    let task = tokio::spawn(async move { st.logs.store_batch(&st, &id, &fp, b).await });
+    pause.reached.notified().await;
+    restore_same(c).await;
+    pause.resume.notify_one();
+    task.await.unwrap()
+}
+
+async fn events_of(c: &common::Core, edge: &str) -> i64 {
+    q1::<i64>(c, "SELECT count(*) FROM edge_events WHERE edge_id = ?1", vec![edge.to_string()])
+        .await
+        .unwrap()
+}
+
+/// `q` records in every partition.
+async fn stored_queries(c: &common::Core) -> i64 {
+    let store = picket_core::logs::LogStore::new(&c.state.data_dir);
+    tokio::task::spawn_blocking(move || {
+        let mut n = 0;
+        for (hour, _) in store.list().unwrap() {
+            if let Some(p) = store.open(&hour, false).unwrap() {
+                n += p
+                    .conn
+                    .query_row("SELECT count(*) FROM events WHERE edge_id <> ''", [], |r| r.get::<_, i64>(0))
+                    .unwrap();
+            }
+        }
+        n
+    })
+    .await
+    .unwrap()
+}
+
+async fn log_records_points(c: &common::Core, edge: &str) -> i64 {
+    metrics_q1(
+        c,
+        "SELECT count(*) FROM points p JOIN series s ON s.id = p.series_id
+         WHERE s.name = 'log_records' AND s.labels_json LIKE '%' || ?1 || '%'",
+        edge,
+    )
+    .await
+}
+
+fn is_retryable(r: &Result<picket_core::logs::ingest::IngestReport, picket_core::logs::ingest::IngestError>) -> bool {
+    matches!(r, Err(picket_core::logs::ingest::IngestError::Unavailable(m)) if m.contains("config restore"))
+}
+
+/// A mixed batch held after its partition writes (two partition hours) while a restore commits
+/// and empties the partitions: its later effects (events) never commit into the restored state
+/// and it gets the retryable answer, not an ack. The edge's retry (its key retained) stores the
+/// whole batch once; a second retry is all duplicates.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_batch_paused_after_its_partitions_commits_nothing_after_a_restore() {
+    use picket_core::logs::ingest::IngestPoint;
+    let c = common::start_core(plain()).await;
+    let a = FakeEdge::registered(&c, "edge-a").await;
+    let now = Timestamp::now() - jiff::SignedDuration::from_mins(1);
+    let earlier = picket_core::logs::partition::hour_start(&now) - jiff::SignedDuration::from_mins(30);
+    let lines = vec![
+        query("b1", 1, &ts(now), "a.example.com", None),
+        query("b1", 2, &ts(earlier), "b.example.com", None),
+        json!({"t": "event", "ts": ts(now), "boot": "b1", "seq": 3, "kind": "activated", "config": "x"}),
+    ];
+    let r = store_across_a_restore(&c, &a, &lines, IngestPoint::AfterPartitions).await;
+    assert!(is_retryable(&r), "{r:?}");
+    assert_eq!(events_of(&c, &a.id).await, 0, "no stale event in the restored state");
+    assert_eq!(stored_queries(&c).await, 0, "the restore emptied what the batch wrote");
+    assert_eq!(log_records_points(&c, &a.id).await, 0);
+    // The edge retries: everything once.
+    let r = c.state.logs.store_batch(&c.state, &a.id, &a.fingerprint, batch_of(&lines)).await.unwrap();
+    assert_eq!((r.stored, r.events), (2, 1));
+    assert_eq!(events_of(&c, &a.id).await, 1);
+    assert_eq!(stored_queries(&c).await, 2);
+    let r = c.state.logs.store_batch(&c.state, &a.id, &a.fingerprint, batch_of(&lines)).await.unwrap();
+    assert_eq!((r.stored, r.duplicates, r.events), (0, 2, 0));
+    assert_eq!(events_of(&c, &a.id).await, 1);
+}
+
+/// An already admitted batch of events and allows only (no partition write to refuse it) held
+/// before its events' transaction while a restore commits: nothing of it commits, retryable.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_events_only_batch_admitted_before_a_restore_commits_nothing_after_it() {
+    use picket_core::logs::ingest::IngestPoint;
+    let c = common::start_core(plain()).await;
+    let a = FakeEdge::registered(&c, "edge-a").await;
+    let t = ts(Timestamp::now() - jiff::SignedDuration::from_mins(1));
+    let lines = vec![
+        json!({"t": "event", "ts": t, "boot": "b1", "seq": 1, "kind": "panic", "task": "x"}),
+        json!({"t": "allow", "ts": t, "boot": "b1", "seq": 2, "action": "created", "allow_id": "a-1",
+               "client": "192.168.1.140", "kind": "ip", "target": "100.100.100.100", "via": "extension"}),
+    ];
+    let r = store_across_a_restore(&c, &a, &lines, IngestPoint::AfterBoots).await;
+    assert!(is_retryable(&r), "{r:?}");
+    assert_eq!(events_of(&c, &a.id).await, 0);
+    assert_eq!(
+        q1::<i64>(&c, "SELECT count(*) FROM temp_allows WHERE edge_id = ?1", vec![a.id.clone()]).await,
+        Some(0)
+    );
+    assert!(!alert_open(&c, &format!("edge_panic:{}", a.id)).await);
+    let r = c.state.logs.store_batch(&c.state, &a.id, &a.fingerprint, batch_of(&lines)).await.unwrap();
+    assert_eq!(r.events, 2, "{r:?}");
+    assert_eq!(events_of(&c, &a.id).await, 1);
+}
+
+/// A restore between a batch's events and its lookups, or between its lookups and its metrics:
+/// what follows commits nothing (no metric increment of the stale attempt) and the batch isn't
+/// acked; the retry counts it once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restore_during_lookup_or_metric_publication_refuses_the_rest() {
+    use picket_core::logs::ingest::IngestPoint;
+    let c = common::start_core(plain()).await;
+    let a = FakeEdge::registered(&c, "edge-a").await;
+    for (i, point) in [IngestPoint::AfterEvents, IngestPoint::AfterLookups].into_iter().enumerate() {
+        let now = Timestamp::now() - jiff::SignedDuration::from_mins(1);
+        let boot = format!("b{i}");
+        let lines = vec![
+            query(&boot, 1, &ts(now), "a.example.com", None),
+            json!({"t": "event", "ts": ts(now), "boot": boot, "seq": 2, "kind": "activated", "config": "x"}),
+        ];
+        let r = store_across_a_restore(&c, &a, &lines, point).await;
+        assert!(is_retryable(&r), "{point:?}: {r:?}");
+        assert_eq!(log_records_points(&c, &a.id).await, 0, "{point:?}");
+        let r = c.state.logs.store_batch(&c.state, &a.id, &a.fingerprint, batch_of(&lines)).await.unwrap();
+        assert_eq!(r.stored, 1, "{point:?}: {r:?}");
+        assert!(log_records_points(&c, &a.id).await > 0, "{point:?}");
+    }
+}
