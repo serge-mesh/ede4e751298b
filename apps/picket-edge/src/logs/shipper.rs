@@ -977,6 +977,11 @@ fn made_before(a: &Line, ka: SegKey, b: &Line, kb: SegKey) -> bool {
 /// delivery then and aged out since (a failed POST left it unshipped) is counted now. Records
 /// below `counted` that this round doesn't reach are checked too, so afterwards every record
 /// below the new `counted` made before the new cutoff has been counted, and none other.
+///
+/// A head's cutoff never moves back: once checked against `counted_cutoff`, its records made
+/// before it are dropped (and counted) wherever they are, even if the clock steps back or the
+/// retention grows. A record the head's later part holds can't then be planned under an earlier
+/// cutoff and taken for counted below the new `counted` (one cutoff describes the whole range).
 fn plan_merge(heads: &[HeadView<'_>], cutoff: Option<Timestamp>, max: usize) -> Plan {
     let answers: Vec<HashMap<&str, &Arc<str>>> = heads
         .iter()
@@ -997,6 +1002,8 @@ fn plan_merge(heads: &[HeadView<'_>], cutoff: Option<Timestamp>, max: usize) -> 
     let mut cur_lines = 0usize;
     let mut cur_answers: HashSet<String> = HashSet::new();
     let mut too_old = 0u64;
+    // Each head's cutoff: never earlier than the one it was checked against.
+    let cutoffs: Vec<Option<Timestamp>> = heads.iter().map(|h| later(h.counted_cutoff, cutoff)).collect();
     loop {
         // Move each head to its next record still in the window.
         for (hi, h) in heads.iter().enumerate() {
@@ -1004,7 +1011,9 @@ fn plan_merge(heads: &[HeadView<'_>], cutoff: Option<Timestamp>, max: usize) -> 
             while let Some(l) = lines.get(pos[hi]) {
                 let counted = pos[hi] < h.counted && made_before_cutoff(l, h.counted_cutoff);
                 match &l.kind {
-                    LineKind::Record { .. } if !counted && !made_before_cutoff(l, cutoff) => break,
+                    LineKind::Record { .. } if !counted && !made_before_cutoff(l, cutoffs[hi]) => {
+                        break;
+                    }
                     LineKind::Record { .. } => {
                         if !counted {
                             too_old += 1;
@@ -1074,7 +1083,7 @@ fn plan_merge(heads: &[HeadView<'_>], cutoff: Option<Timestamp>, max: usize) -> 
             .filter(|l| {
                 matches!(l.kind, LineKind::Record { .. })
                     && !made_before_cutoff(l, h.counted_cutoff)
-                    && made_before_cutoff(l, cutoff)
+                    && made_before_cutoff(l, cutoffs[hi])
             })
             .count() as u64;
     }
@@ -2128,6 +2137,29 @@ mod tests {
         );
         // Another retry at the same cutoff counts nothing again.
         let again = plan_merge(&[view(2, Some(t(20)))], Some(t(20)), 1000);
+        assert_eq!(again.too_old, 0, "counted once");
+        // A cutoff moving back doesn't let a later record be planned under it and then taken
+        // for counted: the head's cutoff stays at 20, so the record at 10 past `counted` is
+        // dropped and counted, once.
+        let later_part = spool::SegContent {
+            lines: vec![rec_line(1, t(30)), rec_line(2, t(10))],
+            ..Default::default()
+        };
+        let head = |counted, counted_cutoff| HeadView {
+            key: key(1, Class::Bulk),
+            more: false,
+            content: &later_part,
+            start: 0,
+            counted,
+            counted_cutoff,
+        };
+        let back = plan_merge(&[head(1, Some(t(20)))], Some(t(5)), 1000);
+        assert_eq!(back.too_old, 1, "dropped and counted, not silently skipped later");
+        assert_eq!(
+            back.batches.iter().flatten().map(|l| l.idx).collect::<Vec<_>>(),
+            vec![0]
+        );
+        let again = plan_merge(&[head(2, Some(t(20)))], Some(t(5)), 1000);
         assert_eq!(again.too_old, 0, "counted once");
         // A clock stepping back (or losing sync) doesn't bring a counted record back.
         for cutoff in [Some(t(5)), None] {
