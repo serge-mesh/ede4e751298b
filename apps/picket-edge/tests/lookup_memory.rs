@@ -48,7 +48,8 @@ static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 /// Bytes allocated and not freed, process-wide.
 fn live() -> isize {
     let s = GLOBAL.stats();
-    s.bytes_allocated as isize - s.bytes_deallocated as isize + s.bytes_reallocated
+    // `realloc` already adds growth to `bytes_allocated` and shrinkage to `bytes_deallocated`.
+    s.bytes_allocated as isize - s.bytes_deallocated as isize
 }
 
 /// RSS and PSS in KiB.

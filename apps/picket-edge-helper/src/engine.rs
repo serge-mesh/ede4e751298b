@@ -858,6 +858,9 @@ impl<B: Backend> Engine<B> {
                 let Some(text) = last.restore.clone() else { break };
                 if let Err(e) = self.b.restore(f, &text) {
                     rep.pending.push(format!("restore{}:{}", f.digit(), e.code()));
+                    // A failed restore (a timeout, say) may still have committed: the layout is
+                    // unknown until the next pass reads it.
+                    verified = false;
                     tracing::warn!(family = f.label(), error = %e, "iptables-restore failed; retrying at the next re-assert");
                     break;
                 }

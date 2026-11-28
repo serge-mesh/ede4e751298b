@@ -305,6 +305,8 @@ impl Lookups {
         }
         drop(retired);
         self.clients.store(Arc::new(next));
+        // `old` still holds every dropped provider's client, and through it its HTTP client.
+        drop(old);
         // Forget HTTP clients no provider holds any more (#44).
         let mut made = self.connections.http.lock().unwrap_or_else(|p| p.into_inner());
         made.retain(|_, w| w.strong_count() > 0);

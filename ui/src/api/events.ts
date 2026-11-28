@@ -341,6 +341,7 @@ const EVENT_KEPT: readonly (readonly unknown[])[] = [
   qk.dnssecResults,
   qk.dnssecQueue,
   ["bundles"],
+  ["bundlePublicSuffixes"],
   qk.browserLists,
   qk.warninglists,
 ];
@@ -482,6 +483,8 @@ export function applyEvent(qc: QueryClient, ev: UiEvent) {
     }
     case "bundle_version":
       inv(["bundles"]);
+      // A build can change a suffix's rules without an alert event (#49).
+      inv(["bundlePublicSuffixes"]);
       inv(qk.browserLists);
       inv(qk.warninglists);
       break;
