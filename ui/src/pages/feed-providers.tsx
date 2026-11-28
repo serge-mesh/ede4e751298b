@@ -1,11 +1,10 @@
 import * as React from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import type { ColumnDef } from "@tanstack/react-table";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { AlertTriangleIcon, BanIcon, LinkIcon, PackagePlusIcon, PlusIcon, RefreshCwIcon, Trash2Icon } from "lucide-react";
 import { PageHeader, Section } from "@/components/common/page";
-import { DataTable } from "@/components/common/data-table";
+import { DataTable, type DataTableColumn } from "@/components/common/data-table";
 import { QueryView, RefetchError } from "@/components/common/states";
 import { Mono, RichText, SafeText } from "@/components/common/text";
 import { TimeAgo } from "@/components/common/time";
@@ -205,7 +204,7 @@ function ProviderTable() {
   // A provider without a status (still reading, unreadable, not listed) shows no figures and its
   // health as unknown, never as a healthy provider with no feeds.
   const reading = statuses.isPending;
-  const columns = React.useMemo<ColumnDef<Row, unknown>[]>(
+  const columns = React.useMemo<DataTableColumn<Row>[]>(
     () => [
       {
         id: "name",

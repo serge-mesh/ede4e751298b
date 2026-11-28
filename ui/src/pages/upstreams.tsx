@@ -1,6 +1,5 @@
 import * as React from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "@/components/common/page";
 import { EntityList } from "@/components/common/entity-list";
 import { IdSelect, OrderedPicker } from "@/components/common/ordered-picker";
@@ -10,6 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useEntities } from "@/api/queries";
 import type { ForwardZoneDef, UpstreamDef, UpstreamGroupDef } from "@/api/types";
 import type { FieldOverride } from "@/components/schema-form/schema-form";
+import type { DataTableColumn } from "@/components/common/data-table";
 
 const PLAIN = new Set(["udp", "tcp"]);
 
@@ -20,7 +20,7 @@ export function UpstreamsPage() {
   const groups = useEntities("upstream-groups");
   const upstreamById = React.useMemo(() => new Map((upstreams.data ?? []).map((u) => [u.id ?? "", u])), [upstreams.data]);
 
-  const upstreamCols = React.useMemo<ColumnDef<UpstreamDef, unknown>[]>(
+  const upstreamCols = React.useMemo<DataTableColumn<UpstreamDef>[]>(
     () => [
       { id: "name", header: "Name", accessorFn: (u) => u.name || u.id, cell: ({ row }) => <SafeText>{row.original.name || row.original.id}</SafeText> },
       { id: "id", header: "Id", accessorFn: (u) => u.id, cell: ({ getValue }) => <Mono>{String(getValue() ?? "")}</Mono> },
@@ -31,7 +31,7 @@ export function UpstreamsPage() {
     ],
     [],
   );
-  const groupCols = React.useMemo<ColumnDef<UpstreamGroupDef, unknown>[]>(
+  const groupCols = React.useMemo<DataTableColumn<UpstreamGroupDef>[]>(
     () => [
       { id: "name", header: "Name", accessorFn: (g) => g.name || g.id, cell: ({ row }) => <SafeText>{row.original.name || row.original.id}</SafeText> },
       { id: "id", header: "Id", accessorFn: (g) => g.id, cell: ({ getValue }) => <Mono>{String(getValue() ?? "")}</Mono> },
@@ -49,7 +49,7 @@ export function UpstreamsPage() {
     ],
     [upstreamById],
   );
-  const zoneCols = React.useMemo<ColumnDef<ForwardZoneDef, unknown>[]>(
+  const zoneCols = React.useMemo<DataTableColumn<ForwardZoneDef>[]>(
     () => [
       { id: "zone", header: "Zone", accessorFn: (z) => z.zone, cell: ({ getValue }) => <Mono>{String(getValue() ?? "")}</Mono> },
       { id: "id", header: "Id", accessorFn: (z) => z.id, cell: ({ getValue }) => <Mono>{String(getValue() ?? "")}</Mono> },

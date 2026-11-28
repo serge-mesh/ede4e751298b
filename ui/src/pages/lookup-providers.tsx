@@ -1,11 +1,10 @@
 import * as React from "react";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import type { ColumnDef } from "@tanstack/react-table";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { EraserIcon, FlaskConicalIcon, Loader2Icon, PlusIcon, RotateCcwIcon, RotateCwIcon, TriangleAlertIcon } from "lucide-react";
 import { KeyValue, PageHeader, Section } from "@/components/common/page";
-import { DataTable } from "@/components/common/data-table";
+import { DataTable, type DataTableColumn } from "@/components/common/data-table";
 import { ErrorState, LoadingState, QueryView } from "@/components/common/states";
 import { JsonBlock, Mono, SafeText } from "@/components/common/text";
 import { TimeAgo } from "@/components/common/time";
@@ -64,7 +63,7 @@ export function LookupProvidersPage() {
   const navigate = useNavigate();
   const [adding, setAdding] = React.useState(false);
   const mods = modulesOf(modules.data);
-  const columns = React.useMemo<ColumnDef<LookupProviderDef, unknown>[]>(
+  const columns = React.useMemo<DataTableColumn<LookupProviderDef>[]>(
     () => [
       {
         id: "name",

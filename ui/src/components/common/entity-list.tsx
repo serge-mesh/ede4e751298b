@@ -1,10 +1,9 @@
 import * as React from "react";
-import type { ColumnDef } from "@tanstack/react-table";
 import { CopyPlusIcon, PencilIcon, PlusIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { DataTable } from "./data-table";
+import { DataTable, type DataTableColumn } from "./data-table";
 import { QueryView } from "./states";
 import { EntityForm, type EntityFormProps } from "./entity-editor";
 import { DraftScope, useDiscardGuard } from "./drafts";
@@ -30,7 +29,7 @@ export function EntityList<K extends EntityKind>({
   onOpen,
 }: {
   kind: K;
-  columns: ColumnDef<EntityTypes[K], unknown>[];
+  columns: DataTableColumn<EntityTypes[K]>[];
   form?: FormExtras<K>;
   description?: React.ReactNode;
   empty?: React.ReactNode;
@@ -44,7 +43,7 @@ export function EntityList<K extends EntityKind>({
   // Escape, a click outside or the close button ask first while the form holds unsaved changes.
   const guard = useDiscardGuard(() => setEditing(null));
   const label = ENTITY_LABEL[kind];
-  const cols = React.useMemo<ColumnDef<EntityTypes[K], unknown>[]>(
+  const cols = React.useMemo<DataTableColumn<EntityTypes[K]>[]>(
     () => [
       ...columns,
       {

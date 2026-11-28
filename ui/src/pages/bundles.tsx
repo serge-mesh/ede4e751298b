@@ -1,6 +1,5 @@
 import * as React from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "@/components/common/page";
 import { EntityList } from "@/components/common/entity-list";
 import { IdSelect } from "@/components/common/ordered-picker";
@@ -11,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { useBundleStatuses, useEntities } from "@/api/queries";
 import type { BundleDef, BundleStatus } from "@/api/types";
 import type { FieldOverride } from "@/components/schema-form/schema-form";
+import type { DataTableColumn } from "@/components/common/data-table";
 
 /** Bundle form widgets: feed pickers; tier and hot_max_mib only for block bundles. */
 export function useBundleFormProps(action?: string) {
@@ -40,7 +40,7 @@ export function BundlesPage() {
   const statuses = useBundleStatuses();
   const byId = React.useMemo(() => new Map((statuses.data ?? []).map((s) => [s.bundle, s])), [statuses.data]);
   const form = useBundleFormProps();
-  const columns = React.useMemo<ColumnDef<BundleDef, unknown>[]>(
+  const columns = React.useMemo<DataTableColumn<BundleDef>[]>(
     () => [
       {
         id: "id",
