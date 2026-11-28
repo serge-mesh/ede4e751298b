@@ -839,32 +839,30 @@ impl Bypass {
             let end = want.min(max_end);
             // A DNS allow must outlast its block's cached answer (#50): one that ends sooner
             // would meet the cached block at reload, behind a countdown that says it will work.
+            // The block whose cached answer lasts longest: (earliest allowed end, time, TTL).
+            let mut governing: Option<(Timestamp, Timestamp, u32)> = None;
             if kind_ == AllowKind::Dns {
                 let (bt, ttl) = match (&block, existing) {
                     (Some(b), _) => (Some(b.wall), Some(b.response.ttl)),
                     (None, Some(x)) => (x.block_time, x.block_ttl),
                     (None, None) => (None, None),
                 };
-                // Browsers may keep the newest block answer for the name, which can be a later
-                // block than the one the request names (another bundle head or rule).
-                let newest = match (&block, existing) {
-                    (Some(b), _) => self.ring.find_name(key, &b.name),
+                // Browsers may keep any block answer the ring still holds for the name, which
+                // can be a later block than the one the request names (another bundle head or
+                // rule) with a longer hold. The one whose hold ends last governs: the check and
+                // the stored countdown (`retry_after_s`) both use it.
+                let others = match (&block, existing) {
+                    (Some(b), _) => self.ring.name_blocks(key, &b.name),
                     (None, Some(x)) => WireName::from_text(&x.target)
-                        .ok()
-                        .and_then(|w| self.ring.find_name(key, w.wire())),
-                    (None, None) => None,
+                        .map(|w| self.ring.name_blocks(key, w.wire()))
+                        .unwrap_or_default(),
+                    (None, None) => vec![],
                 };
-                let earliest = [
-                    (bt, ttl),
-                    (
-                        newest.as_ref().map(|n| n.wall),
-                        newest.as_ref().map(|n| n.response.ttl),
-                    ),
-                ]
-                .into_iter()
-                .filter_map(|(bt, ttl)| earliest_end(bt, ttl, now).zip(ttl))
-                .max_by_key(|(e, _)| *e);
-                if let Some((earliest, ttl)) = earliest
+                governing = std::iter::once((bt, ttl))
+                    .chain(others.into_iter().map(|(t, l)| (Some(t), Some(l))))
+                    .filter_map(|(bt, ttl)| Some((earliest_end(bt, ttl, now)?, bt?, ttl?)))
+                    .max_by_key(|(e, _, _)| *e);
+                if let Some((earliest, _, ttl)) = governing
                     && end < earliest
                 {
                     return Err(too_short(earliest, max_end, ttl, now, i));
@@ -875,6 +873,10 @@ impl Bypass {
                 Some(x) => {
                     let mut n = x.clone();
                     n.expires_at = end;
+                    if let Some((_, t, l)) = governing {
+                        n.block_time = Some(t);
+                        n.block_ttl = Some(l);
+                    }
                     if let Some(s) = e.subdomains
                         && n.kind == AllowKind::Dns
                     {
@@ -906,8 +908,8 @@ impl Bypass {
                                 subdomains: Some(e.subdomains.unwrap_or(false)),
                                 block_id: Some(b.block_id().to_owned()),
                                 profile: Some(b.profile.to_string()),
-                                block_time: Some(b.wall),
-                                block_ttl: Some(b.response.ttl),
+                                block_time: Some(governing.map_or(b.wall, |g| g.1)),
+                                block_ttl: Some(governing.map_or(b.response.ttl, |g| g.2)),
                                 addresses: vec![],
                                 created_at: now,
                                 expires_at: end,

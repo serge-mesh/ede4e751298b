@@ -20,6 +20,11 @@ pub const DEFAULT_SOCKET: &str = "/run/picket-helper/helper.sock";
 pub const MAX_TIMEOUT_S: u32 = 2_147_483;
 /// Most networks one [`LocalDst`] snapshot carries; a larger set is reported `too_large`.
 pub const MAX_LOCAL_DST_NETS: usize = 1024;
+/// Most networks all of one family's [`LocalDst`] entries carry together: each interface's entry
+/// repeats its set, and every message carrying the conditions must stay under [`MAX_FRAME`]
+/// (4,096 IPv6 networks of both families take under 400 KiB). An entry that would pass it is
+/// reported `too_large`.
+pub const MAX_LOCAL_DST_TOTAL: usize = 4096;
 
 /// The four timed sets `ensure` and `delete` may touch.
 pub mod sets {

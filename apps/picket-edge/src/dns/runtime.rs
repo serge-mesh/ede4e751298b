@@ -7,13 +7,14 @@
 //! Core is untrusted as the edge sees it (README §2): every number is clamped into a range, and a
 //! malformed item (a listener bind, a range, a zone) is skipped and reported, never trusted.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use picket_api::duration::DurationStr;
 use picket_api::edge_config::{
-    CacheSettings, EdgeConfig, Limits, ListenerLimits, ListenerProto, ListenerTls, LookupMode, Profile,
+    CacheSettings, EdgeConfig, Limits, ListenerLimits, ListenerProto, ListenerTls, LookupAttachment,
+    LookupMode, Profile,
 };
 use picket_wire::{NameRef, WireName};
 
@@ -157,6 +158,46 @@ fn sane_profile(p: &Profile) -> Profile {
     p
 }
 
+/// A profile's effective `sync` attachments, as the runtime uses them: the first
+/// [`bounds::MAX_ATTACHMENTS`] in `sync` mode.
+pub fn sync_attachments(p: &Profile) -> impl Iterator<Item = &LookupAttachment> {
+    p.lookup_providers
+        .iter()
+        .filter(|a| a.mode == LookupMode::Sync)
+        .take(bounds::MAX_ATTACHMENTS)
+}
+
+/// The lookup providers some profile's effective `sync` attachment names: the only ones the edge
+/// runs (#44). Every profile counts, used or not: a DoH path or DoT name can select any of them.
+pub fn required_providers(cfg: &EdgeConfig) -> BTreeSet<&str> {
+    cfg.profiles
+        .values()
+        .flat_map(sync_attachments)
+        .map(|a| a.provider.as_str())
+        .collect()
+}
+
+/// Drops the lookup providers and verdict sets that [`required_providers`] doesn't name (#44):
+/// core sends only those already, and an extra one would cost a client, its RAM tier and its
+/// verdict set for nothing. Returns the provider ids dropped (from either map), sorted.
+pub fn keep_required_providers(cfg: &mut EdgeConfig) -> Vec<String> {
+    let required: BTreeSet<String> = required_providers(cfg).into_iter().map(str::to_owned).collect();
+    let mut dropped = BTreeSet::new();
+    cfg.lookup_providers.retain(|id, _| {
+        required.contains(id) || {
+            dropped.insert(id.clone());
+            false
+        }
+    });
+    cfg.verdict_sets.retain(|id, _| {
+        required.contains(id) || {
+            dropped.insert(id.clone());
+            false
+        }
+    });
+    dropped.into_iter().collect()
+}
+
 impl DnsRuntime {
     /// Builds the runtime. Fails only when the config can't run at all.
     pub fn build(config: Arc<EdgeConfig>) -> Result<DnsRuntime, String> {
@@ -210,11 +251,7 @@ impl DnsRuntime {
                     },
                 );
             }
-            let sync = p
-                .lookup_providers
-                .iter()
-                .filter(|a| a.mode == LookupMode::Sync)
-                .take(bounds::MAX_ATTACHMENTS)
+            let sync = sync_attachments(p)
                 .map(|a| SyncAttachment {
                     provider: a.provider.as_str().into(),
                     include: a.include_bundles.clone(),
@@ -368,5 +405,48 @@ mod tests {
         assert_eq!(kids.zones.len(), 1);
         assert!(rt.warnings.iter().any(|w| w.contains("missing")));
         assert!(rt.warnings.iter().any(|w| w.contains("nowhere")));
+    }
+
+    /// #44: the providers kept are those of the effective sync attachments, counted as the
+    /// runtime counts them (the first 32 sync ones per profile), across every profile.
+    #[test]
+    fn only_effective_sync_attachments_keep_a_provider() {
+        let mut first: Vec<serde_json::Value> = (0..bounds::MAX_ATTACHMENTS)
+            .map(|i| serde_json::json!({"provider": format!("p{i}"), "mode": "sync"}))
+            .collect();
+        first.insert(1, serde_json::json!({"provider": "asy", "mode": "async"}));
+        first.push(serde_json::json!({"provider": "over", "mode": "sync"}));
+        let provider = serde_json::json!({"module": "dns", "config": {}, "cache_generation": "0123456789abcdef",
+            "sync_timeout_ms": 300, "async_timeout_ms": 600, "fail_mode": "open",
+            "scope": {"exclude_bundles": [], "qtypes": ["A"]}});
+        let mut providers = serde_json::Map::new();
+        let mut sets = serde_json::Map::new();
+        for id in (0..bounds::MAX_ATTACHMENTS)
+            .map(|i| format!("p{i}"))
+            .chain(["asy", "over", "other", "unused"].map(String::from))
+        {
+            providers.insert(id.clone(), provider.clone());
+            sets.insert(id, "0".repeat(64).into());
+        }
+        let mut cfg: EdgeConfig = serde_json::from_value(serde_json::json!({
+            "edge": {"id": "e-01", "name": "t", "platform": "debian"},
+            "profiles": {
+                "a": {"upstream": "g", "lookup_providers": first, "block_response": {"type": "nxdomain", "ttl": 10}},
+                "b": {"upstream": "g", "lookup_providers": [{"provider": "other", "mode": "sync"}],
+                    "block_response": {"type": "nxdomain", "ttl": 10}},
+            },
+            "lookup_providers": providers,
+            "verdict_sets": sets,
+        }))
+        .unwrap();
+        let dropped = keep_required_providers(&mut cfg);
+        assert_eq!(dropped, ["asy", "over", "unused"]);
+        assert_eq!(cfg.lookup_providers.len(), bounds::MAX_ATTACHMENTS + 1);
+        assert!(cfg.lookup_providers.contains_key("other") && cfg.lookup_providers.contains_key("p31"));
+        assert_eq!(
+            cfg.verdict_sets.keys().collect::<Vec<_>>(),
+            cfg.lookup_providers.keys().collect::<Vec<_>>()
+        );
+        assert!(keep_required_providers(&mut cfg).is_empty(), "idempotent");
     }
 }

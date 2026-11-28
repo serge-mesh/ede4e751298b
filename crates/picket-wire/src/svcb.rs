@@ -23,9 +23,13 @@
 //!   catches each on its own, so one can't hide another (a pointer that expands by as many bytes
 //!   as a `port` carries past its value).
 //!
-//! An AliasMode record (priority 0) is checked only for an uncompressed target: recipients MUST
-//! ignore its SvcParams (RFC 9460 §2.4.2), so they are neither checked nor give hints. hickory
-//! still decodes them, so what its decoder refuses (above) still makes the record malformed.
+//! An AliasMode record (priority 0) received in a query or an answer never reaches hickory's
+//! decoder: recipients MUST ignore its SvcParams (RFC 9460 §2.4.2), and hickory interprets their
+//! values (refusing some an AliasMode record may carry, and rewriting others: it reads the first
+//! two bytes of a 3-byte `port` and writes back two). [`alias`] checks its structure alone, and
+//! the record is kept as its received bytes, so the edge forwards it unchanged (a covering RRSIG
+//! still verifies) and takes no hints from it. [`check`]'s AliasMode branch serves only
+//! [`rdata_facts`].
 
 use std::net::IpAddr;
 
@@ -80,6 +84,67 @@ pub fn rdata_facts(record_type: u16, rdata: &[u8]) -> Option<SvcbFacts> {
         })
         .collect();
     Some(SvcbFacts { target, hints })
+}
+
+/// Why received AliasMode RDATA is refused (see [`alias`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AliasError {
+    /// The RDATA doesn't frame: a target name that doesn't decode, SvcParams that don't fill the
+    /// RDATA exactly, or keys out of strictly increasing order (duplicates too). As for any
+    /// record hickory can't decode.
+    Malformed,
+    /// A compressed target name (RFC 9460 §2.2), as [`check`] refuses one in ServiceMode.
+    Compressed,
+}
+
+/// True when `raw`, the RDATA of an SVCB or HTTPS record, is AliasMode (priority 0).
+pub(crate) fn is_alias_rdata(raw: &[u8]) -> bool {
+    raw.starts_with(&[0, 0])
+}
+
+/// The target of received AliasMode RDATA (`raw`, priority 0), with its structure checked but
+/// its SvcParam values left uninterpreted (RFC 9460 §2.4.2: recipients MUST ignore them): the
+/// target is one uncompressed name, and the SvcParams are key/length/value triples whose keys
+/// strictly increase and which fill the RDATA exactly. The target is lowercased; the root (`.`)
+/// is a target too, which callers taking facts skip.
+pub(crate) fn alias(raw: &[u8]) -> Result<WireName, AliasError> {
+    let rest = raw.get(2..).ok_or(AliasError::Malformed)?;
+    let mut labels: Vec<&[u8]> = Vec::new();
+    let mut at = 0usize;
+    loop {
+        let len = *rest.get(at).ok_or(AliasError::Malformed)?;
+        match len {
+            0 => break,
+            // A pointer (two top bits set) is compression; the other non-zero top-bit
+            // combinations are label types no one uses (RFC 6891 §5), which hickory refuses.
+            0xC0..=0xFF => return Err(AliasError::Compressed),
+            64..=0xBF => return Err(AliasError::Malformed),
+            _ => {
+                let label = rest
+                    .get(at.saturating_add(1)..at.saturating_add(1).saturating_add(usize::from(len)))
+                    .ok_or(AliasError::Malformed)?;
+                labels.push(label);
+                at = at.saturating_add(1).saturating_add(usize::from(len));
+            }
+        }
+    }
+    let target = WireName::from_labels(labels.iter().copied()).map_err(|_| AliasError::Malformed)?;
+    let mut params = rest.get(at.saturating_add(1)..).ok_or(AliasError::Malformed)?;
+    let mut last: Option<u16> = None;
+    while !params.is_empty() {
+        let (Some(&[k0, k1, l0, l1]), Some(tail)) = (params.get(..4), params.get(4..)) else {
+            return Err(AliasError::Malformed);
+        };
+        let key = u16::from_be_bytes([k0, k1]);
+        if last.is_some_and(|l| key <= l) {
+            return Err(AliasError::Malformed);
+        }
+        last = Some(key);
+        params = tail
+            .get(usize::from(u16::from_be_bytes([l0, l1]))..)
+            .ok_or(AliasError::Malformed)?;
+    }
+    Ok(target)
 }
 
 /// SvcParamKeys registered after RFC 9460 (IANA "Service Parameter Keys").

@@ -172,12 +172,11 @@ describe("a provider's files by folder", () => {
     await user.click(name());
     expect(names()).toEqual(["adblock/", "big/", "README.md", "hosts.txt"]);
     const reads = gets(calls).length;
-    // Another folder starts ascending; with more to load, a note says what the sort covers.
+    // The direction holds in another folder; with more to load, a note says what the sort covers.
     await user.click(name());
     await user.click(screen.getByRole("link", { name: "big/" }));
     await screen.findByText("f499.txt", undefined, T);
-    expect(name().closest("th")).toHaveAttribute("aria-sort", "ascending");
-    await user.click(name());
+    expect(name().closest("th")).toHaveAttribute("aria-sort", "descending");
     expect(names().slice(0, 2)).toEqual(["f499.txt", "f498.txt"]);
     expect(screen.getByText(/sorting by name covers those/)).toHaveTextContent("The folder holds more than the 500 entries loaded");
     await user.click(screen.getByRole("button", { name: "Load more" }));
@@ -422,6 +421,37 @@ describe("a provider's files by folder", () => {
     mockApi([{ method: "GET", path: PATH, body: (c: Call) => list([], c, null) }]);
     renderApp("/feed-providers/hagezi?tab=files");
     expect(await screen.findByText("No listing yet: it arrives with the provider's next check.", undefined, T)).toBeInTheDocument();
+  });
+
+  it("a folder's link before the first listing says there's no listing yet, not an empty folder", async () => {
+    mockApi([{ method: "GET", path: PATH, body: (c: Call) => list([], c, null) }]);
+    renderApp("/feed-providers/hagezi?tab=files&prefix=adblock%2F");
+    expect(await screen.findByText("No listing yet: it arrives with the provider's next check.", undefined, T)).toBeInTheDocument();
+    expect(screen.queryByText("Nothing under this folder in the latest listing.")).toBeNull();
+    expect(crumbs()).toEqual(["HaGeZi", "adblock"]);
+  });
+
+  it("the name sort's direction holds from folder to folder, Back included, until chosen again", async () => {
+    const user = userEvent.setup();
+    const data = rows();
+    mockApi([{ method: "GET", path: PATH, body: (c: Call) => list(data, c) }]);
+    const { router } = renderApp("/feed-providers/hagezi?tab=files");
+    await screen.findByRole("link", { name: "adblock/" }, T);
+    const name = () => screen.getByRole("button", { name: "Name" });
+    await user.click(name());
+    expect(names()).toEqual(["big/", "adblock/", "hosts.txt", "README.md"]);
+    await user.click(screen.getByRole("link", { name: "adblock/" }));
+    await waitFor(() => expect(names()).toEqual(["sub/", "tif.txt", "pro.txt"]), T);
+    expect(name().closest("th")).toHaveAttribute("aria-sort", "descending");
+    act(() => router.history.back());
+    await waitFor(() => expect(names()).toEqual(["big/", "adblock/", "hosts.txt", "README.md"]), T);
+    expect(name().closest("th")).toHaveAttribute("aria-sort", "descending");
+    // Chosen again: ascending, here and in the next folder.
+    await user.click(name());
+    expect(names()).toEqual(["adblock/", "big/", "README.md", "hosts.txt"]);
+    await user.click(screen.getByRole("link", { name: "adblock/" }));
+    await waitFor(() => expect(names()).toEqual(["sub/", "pro.txt", "tif.txt"]), T);
+    expect(name().closest("th")).toHaveAttribute("aria-sort", "ascending");
   });
 
   it("an unknown folder lists nothing; a limited listing says so", async () => {

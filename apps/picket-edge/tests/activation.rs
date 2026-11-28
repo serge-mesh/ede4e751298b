@@ -1644,3 +1644,143 @@ async fn queries_held_across_back_to_back_swaps() {
     );
     r.shutdown().await;
 }
+
+/// #44: only providers a profile attaches `sync` get a client and a verdict set, whatever else
+/// the config lists; providers of one module share its instance, and the last one to go
+/// releases it, its client and its set; attaching a provider again builds them anew.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn only_sync_attached_providers_run_and_the_last_one_releases_its_module() {
+    let up = FakeUpstream::plain(ok_upstream()).await;
+    let core = MockCore::start().await;
+    let d = dirs();
+    write_edge_json(&d.config, Some(&core), json!({}));
+    let generation = "0123456789abcdef";
+    let mut sets = serde_json::Map::new();
+    for p in ["vp", "vq", "spare", "later"] {
+        let (h, s) = verdict_set(p, generation, &[(&format!("{p}.example"), VerdictKind::Block)]);
+        sets.insert(p.to_owned(), publish_set(&core, &h, &s).into());
+    }
+    // Every provider listed with its verdict set; `attach` names the ones attached sync, and
+    // `later` is attached async only.
+    let cfg_with = |attach: &[&str]| {
+        let mut c = lookup_config(&up, Value::Object(sets.clone()));
+        let def = c["lookup_providers"]["vp"].clone();
+        for p in ["vq", "spare", "later"] {
+            c["lookup_providers"][p] = def.clone();
+        }
+        let mut atts: Vec<Value> = attach
+            .iter()
+            .map(|p| json!({"provider": p, "mode": "sync"}))
+            .collect();
+        atts.push(json!({"provider": "later", "mode": "async"}));
+        c["profiles"]["default"]["lookup_providers"] = atts.into();
+        for p in ["vp", "vq", "spare", "later"] {
+            c["lookup_providers"][p]["module"] = "counted".into();
+        }
+        c
+    };
+    let counters = Arc::new(picket_lookup::testkit::ModuleCounters::default());
+    let mut reg = picket_lookup::Registry::empty();
+    reg.insert_factory(
+        "counted",
+        picket_lookup::testkit::CountedModule::factory(1 << 20, Arc::clone(&counters)),
+    );
+    let reg = Arc::new(reg);
+    let mut t = tuning(&d, true);
+    t.lookup_registry = Some(Arc::clone(&reg));
+    let r = start(&d, t).await;
+    let edge = Arc::clone(&r.edge);
+    let sets_held = || {
+        let mut v: Vec<String> = picket_edge::report::have(&edge)
+            .verdict_sets
+            .into_keys()
+            .collect();
+        v.sort();
+        v
+    };
+    let addr = || *edge.dns.listeners.local_addrs("lan-dns").first().unwrap();
+    let blocked_by = async |p: &str| {
+        udp_q(addr(), &Q::new(&format!("{p}.example"), 1))
+            .await
+            .ede()
+            .first()
+            .is_some_and(|e| e.1.starts_with(&format!("lookup={p} verdict=block")))
+    };
+    let goes_live = async |c: Value| {
+        let id = core.set_config(&c);
+        core.changed(&id);
+        wait_live(&r, &id).await;
+        assert!(
+            wait_until(T, || edge
+                .active()
+                .versions
+                .as_ref()
+                .is_some_and(|v| v.not_loaded.is_empty()))
+            .await,
+            "{:?}",
+            edge.active().versions
+        );
+    };
+
+    // vp attached: one client, one module, one set; `spare` and `later` (async) get nothing.
+    goes_live(cfg_with(&["vp"])).await;
+    assert_eq!(edge.dns.lookups.ids(), ["vp"]);
+    assert_eq!(counters.get(), (1, 0));
+    assert_eq!(sets_held(), ["vp"]);
+    assert!(blocked_by("vp").await, "vp's set answers");
+    for p in ["spare", "later"] {
+        assert_eq!(
+            core.with(|s| s
+                .object_gets
+                .keys()
+                .filter(|k| k.contains(&format!("verdict-sets/{p}/")))
+                .count()),
+            0,
+            "{p}'s set fetched"
+        );
+        assert!(
+            !d.data.join(format!("verdicts/{p}")).exists(),
+            "{p}'s set on disk"
+        );
+    }
+
+    // vq joins: it shares vp's module.
+    goes_live(cfg_with(&["vp", "vq"])).await;
+    assert_eq!(edge.dns.lookups.ids(), ["vp", "vq"]);
+    assert_eq!(counters.get(), (1, 0), "one shared instance");
+    assert_eq!(sets_held(), ["vp", "vq"]);
+    assert!(blocked_by("vq").await);
+
+    // vp goes async: vq keeps the module; vp's client and set go.
+    goes_live(cfg_with(&["vq"])).await;
+    assert_eq!(edge.dns.lookups.ids(), ["vq"]);
+    assert_eq!(counters.get(), (1, 0));
+    assert!(wait_until(T, || sets_held() == ["vq"]).await, "{:?}", sets_held());
+
+    // None attached: the module is dropped once nothing holds it, and the sets go.
+    goes_live(cfg_with(&[])).await;
+    assert!(edge.dns.lookups.ids().is_empty());
+    assert!(
+        wait_until(T, || counters.get() == (1, 1)).await,
+        "module released"
+    );
+    assert!(!reg.is_live("counted"));
+    assert!(
+        wait_until(T, || sets_held().is_empty()).await,
+        "{:?}",
+        sets_held()
+    );
+    assert!(!blocked_by("vq").await);
+    let totals = edge.dns.lookups.metrics();
+    assert!(
+        totals.contains_key("vp") && totals.contains_key("vq"),
+        "running totals kept"
+    );
+
+    // vp again: a new instance, client and set.
+    goes_live(cfg_with(&["vp"])).await;
+    assert_eq!(counters.get(), (2, 1));
+    assert_eq!(edge.dns.lookups.ids(), ["vp"]);
+    assert!(blocked_by("vp").await);
+    r.shutdown().await;
+}

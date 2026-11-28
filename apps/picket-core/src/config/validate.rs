@@ -2258,7 +2258,7 @@ fn provider_rules(m: &Model, o: &mut Out) {
         check_id(o, e, id);
         check_name(o, e, id, &p.name);
         let registry = crate::lookups::registry();
-        let known = registry.get(&p.module).is_some();
+        let known = registry.contains(&p.module);
         if !known {
             o.err(
                 e,

@@ -795,6 +795,8 @@ impl BundleManager {
                 let mut c = EdgeConfig::clone(&t.config);
                 c.bundles = m.bundles.clone();
                 c.verdict_sets = m.verdict_sets.clone();
+                // Only verdict sets of providers a profile attaches sync, as for a fetched config (#44).
+                crate::dns::runtime::keep_required_providers(&mut c);
                 Ok(Arc::new(c))
             }
             None if !t.config.bundles.is_empty() || !referenced_bundles(&t.config) => {

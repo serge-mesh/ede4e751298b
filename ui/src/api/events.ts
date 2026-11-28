@@ -370,6 +370,9 @@ export function applyEvent(qc: QueryClient, ev: UiEvent) {
       // truncated (pages/alerts.tsx). The DNSSEC queue's changes, a cross-check that ends among
       // them, come as `dnssec_queued`.
       inv(["alerts"]);
+      // A build that changes a bundle's public suffixes updates its grouped warning: an open
+      // full list (pages/alerts.tsx) reads the current membership too.
+      inv(["bundlePublicSuffixes"]);
       inv(qk.review);
       inv(qk.providerStatus);
       inv(qk.feedStatus);

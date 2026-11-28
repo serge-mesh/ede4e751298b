@@ -432,12 +432,52 @@ async fn the_ring_answers_probes_and_dns_allows_follow_every_limit() {
 
 /// Pushes a config whose profile has `bypass` and a 600 s NXDOMAIN block answer, and waits for it.
 async fn with_block_ttl_600(e: &Env, bypass: Value) {
+    with_block_ttl(e, bypass, 600).await;
+}
+
+async fn with_block_ttl(e: &Env, bypass: Value, ttl: u32) {
     let mut cfg = config(&e.up, &e.head, bypass, json!({"interfaces": []}));
-    cfg["profiles"]["default"]["block_response"] = json!({"type": "nxdomain", "ttl": 600});
+    cfg["profiles"]["default"]["block_response"] = json!({"type": "nxdomain", "ttl": ttl});
     let id = e.core.set_config(&cfg);
     e.core.changed(&id);
     let edge = Arc::clone(&e.r.edge);
     assert!(wait_until(T, || edge.active().object_id.as_deref() == Some(id.as_str())).await);
+}
+
+/// A browser may still hold an earlier block answer for the name with a longer hold than the
+/// latest one (here the block TTL dropped from 600 s to 10 s): the longest hold governs both the
+/// minimum and the countdown.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_earlier_block_with_a_longer_hold_governs_a_dns_allow() {
+    let e = env(json!({"mode": "off"}), json!({"interfaces": []}), None).await;
+    let bypass = json!({"mode": "self", "max_duration": "1h", "rate_per_hour": 10});
+    with_block_ttl(&e, bypass.clone(), 600).await;
+    let m = udp_q(e.dns(), &Q::new("blocked.example", 1)).await;
+    assert_eq!(m.rcode, 3);
+    let first = block_id(&m);
+    with_block_ttl(&e, bypass, 10).await;
+    let m = udp_q(e.dns(), &Q::new("blocked.example", 1)).await;
+    // The same block, so the same id: the request names the later ring entry (TTL 10 s).
+    let later = block_id(&m);
+    assert_eq!(first, later);
+    // By the later entry (hold 65 s): 2 min would outlast it, not the earlier one.
+    let (st, v) = e
+        .ext(
+            "PATCH",
+            Some(json!([{"block_id": later, "expires_at": now() + 120}])),
+        )
+        .await;
+    assert_eq!((st, &v["error"]["code"]), (403, &json!("too_short")), "{v}");
+    // 15 min: allowed, and the countdown waits out the earlier block's hold.
+    let (st, v) = e
+        .ext(
+            "PATCH",
+            Some(json!([{"block_id": later, "expires_at": now() + 900}])),
+        )
+        .await;
+    assert_eq!(st, 200, "{v}");
+    let ra = v[0]["retry_after_s"].as_u64().unwrap();
+    assert!((590..=605).contains(&ra), "the earlier block's hold: {ra}");
 }
 
 /// #50: a DNS allow must outlast its block's cached answer (hold max(65 s, TTL + 5 s), then 5 s
@@ -1613,6 +1653,20 @@ async fn unifi_local_networks_get_no_firewall_block_and_no_ip_allow() {
         "the NAS VLAN left UniFi's local networks"
     );
     assert!(!edge.fw.ip_blocked(client, ip("203.0.113.5")));
+    // A heartbeat's status poll applies the conditions it brings and keeps them.
+    local4(&["198.51.100.0/24"]);
+    let _ = edge.fw.snapshot().await;
+    assert!(
+        wait_until(T, || !edge.fw.ip_blocked(client, ip("198.51.100.10"))).await,
+        "{:?}",
+        edge.fw.state.load().conditions.local_dst
+    );
+    for _ in 0..3 {
+        let _ = edge.fw.snapshot().await;
+        assert!(!edge.fw.ip_blocked(client, ip("198.51.100.10")));
+    }
+    local4(&["203.0.113.0/26"]);
+    assert!(wait_until(T, || edge.fw.ip_blocked(client, ip("198.51.100.10"))).await);
     // A set the helper can't fully read is not used at all.
     h.b.put_set(
         "UBIOS_local_zoned_subnets",

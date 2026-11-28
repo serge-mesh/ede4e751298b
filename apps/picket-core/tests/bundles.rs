@@ -1394,6 +1394,66 @@ async fn public_suffix_warnings_are_grouped_per_bundle_and_feed() {
     .await;
 }
 
+/// #49 follow-ups: a rule added or removed for a suffix already listed updates the rule count; a
+/// rule replaced by another for the same suffix keeps a hand resolve (the suffix never left);
+/// a bundle that stops taking the feed's DNS rules, or stops blocking, drops the rows and
+/// resolves the warning.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn public_suffix_rule_counts_replacements_and_bundles_that_stop_blocking() {
+    let c = core().await;
+    manual_feed(&c, "pc", json!({})).await;
+    put_entity(&c, "bundles", "pc1", json!({"id": "pc1", "name": "pc1", "feeds": [{"feed": "pc"}]})).await;
+    let key = psl_key("pc1", "pc");
+    save(&c, "pc", "||co.uk^\n||org.uk^\n").await;
+    build(&c, "pc1").await.unwrap();
+    assert_eq!(alert_of(&c, &key).await.details["rules"], 2);
+    // A second rule for co.uk: the same suffixes, one more rule.
+    save(&c, "pc", "||co.uk^\n||co.uk^$important\n||org.uk^\n").await;
+    build(&c, "pc1").await.unwrap();
+    let a = alert_of(&c, &key).await;
+    assert_eq!((a.details["suffixes"].clone(), a.details["rules"].clone()), (json!(2), json!(3)));
+    resolve_by_hand(&c, &key).await;
+    // The first co.uk rule goes; the one added after the warning was shown stays.
+    save(&c, "pc", "||co.uk^$important\n||org.uk^\n").await;
+    build(&c, "pc1").await.unwrap();
+    let a = alert_of(&c, &key).await;
+    assert!(!is_open(&a), "co.uk never left: stays resolved");
+    assert_eq!(a.details["rules"], 2);
+    // Replaced within one build: still resolved.
+    save(&c, "pc", "||co.uk^\n||org.uk^\n").await;
+    build(&c, "pc1").await.unwrap();
+    assert!(!is_open(&alert_of(&c, &key).await), "replaced, not new");
+    // A suffix it hasn't shown still reopens it.
+    save(&c, "pc", "||co.uk^\n||org.uk^\n||me.uk^\n").await;
+    build(&c, "pc1").await.unwrap();
+    assert!(is_open(&alert_of(&c, &key).await));
+    // The bundle takes only IP rules from the feed: no public-suffix rows left.
+    put_entity(
+        &c,
+        "bundles",
+        "pc1",
+        json!({"id": "pc1", "name": "pc1", "feeds": [{"feed": "pc", "rule_types": ["ip"]}]}),
+    )
+    .await;
+    build(&c, "pc1").await.unwrap();
+    assert!(!is_open(&alert_of(&c, &key).await));
+    assert_eq!(get(&c, "/bundles/pc1/public-suffixes").await.1["total"], 0);
+    // Back to DNS rules: raised again; then an allow bundle, which blocks nothing.
+    put_entity(&c, "bundles", "pc1", json!({"id": "pc1", "name": "pc1", "feeds": [{"feed": "pc"}]})).await;
+    build(&c, "pc1").await.unwrap();
+    assert!(is_open(&alert_of(&c, &key).await));
+    put_entity(
+        &c,
+        "bundles",
+        "pc1",
+        json!({"id": "pc1", "name": "pc1", "action": "allow", "feeds": [{"feed": "pc"}]}),
+    )
+    .await;
+    build(&c, "pc1").await.unwrap();
+    assert!(!is_open(&alert_of(&c, &key).await));
+    assert_eq!(get(&c, "/bundles/pc1/public-suffixes").await.1["total"], 0);
+}
+
 /// A hand-resolved public-suffix warning stays resolved across a restart and a rebuild with
 /// the same suffixes (#49).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -1069,11 +1069,16 @@ fn sweep_step(
 /// Applies a build's findings in its commit transaction: new per-rule findings and aggregate
 /// conditions raise (when not open), cleared conditions resolve, and per-rule alerts of the bundle
 /// whose rule left it resolve.
+/// Per member feed, the rule types (`dns`, `ip`) the bundle compiles from it as blocks; empty
+/// for a bundle that doesn't block.
+pub type PslMembers = Vec<(String, Vec<String>)>;
+
 pub fn apply(
     tx: &rusqlite::Transaction<'_>,
     alerts: &crate::alerts::Alerts,
     bundle: &str,
     members: &[Member],
+    psl_members: &[(String, Vec<String>)],
     findings: &Findings,
     ch: &mut Changes,
 ) -> rusqlite::Result<()> {
@@ -1129,8 +1134,7 @@ pub fn apply(
             }
         }
     }
-    let feeds: Vec<String> = members.iter().map(|m| m.feed.clone()).collect();
-    apply_public_suffix(tx, alerts, bundle, &feeds, &findings.psl, ch)?;
+    apply_public_suffix(tx, alerts, bundle, psl_members, &findings.psl, ch)?;
     // Per-rule alerts whose rule left the bundle; open broad blocks of rules still in it take
     // the severity the policy gives them now (an older release's critical scoped block).
     let open: Vec<(String, String, String, String)> = {
@@ -1224,7 +1228,7 @@ fn apply_public_suffix(
     tx: &rusqlite::Transaction<'_>,
     alerts: &crate::alerts::Alerts,
     bundle: &str,
-    members: &[String],
+    members: &[(String, Vec<String>)],
     hits: &[PslHit],
     ch: &mut Changes,
 ) -> rusqlite::Result<()> {
@@ -1247,10 +1251,24 @@ fn apply_public_suffix(
         st.query_map([bundle], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<rusqlite::Result<_>>()?
     };
+    // A rule replacing another for the same suffix in this build (`||co.uk^` becoming
+    // `||co.uk^$important`) inherits its acknowledgement: the suffix never left, so it isn't new.
+    tx.execute(
+        "UPDATE bundle_psl_hits SET alerted = 1 WHERE bundle_id = ?1 AND alerted = 0 AND EXISTS (
+           SELECT 1 FROM bundle_psl_hits o WHERE o.bundle_id = bundle_psl_hits.bundle_id
+             AND o.feed_id = bundle_psl_hits.feed_id AND o.suffix = bundle_psl_hits.suffix AND o.alerted = 1)",
+        [bundle],
+    )?;
     let mut feeds: HashSet<String> = HashSet::new();
     for (feed, hash, ij) in rows {
-        let present = members.contains(&feed)
-            && serde_json::from_str::<Identity>(&ij).is_ok_and(|i| entry_present(tx, &i));
+        // Kept while the bundle still blocks with the rule: its feed is a member whose rule type
+        // the bundle compiles as blocks, and the rule is still in the feed.
+        let present = serde_json::from_str::<Identity>(&ij).is_ok_and(|i| {
+            members
+                .iter()
+                .any(|(f, types)| *f == feed && types.contains(&i.rule_type))
+                && entry_present(tx, &i)
+        });
         if present {
             feeds.insert(feed);
         } else {
@@ -1325,18 +1343,20 @@ fn psl_summarise(
         "Bundle {bundle} blocks {total} public suffix{} (feed {feed})",
         if total == 1 { "" } else { "es" }
     );
-    let current: Option<(String, Option<String>)> = tx
+    let current: Option<(String, Option<String>, Option<i64>)> = tx
         .query_row(
-            "SELECT state, json_extract(details_json, '$.suffix_digest') FROM alerts WHERE dedupe_key = ?1",
+            "SELECT state, json_extract(details_json, '$.suffix_digest'), json_extract(details_json, '$.rules')
+             FROM alerts WHERE dedupe_key = ?1",
             [&key],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
     let shown = match current {
-        Some((state, old)) if state == "open" || added.is_empty() => {
+        Some((state, old, old_rules)) if state == "open" || added.is_empty() => {
             // Open: the summary follows the set. Resolved by hand with nothing new: it stays
-            // resolved (its summary still follows, so reading it shows the current set).
-            if old.as_deref() != Some(digest.as_str()) {
+            // resolved (its summary still follows, so reading it shows the current set). A rule
+            // added or removed for a suffix already listed changes only the rule count.
+            if old.as_deref() != Some(digest.as_str()) || old_rules != Some(rules) {
                 alerts.update_summary_in(tx, &key, &title, &detail, ch)?;
             }
             state == "open"
