@@ -816,17 +816,17 @@ impl BundleManager {
 
     /// After a refused activation: unloads the bundles only it named (loaded unused, kept by
     /// nothing; a later config that names them reads their files from disk again) and clears
-    /// what it reported in progress. With no config running, nothing is unloaded.
+    /// what it reported in progress. With no config running (a refused start), nothing keeps any.
+    /// Their files stay on disk for later starts.
     async fn drop_refused(&self, edge: &Edge) {
         self.set_progress(|p| *p = Progress::default());
-        let Some(running) = edge.active().config.clone() else {
-            return;
-        };
+        let running = edge.active().config.clone();
+        let kept = |k: &str| running.as_ref().is_some_and(|c| c.bundles.contains_key(k));
         let (unused, weak): (Vec<Arc<str>>, Vec<Weak<Bundle>>) = {
             let ab = edge.active().bundles.clone();
             ab.bundles
                 .iter()
-                .filter(|(k, _)| !running.bundles.contains_key(&***k))
+                .filter(|(k, _)| !kept(k))
                 .map(|(k, b)| (Arc::clone(k), Arc::downgrade(b)))
                 .unzip()
         };
@@ -838,6 +838,13 @@ impl BundleManager {
                 ab.bundles.remove(k);
             }
         });
+        // A cold part loaded for one of them goes too.
+        {
+            let mut cold = self.cold_base.lock().unwrap_or_else(|p| p.into_inner());
+            for k in &unused {
+                cold.remove(&**k);
+            }
+        }
         for (k, w) in unused.iter().zip(weak) {
             self.wait_freed(w, &format!("bundle {k}")).await;
         }

@@ -1727,6 +1727,10 @@ async fn a_fetch_failure_mid_activation_leaves_the_running_bundles_loaded() {
     let blob = blob.expect("the blob was published");
     assert!(wait_until(T, || !c.y_failures().is_empty()).await);
     assert_ne!(c.y_failures()[0]["stage"], "budget", "{:#?}", c.y_failures());
+    assert!(
+        c.core.with(|st| st.object_gets.get(&key).copied().unwrap_or(0)) > 0,
+        "the failure came from asking for the missing blob"
+    );
     c.running_intact().await;
     c.core.with(|st| st.objects.insert(key.clone(), blob));
     wait_live(&c.r, &cfg2).await;
