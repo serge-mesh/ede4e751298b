@@ -1276,16 +1276,41 @@ impl FwClient {
     /// from now). A lowered `max(dns_exp, allow_exp)` is sent as an `ensure` with it, or a `delete`
     /// once it has passed (edge-firewall.md §3).
     pub fn set_allow(&self, keys: &[FwKey], secs: Option<u64>) {
+        self.write_allow(keys, secs, None);
+    }
+
+    /// Re-times `device`'s IP allow on `keys` to `secs` from now, as [`Self::set_allow`] does,
+    /// but only on a key `device` still holds the allow on and whose address the neighbour table
+    /// doesn't give another device, checked under the shadow lock with the write, so an address
+    /// move that lands meanwhile (its cleanup takes the same lock) can't leave the new owner's
+    /// key with this device's expiry (edge.md §12: allows are per device). Other keys are left
+    /// as they are: their move cleanup has run or is queued behind this.
+    pub fn retime_allow(&self, device: &str, keys: &[FwKey], secs: u64) {
+        self.write_allow(keys, Some(secs), Some(device));
+    }
+
+    fn write_allow(&self, keys: &[FwKey], secs: Option<u64>, device: Option<&str>) {
         if !self.needed() {
             return;
         }
         let now = self.now_s();
         let new_allow = secs.map(|s| now + s).unwrap_or(0);
+        let guard = device.map(|d| (owner_of(d), crate::neighbours::parse_mac(d)));
         let mut out = Outbox::new(self);
         {
             let mut sh = self.shadow();
             for k in keys {
                 let Some(e) = sh.get(k).copied() else { continue };
+                if let Some((owner, mac)) = guard {
+                    let moved = mac.is_some_and(|m| {
+                        k.src
+                            .and_then(|ip| self.neighbours.mac_of(&ip))
+                            .is_some_and(|o| o != m)
+                    });
+                    if e.allow_owner != Some(owner) || moved {
+                        continue;
+                    }
+                }
                 let old = e.exp();
                 let new = e.dns_exp.max(new_allow);
                 sh.set_exps(k, e.dns_exp, e.dns_owner, new_allow, e.allow_owner, now);
@@ -4230,6 +4255,48 @@ mod tests {
             let _ = tx.send(());
         });
         rx.recv_timeout(t).is_ok()
+    }
+
+    /// A re-time applies only where the device still holds the allow: not on a key whose address
+    /// the neighbour table already gives another device (its move cleanup is queued behind the
+    /// re-time), nor on one the cleanup has taken the allow off (a DNS grant keeps the entry).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_retime_skips_keys_whose_address_moved() {
+        let f = fake(Duration::ZERO);
+        let c = client(&f.path);
+        ready(&c).await;
+        let (a, b) = ([0x02, 0, 0, 0, 0, 1], [0x02, 0, 0, 0, 0, 2]);
+        let a_text = crate::neighbours::format_mac(&a);
+        let (oa, ob) = (owner_of(&a_text), owner_of_mac(&b));
+        let held = pkey("192.168.1.60", "100.64.2.1");
+        let moving = pkey("192.168.1.61", "100.64.2.1");
+        let cleaned = pkey("192.168.1.62", "100.64.2.1");
+        let now = c.now_s();
+        {
+            let mut sh = c.shadow();
+            sh.upsert(held, 0, Some(now + 600), oa, now);
+            sh.upsert(moving, 0, Some(now + 600), oa, now);
+            sh.upsert_dns(cleaned, now + 60, ob, Some(ob), now);
+        }
+        c.neighbours.replace(&[
+            (held.src.unwrap(), a),
+            (moving.src.unwrap(), b),
+            (cleaned.src.unwrap(), b),
+        ]);
+        c.retime_allow(&a_text, &[held, moving, cleaned], 1200);
+        let sh = c.shadow();
+        let left = |k: &FwKey| sh.get(k).unwrap().allow_exp.saturating_sub(now);
+        assert!(left(&held) >= 1199, "the held key is re-timed");
+        assert!(
+            left(&moving) <= 600,
+            "the moved key keeps its expiry for the cleanup"
+        );
+        assert_eq!(
+            sh.get(&cleaned).unwrap().allow_exp,
+            0,
+            "the new owner's key gets no allow"
+        );
+        assert_eq!(sh.get(&cleaned).unwrap().allow_owner, None);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

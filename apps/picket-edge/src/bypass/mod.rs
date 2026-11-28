@@ -1022,7 +1022,7 @@ impl Bypass {
         // A shortened allow lowers its entries' expiry (edge-firewall.md §3).
         for a in &shortened {
             edge.fw
-                .set_allow(&allow_keys(a), Some(secs_until(a.expires_at, now)));
+                .retime_allow(&a.device, &allow_keys(a), secs_until(a.expires_at, now));
         }
         self.rate_add(&text, counted);
         let now = Timestamp::now();
@@ -1242,7 +1242,7 @@ impl Bypass {
         for (a, action) in &changes {
             if a.kind == AllowKind::Ip && action.is_some() {
                 let secs = secs_until(a.expires_at, now);
-                edge.fw.set_allow(&allow_keys(a), Some(secs));
+                edge.fw.retime_allow(&a.device, &allow_keys(a), secs);
             }
         }
     }
@@ -1354,7 +1354,8 @@ fn undo_grants(edge: &Edge, device: &str, granted: &[(Vec<FwKey>, Option<StoredA
                 let had = allow_keys(old);
                 let (kept, added): (Vec<FwKey>, Vec<FwKey>) =
                     keys.iter().partition(|k| had.contains(k) && still_held(k));
-                edge.fw.set_allow(&kept, Some(secs_until(old.expires_at, now)));
+                edge.fw
+                    .retime_allow(device, &kept, secs_until(old.expires_at, now));
                 edge.fw.set_allow(&added, None);
             }
         }
