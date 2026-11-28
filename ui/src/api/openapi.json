@@ -394,11 +394,6 @@
             "minimum": 0,
             "type": "integer"
           },
-          "temporary_allow": {
-            "default": false,
-            "description": "Raise `temporary_allow` (security, info) when an edge logs a created temporary allow:\noff by default (core.md §9).",
-            "type": "boolean"
-          },
           "thresholds": {
             "additionalProperties": {
               "$ref": "#/components/schemas/Duration"
@@ -8158,6 +8153,24 @@
               "null"
             ]
           },
+          "notice_samples": {
+            "default": [],
+            "description": "The first few of those rules: line, reason, text (cut).",
+            "items": {
+              "$ref": "#/components/schemas/ErrorSample"
+            },
+            "type": "array"
+          },
+          "notices": {
+            "additionalProperties": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "default": {},
+            "description": "Rules kept that are worth a look, by reason (`BroadBrowser`: a browser rule with no\nrestriction whose pattern matches most requests). They are entries like any other.",
+            "type": "object"
+          },
           "rule_lines": {
             "default": 0,
             "format": "uint64",
@@ -9916,7 +9929,6 @@
               "evidence_per_alert": 1000,
               "evidence_total_mib": 128,
               "feed_stale_days": 30,
-              "temporary_allow": false,
               "thresholds": {}
             }
           },
@@ -10091,19 +10103,6 @@
                   }
                 ],
                 "description": "The days per false `feed_stale` alert its threshold allows (feed-scheduling.md §8)."
-              },
-              "temporary_allow": {
-                "anyOf": [
-                  {
-                    "default": false,
-                    "description": "Raise `temporary_allow` (security, info) when an edge logs a created temporary allow:\noff by default (core.md §9).",
-                    "type": "boolean"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "Raise `temporary_allow` (security, info) when an edge logs a created temporary allow:\noff by default (core.md §9)."
               },
               "thresholds": {
                 "anyOf": [
@@ -12459,7 +12458,6 @@
                 "edge_key_mismatch",
                 "feed_rules_dropped",
                 "feed_redirect_added",
-                "temporary_allow",
                 "ui_auth_failures",
                 "edge_offline",
                 "edge_update_failed",

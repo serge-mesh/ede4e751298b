@@ -650,6 +650,173 @@ async fn empty_pattern_rules_raise_broad_alerts_in_every_build() {
     );
 }
 
+/// Each open `broad_block` of a bundle: its raw rule → (severity, count).
+async fn broad_severities(c: &Core, bundle: &str) -> BTreeMap<String, (String, u64)> {
+    open_alerts(c, "broad_block", bundle)
+        .await
+        .into_iter()
+        .map(|a| {
+            (
+                a.details["rule"].as_str().unwrap().to_string(),
+                (
+                    serde_json::to_value(a.severity).unwrap().as_str().unwrap().to_string(),
+                    a.count as u64,
+                ),
+            )
+        })
+        .collect()
+}
+
+/// #67: a manual feed's broad block restricted to a selected audience (a positive `$client` or
+/// `$ctag`, no broad source range) is a warning, the same for every equivalent form and in
+/// fresh, full and incremental builds; exclusion-only selectors, broad source ranges, `$dnstype`
+/// or `$denyallow` alone and unscoped rules stay critical. An open critical finding the policy
+/// now puts at warning (an older release's) is reclassified in place: one alert, count and
+/// history kept. Unchanged rebuilds count nothing; a rule that leaves resolves.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn scoped_manual_broad_blocks_are_warnings() {
+    let c = core().await;
+    let warning = [
+        "$client=kids-tablet",
+        "*$client=kids-tablet",
+        "||*^$client=kids-tablet",
+        "/./$client=kids-tablet",
+        "||com^$client=kids-tablet",
+        "$ctag=kids",
+        "$client=kids-tablet,dnstype=A",
+        "$client=kids-tablet,denyallow=school.example",
+        "$client=~admin,ctag=kids",
+        "$client=192.168.1.9",
+    ];
+    let critical = [
+        "$client=~kids-tablet",
+        "$ctag=~kids",
+        "$client=0.0.0.0/0",
+        "$client=192.168.1.0/24",
+        "$client=kids-tablet|192.168.0.0/16",
+        "$dnstype=A",
+        "*$denyallow=school.example",
+        "||com^",
+    ];
+    let expected = |rules: &[&str]| -> BTreeMap<String, String> {
+        rules
+            .iter()
+            .map(|r| {
+                let sev = if warning.contains(r) { "warning" } else { "critical" };
+                (r.to_string(), sev.to_string())
+            })
+            .collect()
+    };
+    let severities = |m: BTreeMap<String, (String, u64)>| -> BTreeMap<String, String> {
+        m.into_iter().map(|(k, (s, _))| (k, s)).collect()
+    };
+    // Fresh: half of each list.
+    manual_feed(&c, "sa", json!({})).await;
+    let first: Vec<&str> = warning[..5].iter().chain(&critical[..4]).copied().collect();
+    save(&c, "sa", &format!("||ads.example^\n{}\n", first.join("\n"))).await;
+    put_entity(
+        &c,
+        "bundles",
+        "sb",
+        json!({"id": "sb", "name": "sb", "feeds": [{"feed": "sa"}]}),
+    )
+    .await;
+    build(&c, "sb").await.unwrap();
+    assert_eq!(severities(broad_severities(&c, "sb").await), expected(&first));
+    // Incremental: the rest of the first list joins the feed.
+    let mut all_a: Vec<&str> = first.clone();
+    all_a.extend(&warning[5..8]);
+    all_a.extend(&critical[4..6]);
+    save(&c, "sa", &format!("||ads.example^\n{}\n", all_a.join("\n"))).await;
+    build(&c, "sb").await.unwrap();
+    assert_eq!(severities(broad_severities(&c, "sb").await), expected(&all_a));
+    // Full: a second manual feed with the rest joins the built bundle.
+    manual_feed(&c, "sc", json!({})).await;
+    let rest: Vec<&str> = warning[8..].iter().chain(&critical[6..]).copied().collect();
+    save(&c, "sc", &format!("{}\n", rest.join("\n"))).await;
+    put_entity(
+        &c,
+        "bundles",
+        "sb",
+        json!({"id": "sb", "name": "sb", "feeds": [{"feed": "sa"}, {"feed": "sc"}]}),
+    )
+    .await;
+    build(&c, "sb").await.unwrap();
+    let mut every: Vec<&str> = all_a.clone();
+    every.extend(&rest);
+    assert_eq!(severities(broad_severities(&c, "sb").await), expected(&every));
+    let scoped = open_alerts(&c, "broad_block", "sb")
+        .await
+        .into_iter()
+        .find(|a| a.details["rule"] == "$ctag=kids")
+        .unwrap();
+    assert_eq!(
+        (
+            scoped.details["feed"].as_str(),
+            scoped.details["scope"].as_str(),
+            scoped.details["line"].is_number()
+        ),
+        (Some("sa"), Some("selected_audience"), true),
+        "{}",
+        scoped.details
+    );
+    assert!(scoped.title.contains("selected audience"), "{}", scoped.title);
+    // An older release's critical finding of a scoped rule: reclassified at the next commit, in
+    // place, without a new occurrence or a second open alert.
+    let key = open_alerts(&c, "broad_block", "sb")
+        .await
+        .into_iter()
+        .find(|a| a.details["rule"] == "$client=kids-tablet")
+        .unwrap()
+        .dedupe_key;
+    let k2 = key.clone();
+    c.state
+        .db
+        .write(move |db| {
+            db.execute(
+                "UPDATE alerts SET severity = 'critical', title = 'A broad block' WHERE dedupe_key = ?1",
+                [&k2],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .unwrap();
+    save(&c, "sc", &format!("{}\n||more.example^\n", rest.join("\n"))).await;
+    build(&c, "sb").await.unwrap();
+    let now = broad_severities(&c, "sb").await;
+    assert_eq!(severities(now.clone()), expected(&every));
+    assert!(now.values().all(|(_, n)| *n == 1), "unchanged rules count nothing: {now:?}");
+    let (a, history) = {
+        let a = c.state.alerts.get_by_key(&key).await.unwrap().unwrap();
+        c.state.alerts.get(a.id).await.unwrap()
+    };
+    assert_eq!(a.count, 1);
+    assert!(a.title.contains("selected audience"), "{}", a.title);
+    assert!(
+        history.iter().any(|h| h.change == "reclassified"),
+        "{history:?}"
+    );
+    assert_eq!(
+        open_alerts(&c, "broad_block", "sb")
+            .await
+            .iter()
+            .filter(|a| a.details["rule"] == "$client=kids-tablet")
+            .count(),
+        1
+    );
+    // The scoped rule leaves its feed: its finding resolves; the rest stand.
+    let left: Vec<&str> = all_a.iter().copied().filter(|r| *r != "$client=kids-tablet").collect();
+    save(&c, "sa", &format!("||ads.example^\n{}\n", left.join("\n"))).await;
+    build(&c, "sb").await.unwrap();
+    assert_eq!(
+        c.state.alerts.get_by_key(&key).await.unwrap().unwrap().state,
+        picket_core::alerts::AlertState::Resolved
+    );
+    let mut remaining = left.clone();
+    remaining.extend(&rest);
+    assert_eq!(severities(broad_severities(&c, "sb").await), expected(&remaining));
+}
+
 /// Warn bundles (build-and-test.md §5 "Warn bundles"; bundles.md §3, feeds.md §7): a block entry
 /// a warn bundle named in its feed's `warn_on` matches records a warning and raises
 /// `warninglist_hit`; the key keeps blocking; the warning resolves when the entry leaves.

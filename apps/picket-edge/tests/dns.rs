@@ -617,6 +617,73 @@ async fn rewrites_host_mappings_and_cname_rewrites() {
     env.shutdown().await;
 }
 
+/// The SvcParams of an HTTPS/SVCB RDATA whose target is the root: (key, value) in wire order.
+fn svc_params(d: &[u8]) -> Vec<(u16, Vec<u8>)> {
+    assert_eq!(d[2], 0, "target .");
+    let mut at = 3;
+    let mut out = vec![];
+    while at < d.len() {
+        let key = u16::from_be_bytes([d[at], d[at + 1]]);
+        let len = usize::from(u16::from_be_bytes([d[at + 2], d[at + 3]]));
+        out.push((key, d[at + 4..at + 4 + len].to_vec()));
+        at += 4 + len;
+    }
+    out
+}
+
+/// HTTPS and SVCB rewrites whose keys, sorted by name as the rule stores them, aren't in key
+/// order (`alpn ipv4hint port` is keys 1 4 3; `mandatory` is 0): each answers with its record,
+/// every parameter in increasing key order on the wire (RFC 9460 §2.2).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn svcb_rewrites_answer_in_key_order() {
+    let up = FakeUpstream::plain(ok_upstream()).await;
+    let mut cfg = one_upstream(&up, "udp");
+    cfg["profiles"]["default"]["block"] = json!(["rw"]);
+    let env = start(cfg, |_| {}).await;
+    set_bundles(
+        env.edge(),
+        vec![(
+            "rw",
+            bundle(
+                "rw",
+                BundleAction::Block,
+                &[
+                    "||https-rw.example^$dnsrewrite=NOERROR;HTTPS;1 . port=8443 ipv4hint=192.0.2.1 alpn=h2\\,h3",
+                    "||svcb-rw.example^$dnsrewrite=NOERROR;SVCB;2 . mandatory=alpn\\,port ipv6hint=2001:db8::1 alpn=h3 port=853",
+                    "||one-rw.example^$dnsrewrite=NOERROR;HTTPS;1 . ech=AQID",
+                    "||none-rw.example^$dnsrewrite=NOERROR;HTTPS;1 .",
+                ],
+            ),
+        )],
+    );
+    let addr = env.dns();
+    let m = udp_q(addr, &Q::new("https-rw.example", 65)).await;
+    assert_eq!((m.rcode, m.types()), (0, vec![65]));
+    assert_eq!(
+        svc_params(&m.answers[0].3),
+        vec![
+            (1, b"\x02h2\x02h3".to_vec()),
+            (3, 8443u16.to_be_bytes().to_vec()),
+            (4, vec![192, 0, 2, 1]),
+        ]
+    );
+    assert_eq!(env.q_record("https-rw.example").await["decision"], "rewrite");
+    let m = udp_q(addr, &Q::new("svcb-rw.example", 64)).await;
+    assert_eq!((m.rcode, m.types()), (0, vec![64]));
+    let p = svc_params(&m.answers[0].3);
+    assert_eq!(p.iter().map(|(k, _)| *k).collect::<Vec<_>>(), vec![0, 1, 3, 6]);
+    assert_eq!(p[0].1, vec![0, 1, 0, 3], "mandatory lists alpn and port");
+    assert_eq!(p[2].1, 853u16.to_be_bytes().to_vec());
+    let v6: std::net::Ipv6Addr = "2001:db8::1".parse().unwrap();
+    assert_eq!(p[3].1, v6.octets().to_vec());
+    let m = udp_q(addr, &Q::new("one-rw.example", 65)).await;
+    assert_eq!(svc_params(&m.answers[0].3), vec![(5, vec![1, 2, 3])]);
+    let m = udp_q(addr, &Q::new("none-rw.example", 65)).await;
+    assert_eq!(m.types(), vec![65]);
+    assert!(svc_params(&m.answers[0].3).is_empty());
+    env.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn special_names_forward_zones_and_any() {
     let local = FakeUpstream::plain(|m: &Msg, _q: &[u8]| {

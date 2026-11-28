@@ -1841,12 +1841,6 @@ export interface components {
              */
             feed_stale_days?: number;
             /**
-             * @description Raise `temporary_allow` (security, info) when an edge logs a created temporary allow:
-             *     off by default (core.md §9).
-             * @default false
-             */
-            temporary_allow?: boolean;
-            /**
              * @description Alert kind → how long its condition must hold before it fires (core.md §9). Kinds not
              *     listed use core.md §9's defaults: `edge_offline` 5 min; `edge_upstream_down`,
              *     `edge_redirect_missing`, `edge_fw_layout_unknown` and `edge_fw_catch_all` 2 min;
@@ -4888,6 +4882,19 @@ export interface components {
              */
             misp_type?: string | null;
             /**
+             * @description The first few of those rules: line, reason, text (cut).
+             * @default []
+             */
+            notice_samples?: components["schemas"]["ErrorSample"][];
+            /**
+             * @description Rules kept that are worth a look, by reason (`BroadBrowser`: a browser rule with no
+             *     restriction whose pattern matches most requests). They are entries like any other.
+             * @default {}
+             */
+            notices?: {
+                [key: string]: number;
+            };
+            /**
              * Format: uint64
              * @default 0
              */
@@ -5659,7 +5666,6 @@ export interface components {
              *       "evidence_per_alert": 1000,
              *       "evidence_total_mib": 128,
              *       "feed_stale_days": 30,
-             *       "temporary_allow": false,
              *       "thresholds": {}
              *     }
              */
@@ -5793,11 +5799,6 @@ export interface components {
                 evidence_total_mib?: number | null;
                 /** @description The days per false `feed_stale` alert its threshold allows (feed-scheduling.md §8). */
                 feed_stale_days?: number | null;
-                /**
-                 * @description Raise `temporary_allow` (security, info) when an edge logs a created temporary allow:
-                 *     off by default (core.md §9).
-                 */
-                temporary_allow?: boolean | null;
                 /**
                  * @description Alert kind → how long its condition must hold before it fires (core.md §9). Kinds not
                  *     listed use core.md §9's defaults: `edge_offline` 5 min; `edge_upstream_down`,
@@ -6578,7 +6579,7 @@ export interface operations {
                 /** @description open or resolved */
                 state?: "open" | "resolved";
                 /** @description An alert kind */
-                kind?: "dnssec_bogus" | "upstream_disagrees" | "category_answered" | "category_blocked" | "broad_allow" | "upstream_invalid_spike" | "edge_key_mismatch" | "feed_rules_dropped" | "feed_redirect_added" | "temporary_allow" | "ui_auth_failures" | "edge_offline" | "edge_update_failed" | "edge_activation_failed" | "edge_listener_rejected" | "edge_listener_failed" | "edge_upstream_down" | "edge_spool_evicting" | "edge_memory_low" | "edge_fw_set_full" | "edge_fw_repairs" | "edge_fw_drift" | "edge_helper_unreachable" | "edge_ssd_unavailable" | "edge_crash_loop" | "edge_panic" | "edge_redirect_missing" | "edge_unifi_conflict" | "edge_fw_layout_unknown" | "edge_fw_catch_all" | "edge_helper_disabled" | "edge_page_file_refetched" | "edge_tls_version_refused" | "edge_firmware_unsupported" | "edge_firmware_check_failed" | "release_invalid" | "feed_provider_down" | "feed_down" | "feed_stale" | "feed_added" | "feed_provider_trigger_down" | "feed_provider_listing_incomplete" | "feed_limit_reached" | "config_upgraded" | "feed_held" | "bundle_build_failed" | "bundle_over_budget" | "bundle_cold_share" | "broad_block" | "allow_override" | "bundle_warning" | "warninglist_hit" | "lookup_provider_down" | "lookup_self_test_failed" | "dnssec_unavailable" | "attribution_mismatch" | "attribution_unavailable" | "wire_mismatch" | "core_disk_low" | "alert_evidence_full";
+                kind?: "dnssec_bogus" | "upstream_disagrees" | "category_answered" | "category_blocked" | "broad_allow" | "upstream_invalid_spike" | "edge_key_mismatch" | "feed_rules_dropped" | "feed_redirect_added" | "ui_auth_failures" | "edge_offline" | "edge_update_failed" | "edge_activation_failed" | "edge_listener_rejected" | "edge_listener_failed" | "edge_upstream_down" | "edge_spool_evicting" | "edge_memory_low" | "edge_fw_set_full" | "edge_fw_repairs" | "edge_fw_drift" | "edge_helper_unreachable" | "edge_ssd_unavailable" | "edge_crash_loop" | "edge_panic" | "edge_redirect_missing" | "edge_unifi_conflict" | "edge_fw_layout_unknown" | "edge_fw_catch_all" | "edge_helper_disabled" | "edge_page_file_refetched" | "edge_tls_version_refused" | "edge_firmware_unsupported" | "edge_firmware_check_failed" | "release_invalid" | "feed_provider_down" | "feed_down" | "feed_stale" | "feed_added" | "feed_provider_trigger_down" | "feed_provider_listing_incomplete" | "feed_limit_reached" | "config_upgraded" | "feed_held" | "bundle_build_failed" | "bundle_over_budget" | "bundle_cold_share" | "broad_block" | "allow_override" | "bundle_warning" | "warninglist_hit" | "lookup_provider_down" | "lookup_self_test_failed" | "dnssec_unavailable" | "attribution_mismatch" | "attribution_unavailable" | "wire_mismatch" | "core_disk_low" | "alert_evidence_full";
                 /** @description An edge id */
                 edge?: string;
                 /** @description The `next_cursor` of the previous page. */

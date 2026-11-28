@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use common::edge::eventually;
 use jiff::Timestamp;
+use rusqlite::OptionalExtension;
 use picket_api::logs::Decision;
 use picket_core::config::model::EntityKind;
 use picket_core::config::{Actor, Op};
@@ -548,16 +549,13 @@ where
     f().await
 }
 
-/// core.md §9 `temporary_allow`, with the real edge: an allow the extension creates is
-/// committed to the edge's allow store as the bypass API commits it (`AllowsStore::commit`,
-/// `via: extension`, edge.md §12), shipped as an `allow` record through the edge's spool, and
-/// raises the alert on core once `alerts.temporary_allow` is on.
+/// With the real edge: an allow the extension creates is committed to the edge's allow store as
+/// the bypass API commits it (`AllowsStore::commit`, `via: extension`, edge.md §12), shipped as an
+/// `allow` record through the edge's spool, and kept in core's temporary-allow history; it raises
+/// no alert (issue 79).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_allow_the_extension_creates_on_the_real_edge_raises_temporary_allow() {
-    let c = common::start_core(Some(
-        json!({"web": {"tls": "off"}, "alerts": {"temporary_allow": true}}),
-    ))
-    .await;
+async fn an_allow_the_extension_creates_on_the_real_edge_reaches_the_history() {
+    let c = common::start_core(Some(json!({"web": {"tls": "off"}}))).await;
     let d = dirs();
     std::fs::create_dir_all(d.config.parent().unwrap()).unwrap();
     std::fs::write(
@@ -635,15 +633,43 @@ async fn an_allow_the_extension_creates_on_the_real_edge_raises_temporary_allow(
     .await
     .unwrap()
     .unwrap();
-    let key = format!("temporary_allow:{id}:emma-tablet:example.org");
+    let row = || {
+        let (db, id) = (c.state.db.clone(), id.clone());
+        async move {
+            db.read(move |conn| {
+                Ok::<_, anyhow::Error>(
+                    conn.query_row(
+                        "SELECT target, device, created_at IS NOT NULL FROM temp_allows WHERE edge_id = ?1 AND allow_id = 'a-ext-1'",
+                        [id],
+                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, bool>(2)?)),
+                    )
+                    .optional()?,
+                )
+            })
+            .await
+            .unwrap()
+        }
+    };
     assert!(
-        eventually_long(|| async { c.state.alerts.get_by_key(&key).await.unwrap().is_some() }).await,
-        "the shipped allow record raised {key}"
+        eventually_long(|| async { row().await.is_some() }).await,
+        "the shipped allow record reached the history"
     );
-    let a = c.state.alerts.get_by_key(&key).await.unwrap().unwrap();
-    assert_eq!(a.details["via"], "extension");
-    assert_eq!(a.details["target"], "videos.example.org");
-    assert_eq!(a.details["profile"], "kids");
-    assert_eq!(a.edge.as_deref(), Some(id.as_str()));
+    assert_eq!(
+        row().await,
+        Some(("videos.example.org".into(), "emma-tablet".into(), true))
+    );
+    let security = c
+        .state
+        .db
+        .read(|conn| {
+            Ok::<_, anyhow::Error>(conn.query_row(
+                "SELECT count(*) FROM alerts WHERE type = 'security'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(security, 0, "an allow raises no alert");
     r.shutdown().await;
 }

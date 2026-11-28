@@ -214,6 +214,34 @@ pub fn is_broad(rule: &Rule) -> bool {
     }
 }
 
+/// The most addresses a `$client` range may cover and still name an audience narrower than a
+/// network: 16 (an IPv4 /28, an IPv6 /124). [`has_scoped_audience`] treats a wider range as
+/// broad. Not [`is_broad_range`]'s destination thresholds: those leave private ranges out, and
+/// private ranges are where LAN clients live, so a `192.168.1.0/24` audience is a whole LAN.
+pub const MAX_SCOPED_CLIENT_ADDRESSES: u128 = 16;
+
+/// True when a rule's client conditions restrict it to a selected audience (#67): at least one
+/// positive (not `~`) `$client` or `$ctag` alternative, and no positive `$client` range wider
+/// than [`MAX_SCOPED_CLIENT_ADDRESSES`] (alternatives within a modifier are ORed, so one broad
+/// range opens the rule to that whole range whatever the other alternatives name). Exclusions
+/// alone (`$client=~admin`, `$ctag=~kids`) restrict nothing worth the name: everyone else is the
+/// audience. `$dnstype` and `$denyallow` select no audience. This says nothing of how many
+/// devices a name or tag stands for, so a broad rule it holds for stays worth a warning.
+pub fn has_scoped_audience(rule: &Rule) -> bool {
+    let client = rule.spec.client.as_ref();
+    let positive_client =
+        client.is_some_and(|c| !c.permitted.names.is_empty() || !c.permitted.nets.is_empty());
+    let positive_tag = rule.spec.ctag.as_ref().is_some_and(|t| !t.permitted.is_empty());
+    let broad_range = client.is_some_and(|c| {
+        c.permitted.nets.iter().any(|n| {
+            crate::ip::IpRange::parse(n).is_none_or(|r| {
+                r.last.saturating_sub(r.first).saturating_add(1) > MAX_SCOPED_CLIENT_ADDRESSES
+            })
+        })
+    });
+    (positive_client || positive_tag) && !broad_range
+}
+
 /// A single-label key with a subdomain flag: `||com^`, `*.zip^`, `.com^` (block or allow).
 pub fn is_whole_tld(rule: &Rule) -> bool {
     rule.kind == Kind::Name && !rule.key.contains('.') && rule.flags.intersects(Flags::ALL_SUBS)
@@ -333,6 +361,48 @@ mod tests {
                 o => panic!("{l}: {o:?}"),
             },
             o => panic!("{l}: {o:?}"),
+        }
+    }
+
+    #[test]
+    fn scoped_audiences() {
+        let scoped = |l: &str| has_scoped_audience(&rule(l));
+        for l in [
+            "$client=kids-tablet",
+            "*$client=kids-tablet",
+            "||*^$client=kids-tablet",
+            "/./$client=kids-tablet",
+            "||com^$client=kids-tablet",
+            "$ctag=kids",
+            "$client=kids-tablet,dnstype=A",
+            "$client=kids-tablet,denyallow=school.example",
+            "$client=192.168.1.9",
+            "$client=192.168.1.0/28",
+            "$client=fd00::1",
+            "$client=~admin,ctag=kids",
+            "$client=kids-tablet|~admin",
+            "$ctag=kids|~admin",
+        ] {
+            assert!(scoped(l), "{l}");
+        }
+        for l in [
+            "$dnstype=A",
+            "$denyallow=school.example",
+            "*$denyallow=school.example",
+            "||com^",
+            "$client=~kids-tablet",
+            "$ctag=~kids",
+            "$client=~admin,ctag=~guests",
+            "$client=0.0.0.0/0",
+            "$client=192.168.1.0/24",
+            "$client=192.168.1.0/27",
+            "$client=fd00::/64",
+            "$client=::/0",
+            // A positive alternative doesn't hide a broad range beside it.
+            "$client=kids-tablet|192.168.0.0/16",
+            "$client=192.168.0.0/16,ctag=kids",
+        ] {
+            assert!(!scoped(l), "{l}");
         }
     }
 

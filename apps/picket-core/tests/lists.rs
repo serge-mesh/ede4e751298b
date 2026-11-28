@@ -253,6 +253,70 @@ async fn browser_list_warnings() {
 }
 
 /// The served text of a list (empty while it isn't served).
+/// Issue 80: browser rules with no restriction and a pattern under 3 characters (`$image`,
+/// `*$third-party`, `$removeparam=utm_source`, `@@*$script`) are kept through ingest and reach the
+/// browser list as written; the run counts them as a non-blocking notice with samples. A broad DNS
+/// rule is still dropped as too wide, and a feed whose browser mode drops browser rules keeps none
+/// (and notes none).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn broad_browser_rules_reach_the_lists() {
+    let c = core().await;
+    browser_feed(&c, "bf").await;
+    put_entity(
+        &c,
+        "bundles",
+        "bl",
+        json!({"id": "bl", "name": "bl", "feeds": [{"feed": "bf"}]}),
+    )
+    .await;
+    let broad = ["$removeparam=utm_source", "$image,third-party", "*$third-party", "@@*$script"];
+    save(
+        &c,
+        "bf",
+        &format!("{}\n||ok.example/ads.js\n*\n||dns.example^\n", broad.join("\n")),
+    )
+    .await;
+    let parse = |feed: &str| {
+        let f = feed.to_string();
+        let state = c.state.clone();
+        async move {
+            let s: String = state
+                .db
+                .read(move |db| {
+                    Ok::<_, anyhow::Error>(db.query_row(
+                        "SELECT parse_json FROM feed_runs WHERE feed_id = ?1 ORDER BY id DESC LIMIT 1",
+                        [f],
+                        |r| r.get(0),
+                    )?)
+                })
+                .await
+                .unwrap();
+            serde_json::from_str::<Value>(&s).unwrap()
+        }
+    };
+    let p = parse("bf").await;
+    assert_eq!(p["entries"]["browser"], 5, "{p}");
+    assert_eq!(p["warnings"], json!({"TooWide": 1}), "only the DNS `*`: {p}");
+    assert_eq!(p["notices"], json!({"BroadBrowser": 4}), "{p}");
+    assert_eq!(p["notice_samples"][0]["text"], broad[0], "{p}");
+    assert_eq!(p["notice_samples"][0]["line_no"], 1, "{p}");
+    build(&c, "bl").await;
+    picket_core::lists::build_bundle_list(&c.state, "bl")
+        .await
+        .unwrap();
+    let text = served(&c, "/lists/bl.txt").await;
+    for l in broad.iter().chain(&["||ok.example/ads.js"]) {
+        assert!(text.lines().any(|x| x == *l), "{l} in the list: {text}");
+    }
+    assert!(!text.lines().any(|x| x == "*"), "{text}");
+    // Browser rules dropped by the feed's mode: none kept, no notice.
+    manual_feed(&c, "df", json!({})).await;
+    save(&c, "df", &format!("{}\n||dns.example^\n", broad.join("\n"))).await;
+    let p = parse("df").await;
+    assert_eq!(p.get("notices"), None, "{p}");
+    assert_eq!(p["kept"], 1, "{p}");
+}
+
 async fn served(c: &Core, path: &str) -> String {
     let r = fetch(c, path, &[]).await;
     if r.status() != StatusCode::OK {
