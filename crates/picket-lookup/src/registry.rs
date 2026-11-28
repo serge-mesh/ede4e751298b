@@ -1,9 +1,18 @@
 //! The module registry (providers.md §1). `build.rs` scans `src/modules/*/` and generates
-//! [`modules`]: one `pub mod <id>` per directory and `all()`, a boxed `Module::default()`
-//! each. [`Registry`] holds them by id, shared by every lookup provider of a module.
+//! [`modules`]: one `pub mod <id>` per directory, `all()` (a boxed `Module::default()` each) and
+//! one constructor per module. [`Registry`] holds the constructors by id and builds a module only
+//! when something asks for it (#44).
+//!
+//! **Sharing and release.** Every lookup provider of a module shares one instance: the registry
+//! keeps a [`Weak`] to it and hands out that instance while any holder (a provider's settings, a
+//! call still running) keeps it alive. Once the last one lets go the module is dropped, and the
+//! next request builds a new one. What the registry itself keeps is bookkeeping: the id, the
+//! constructor, and the weak pointer, which holds the module struct's own allocation (not what
+//! the module owns on the heap) until the slot is used again. A module added with
+//! [`Registry::insert`] is held for the registry's lifetime, as before.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 
 use crate::module::{LookupModule, Preset};
 use crate::secrets;
@@ -25,10 +34,54 @@ pub enum ConfigError {
     Invalid(String),
 }
 
-/// Lookup modules by id.
+/// Builds a module.
+pub type ModuleFactory = Arc<dyn Fn() -> Arc<dyn LookupModule> + Send + Sync>;
+
+enum Source {
+    /// Built on demand and shared while in use.
+    Make(ModuleFactory),
+    /// Held for the registry's lifetime.
+    Fixed(Arc<dyn LookupModule>),
+}
+
+struct Slot {
+    source: Source,
+    live: Mutex<Option<Weak<dyn LookupModule>>>,
+}
+
+impl Slot {
+    fn get(&self) -> Arc<dyn LookupModule> {
+        match &self.source {
+            Source::Fixed(m) => Arc::clone(m),
+            Source::Make(make) => {
+                let mut live = self.live.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(m) = live.as_ref().and_then(Weak::upgrade) {
+                    return m;
+                }
+                let m = make();
+                *live = Some(Arc::downgrade(&m));
+                m
+            }
+        }
+    }
+
+    fn is_live(&self) -> bool {
+        match &self.source {
+            Source::Fixed(_) => true,
+            Source::Make(_) => self
+                .live
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .is_some_and(|w| w.strong_count() > 0),
+        }
+    }
+}
+
+/// Lookup modules by id. Clones share their slots, and so their live instances.
 #[derive(Clone)]
 pub struct Registry {
-    modules: BTreeMap<&'static str, Arc<dyn LookupModule>>,
+    modules: BTreeMap<&'static str, Arc<Slot>>,
 }
 
 impl std::fmt::Debug for Registry {
@@ -44,13 +97,13 @@ impl Default for Registry {
 }
 
 impl Registry {
-    /// Every compiled-in module.
+    /// Every compiled-in module, none of them built yet.
     pub fn builtin() -> Self {
-        let mut by_id = BTreeMap::new();
-        for m in modules::all() {
-            by_id.insert(m.id(), Arc::from(m));
+        let mut r = Self::empty();
+        for (id, make) in modules::FACTORIES {
+            r.insert_factory(id, Arc::new(*make));
         }
-        Self { modules: by_id }
+        r
     }
 
     /// An empty registry (tests add their own modules).
@@ -60,13 +113,41 @@ impl Registry {
         }
     }
 
-    /// Adds or replaces a module (tests, or a side that wraps a module).
+    /// Adds or replaces a module held for the registry's lifetime (tests, or a side that wraps
+    /// a module).
     pub fn insert(&mut self, module: Arc<dyn LookupModule>) {
-        self.modules.insert(module.id(), module);
+        self.put(module.id(), Source::Fixed(module));
     }
 
+    /// Adds or replaces a module built by `make` when first asked for and shared while in use
+    /// (tests with an instrumented module). `make` must build a module whose `id()` is `id`.
+    pub fn insert_factory(&mut self, id: &'static str, make: ModuleFactory) {
+        self.put(id, Source::Make(make));
+    }
+
+    fn put(&mut self, id: &'static str, source: Source) {
+        self.modules.insert(
+            id,
+            Arc::new(Slot {
+                source,
+                live: Mutex::new(None),
+            }),
+        );
+    }
+
+    /// The module, built if no one holds it now.
     pub fn get(&self, id: &str) -> Option<Arc<dyn LookupModule>> {
-        self.modules.get(id).cloned()
+        self.modules.get(id).map(|s| s.get())
+    }
+
+    /// Whether `id` is a known module (builds nothing).
+    pub fn contains(&self, id: &str) -> bool {
+        self.modules.contains_key(id)
+    }
+
+    /// Whether an instance of `id` exists now (always for one added with [`Self::insert`]).
+    pub fn is_live(&self, id: &str) -> bool {
+        self.modules.get(id).is_some_and(|s| s.is_live())
     }
 
     /// Module ids, sorted.
@@ -137,5 +218,47 @@ mod tests {
             r.validate_config("nope", &cfg),
             Err(ConfigError::UnknownModule(_))
         ));
+    }
+
+    /// #44: a module is built when first asked for, shared while held, dropped after its last
+    /// holder, and built again on the next request.
+    #[test]
+    fn modules_are_built_on_demand_shared_and_released() {
+        let r = Registry::builtin();
+        for id in modules::IDS {
+            assert!(!r.is_live(id), "{id} built at startup");
+            assert!(r.contains(id));
+        }
+        let a = r.get("dns").unwrap();
+        let b = r.clone().get("dns").unwrap();
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "one instance per module, also through a clone"
+        );
+        assert!(r.is_live("dns") && !r.is_live("http_json"));
+        drop((a, b));
+        assert!(!r.is_live("dns"), "released after its last holder");
+
+        let counters = Arc::new(crate::testkit::ModuleCounters::default());
+        let mut r = Registry::empty();
+        r.insert_factory(
+            "counted",
+            crate::testkit::CountedModule::factory(1 << 20, Arc::clone(&counters)),
+        );
+        assert!(r.contains("counted") && !r.is_live("counted"));
+        assert_eq!(counters.get(), (0, 0));
+        let one = r.get("counted").unwrap();
+        let two = r.get("counted").unwrap();
+        assert_eq!(counters.get(), (1, 0));
+        drop(one);
+        assert_eq!(counters.get(), (1, 0), "still held");
+        drop(two);
+        assert_eq!(counters.get(), (1, 1));
+        let again = r.get("counted").unwrap();
+        assert_eq!(counters.get(), (2, 1), "built again after release");
+        drop(again);
+        assert_eq!(counters.get(), (2, 2));
+        r.validate_config("counted", &serde_json::json!({})).unwrap();
+        assert_eq!(counters.get(), (2, 2), "validation builds nothing");
     }
 }

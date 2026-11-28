@@ -252,3 +252,69 @@ impl LookupModule for ScriptedModule {
         self.self_test.clone()
     }
 }
+
+/// How often [`CountedModule::factory`]'s modules were built and dropped.
+#[derive(Debug, Default)]
+pub struct ModuleCounters {
+    pub made: AtomicU64,
+    pub dropped: AtomicU64,
+}
+
+impl ModuleCounters {
+    /// (built, dropped).
+    pub fn get(&self) -> (u64, u64) {
+        (
+            self.made.load(Ordering::SeqCst),
+            self.dropped.load(Ordering::SeqCst),
+        )
+    }
+}
+
+/// A module (id `counted`) with owned state that counts its builds and drops (#44); every
+/// lookup answers Clean.
+pub struct CountedModule {
+    _state: Vec<u8>,
+    counters: Arc<ModuleCounters>,
+}
+
+impl CountedModule {
+    /// A registry factory building modules that own `state_bytes` bytes each.
+    pub fn factory(state_bytes: usize, counters: Arc<ModuleCounters>) -> crate::registry::ModuleFactory {
+        Arc::new(move || {
+            counters.made.fetch_add(1, Ordering::SeqCst);
+            Arc::new(Self {
+                _state: vec![0; state_bytes],
+                counters: Arc::clone(&counters),
+            }) as Arc<dyn LookupModule>
+        })
+    }
+}
+
+impl Drop for CountedModule {
+    fn drop(&mut self) {
+        self.counters.dropped.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[async_trait::async_trait]
+impl LookupModule for CountedModule {
+    fn id(&self) -> &'static str {
+        "counted"
+    }
+
+    fn config_schema(&self) -> schemars::Schema {
+        schemars::json_schema!({"type": "object"})
+    }
+
+    async fn lookup(
+        &self,
+        _ctx: &crate::ctx::LookupCtx,
+        _cfg: &Value,
+        _name: &str,
+    ) -> Result<Answer, LookupError> {
+        Ok(Answer {
+            verdict: crate::module::Verdict::Clean,
+            detail: None,
+        })
+    }
+}
