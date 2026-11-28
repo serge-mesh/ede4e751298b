@@ -10,7 +10,8 @@
 //
 // The same seed gives the same cases, and a failure names its seed, case and input.
 // PICKET_FUZZ_RUNS sets the cases per test (default 2000) and PICKET_FUZZ_SEED the seed (default
-// 1; `random` picks one). `npm run test:fuzz` runs 100,000 cases per test from a random seed.
+// 1; `random` picks one). `npm run test:fuzz` runs 100,000 cases per test from a random seed
+// unless they are set.
 
 import { describe, expect, it } from 'vitest';
 

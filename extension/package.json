@@ -15,7 +15,7 @@
     "lint:firefox": "node scripts/lint-firefox.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:fuzz": "PICKET_FUZZ_RUNS=100000 PICKET_FUZZ_SEED=random vitest run test/dns-fuzz.test.ts",
+    "test:fuzz": "PICKET_FUZZ_RUNS=${PICKET_FUZZ_RUNS:-100000} PICKET_FUZZ_SEED=${PICKET_FUZZ_SEED:-random} vitest run test/dns-fuzz.test.ts",
     "test:browser": "node scripts/build.mjs && playwright test",
     "test:browser:slow": "node scripts/build.mjs && PICKET_BROWSER_SLOW=1 PICKET_BROWSER_LOADS=300 playwright test --grep \"@slow|silently dropped|appears for every blocked page load\"",
     "package": "node scripts/build.mjs && node scripts/package.mjs"
