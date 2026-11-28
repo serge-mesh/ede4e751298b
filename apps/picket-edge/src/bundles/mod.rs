@@ -33,12 +33,14 @@
 //! - **Activation peak** (bundles.md §6 "Activation": one part extra; "if memory is short"):
 //!   everything resident meanwhile counts too, the bundles the target config drops and the
 //!   version a whole head replaces included. When that passes `bundle_budget_mib`, memory is
-//!   short: the bundles the target drops are unloaded ahead of the swap (§13's order otherwise
-//!   unloads them after it), then the version a whole head (a format change) replaces, each
-//!   waited on until freed, so the peak stays the steady state plus the part being built and a
-//!   config that fits alone still activates. If the activation then fails, the bundles unloaded
-//!   for it are loaded again for the running config (and the ones only the failed config named
-//!   unloaded first).
+//!   short: resident bundles nothing runs with (the target drops them and the running config
+//!   doesn't name them) are unloaded ahead of the swap, each waited on until freed. A bundle the
+//!   running config names (block, allow or scope alike) is never unloaded before the target is
+//!   live (#70): the running policy stays whole whatever happens to the activation, so a failed
+//!   one has nothing to restore. If the peak still passes the budget, the step fails at stage
+//!   `budget` (not retried until core sends another object, so nothing is loaded and unloaded
+//!   again and again), its reason naming the peak, the bundles held for the running config and
+//!   what would make it fit: a budget of at least the peak, or the change made in two configs.
 //! - **active.json** ([`record`]) is written next to the files at every step; a start from disk
 //!   loads each bundle's recorded head whole (or its previous, complete head when the files of a
 //!   head left part-way are gone).
@@ -169,9 +171,6 @@ pub struct BundleManager {
     emmc_filled: AtomicBool,
     /// Files placed for a move to the SSD this run.
     placed: Mutex<Placed>,
-    /// Bundles unloaded ahead of a swap to make room ([`BundleManager::fit`]): loaded again if
-    /// the activation fails.
-    evicted: Mutex<Vec<String>>,
     pub tuning: BundleTuning,
 }
 
@@ -242,6 +241,37 @@ impl HaveProvider for BundleHave {
     fn in_progress_verdict_sets(&self) -> BTreeMap<String, Vec<String>> {
         self.0.progress.load().verdict_sets.clone()
     }
+}
+
+/// The `budget` failure of a step whose activation peak passes `bundle_budget_mib` with only
+/// what the running config names left to unload (#70): `peak` bytes, `held` the bundles kept for
+/// the running config (name, bytes). Says what would make it fit.
+fn peak_over_budget(cfg: &EdgeConfig, peak: usize, held: &[(Arc<str>, usize)]) -> StepError {
+    let mut names: Vec<&str> = held.iter().map(|(k, _)| &**k).collect();
+    names.sort_unstable();
+    let bytes: usize = held.iter().map(|(_, m)| *m).sum();
+    let mut reason = format!(
+        "bundles would peak at {} MiB during this activation, over bundle_budget_mib {}",
+        peak.div_ceil(MIB),
+        cfg.memory.bundle_budget_mib
+    );
+    if names.is_empty() {
+        reason.push_str(&format!(
+            "; raise memory.bundle_budget_mib to at least {} MiB",
+            peak.div_ceil(MIB)
+        ));
+    } else {
+        reason.push_str(&format!(
+            ": the running config keeps using {} ({} MiB) until this config is live, so they stay \
+             loaded; raise memory.bundle_budget_mib to at least {} MiB, or make the change in two \
+             configs (the first without {})",
+            names.join(", "),
+            bytes.div_ceil(MIB),
+            peak.div_ceil(MIB),
+            names.join(", ")
+        ));
+    }
+    StepError::permanent("budget", reason)
 }
 
 fn short(id: &str) -> String {
@@ -349,7 +379,6 @@ impl BundleManager {
             placement_pending: AtomicBool::new(false),
             emmc_filled: AtomicBool::new(false),
             placed: Mutex::new(Placed::default()),
-            evicted: Mutex::new(Vec::new()),
             tuning,
         })
     }
@@ -625,10 +654,11 @@ impl BundleManager {
     ///   `overlay_budget_mib` (what core checked, bundles.md §2 "Budget"); else the step fails at
     ///   stage `budget`.
     /// - **Peak:** every bundle resident meanwhile plus the candidate within `bundle_budget_mib`,
-    ///   give or take the part being built. When it isn't, memory is short: the bundles the target
-    ///   drops are unloaded ahead of the swap, then, for a whole head, the version it replaces;
-    ///   each is waited on until freed (bounded). A failed activation loads them again
-    ///   ([`Self::restore_evicted`]).
+    ///   give or take the part being built. When it isn't, memory is short: resident bundles that
+    ///   neither the target nor the running config names are unloaded ahead of the swap, then, for
+    ///   a whole head of a bundle the running config doesn't name, the version it replaces; each
+    ///   is waited on until freed (bounded). What the running config names stays (#70); a peak
+    ///   still over the budget fails the step at stage `budget` with what would make it fit.
     async fn fit_bytes(
         &self,
         edge: &Edge,
@@ -640,12 +670,17 @@ impl BundleManager {
     ) -> Result<(), StepError> {
         let budget = (cfg.memory.bundle_budget_mib as usize).saturating_mul(MIB);
         let ob = (cfg.memory.overlay_budget_mib as usize).saturating_mul(MIB);
+        // What the running config names is its policy until the target is live (#70).
+        let running = edge.active().config.clone();
+        let runs = |k: &str| running.as_ref().is_some_and(|c| c.bundles.contains_key(k));
         let (peak, evict) = {
             let ab = edge.active().bundles.clone();
             let mut total = mem;
             let mut ov = overlays;
             let mut peak = mem;
             let mut dropped: Vec<(Arc<str>, usize)> = Vec::new();
+            // Bundles held for the running config that the target drops or replaces whole.
+            let mut held: Vec<(Arc<str>, usize)> = Vec::new();
             let mut own = 0usize;
             for (k, b) in &ab.bundles {
                 let m = b.memory_usage();
@@ -658,7 +693,11 @@ impl BundleManager {
                     ov = ov.saturating_add(b.overlay_bytes());
                     peak = peak.saturating_add(m);
                 } else {
-                    dropped.push((Arc::clone(k), m));
+                    if runs(k) {
+                        held.push((Arc::clone(k), m));
+                    } else {
+                        dropped.push((Arc::clone(k), m));
+                    }
                     peak = peak.saturating_add(m);
                 }
             }
@@ -688,7 +727,11 @@ impl BundleManager {
                 ));
             }
             peak = peak.saturating_add(own);
-            // Memory is short: what the target drops goes first, then the replaced version.
+            if own > 0 && runs(bundle) {
+                held.push((bundle.into(), own));
+            }
+            // Memory is short: what nothing runs with goes first, then the replaced version when
+            // the running config doesn't name it.
             let mut evict: Vec<Arc<str>> = Vec::new();
             let mut left = peak;
             for (k, m) in dropped {
@@ -698,8 +741,12 @@ impl BundleManager {
                 left -= m;
                 evict.push(k);
             }
-            if left > budget && own > 0 {
+            if left > budget && own > 0 && !runs(bundle) {
+                left -= own;
                 evict.push(bundle.into());
+            }
+            if left > budget {
+                return Err(peak_over_budget(cfg, left, &held));
             }
             (peak, evict)
         };
@@ -720,14 +767,6 @@ impl BundleManager {
                 .filter_map(|k| ab.bundles.get(k).map(|b| (Arc::clone(k), Arc::downgrade(b))))
                 .collect()
         };
-        {
-            let mut ev = self.evicted.lock().unwrap_or_else(|p| p.into_inner());
-            for k in &evict {
-                if !ev.iter().any(|x| **x == **k) {
-                    ev.push(k.to_string());
-                }
-            }
-        }
         self.swap(edge, |ab| {
             for k in &evict {
                 ab.bundles.remove(k);
@@ -737,53 +776,6 @@ impl BundleManager {
             self.wait_freed(w, &format!("bundle {k}")).await;
         }
         Ok(())
-    }
-
-    /// After a failed activation (edge.md §13: a config that doesn't go live leaves the running
-    /// one as it was): loads again the bundles [`Self::fit`] unloaded for it that the running
-    /// config names, first unloading the bundles only the failed config named (loaded unused;
-    /// a retry reads their files from disk again).
-    async fn restore_evicted(&self, edge: &Edge) {
-        let ev = std::mem::take(&mut *self.evicted.lock().unwrap_or_else(|p| p.into_inner()));
-        if ev.is_empty() {
-            return;
-        }
-        let Some(running) = edge.active().config.clone() else {
-            return;
-        };
-        let (unused, weak): (Vec<Arc<str>>, Vec<Weak<Bundle>>) = {
-            let ab = edge.active().bundles.clone();
-            ab.bundles
-                .iter()
-                .filter(|(k, _)| !running.bundles.contains_key(&***k))
-                .map(|(k, b)| (Arc::clone(k), Arc::downgrade(b)))
-                .unzip()
-        };
-        if !unused.is_empty() {
-            self.swap(edge, |ab| {
-                for k in &unused {
-                    ab.bundles.remove(k);
-                }
-            });
-            for (k, w) in unused.iter().zip(weak) {
-                self.wait_freed(w, &format!("bundle {k}")).await;
-            }
-        }
-        let cold_ok = store::cold_root(edge).is_some();
-        for b in ev {
-            let Some(h) = running.bundles.get(&b) else {
-                continue;
-            };
-            if edge.active().bundles.get(&b).is_some() {
-                continue;
-            }
-            match self.activate_bundle(edge, &running, &b, h, cold_ok, None).await {
-                Ok(()) => tracing::info!("bundle {b}: loaded again for the running config"),
-                Err((e, _)) => tracing::warn!("bundle {b}: loading it again for the running config: {e}"),
-            }
-        }
-        // The evictions those loads made (none: they fit the running config) don't carry over.
-        self.evicted.lock().unwrap_or_else(|p| p.into_inner()).clear();
     }
 
     /// The runtime maps of a stored config run from disk (edge.md §3 step 5): the stored file
@@ -808,15 +800,11 @@ impl BundleManager {
     }
 
     /// Makes `t` live (the [`Activator`]): bundles, verdict sets, then the config. One that fails
-    /// gets back the bundles unloaded to make room for it ([`Self::restore_evicted`]).
+    /// leaves the running config's bundles as they were: none was unloaded for it
+    /// ([`Self::fit_bytes`]).
     pub async fn activate(&self, edge: &Edge, t: &ActivationTarget) -> Activation {
         let _g = self.lock.lock().await;
-        self.evicted.lock().unwrap_or_else(|p| p.into_inner()).clear();
-        let a = self.activate_locked(edge, t).await;
-        if !matches!(a, Activation::Active) {
-            self.restore_evicted(edge).await;
-        }
-        a
+        self.activate_locked(edge, t).await
     }
 
     async fn activate_locked(&self, edge: &Edge, t: &ActivationTarget) -> Activation {

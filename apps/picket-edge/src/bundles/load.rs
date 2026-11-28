@@ -522,8 +522,9 @@ impl Loader<'_> {
     /// The whole head, every part loaded (a new bundle, a start from disk, or a head whose
     /// format changed). The cold part only when `cold` (a usable SSD). The budgets are checked
     /// against `cfg` after each part loads, so a head too big for them fails at most one part
-    /// past them, and room is made when memory is short ([`BundleManager::fit_bytes`]; edge.md
-    /// §17, bundles.md §6 "Activation").
+    /// past them; when memory is short, room is made from bundles nothing runs with, and a head
+    /// that would need the running config's bundles gone fails at stage `budget`
+    /// ([`BundleManager::fit_bytes`]; edge.md §17, bundles.md §6 "Activation", #70).
     pub async fn whole(&self, cold: bool, cfg: &EdgeConfig) -> Result<Bundle, StepError> {
         let mut mem = 0usize;
         let mut ov = 0usize;
