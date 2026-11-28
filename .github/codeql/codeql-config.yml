@@ -1,0 +1,7 @@
+name: picket
+queries:
+  - uses: security-extended
+# The fuzz workspaces are separate Cargo workspaces of test harnesses: loading their manifests
+# took minutes of each Rust analysis, and their code runs only under the fuzzer.
+paths-ignore:
+  - fuzz

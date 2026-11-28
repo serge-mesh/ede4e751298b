@@ -4,51 +4,210 @@ on:
     branches:
       - main
   pull_request:
+  schedule:
+    # Weekly full run: every job, including the fuzz workspaces, arm64 and CodeQL.
+    - cron: 23 4 * * 1
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # A PR's new push cancels its older run. Pushes to main each get their own group: a shared group
+  # would replace a waiting run, and the next run, routed by its own diff, would not test the
+  # replaced push's changes.
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 env:
   CARGO_TERM_COLOR: never
   CARGO_INCREMENTAL: '0'
   CARGO_NET_RETRY: '5'
   RUST_BACKTRACE: '1'
+  # The edge side of the workspace. Its tests run natively on arm64 (edge-arm64), where the edge
+  # ships; the x86_64 job (rust) runs the rest.
+  EDGE_PACKAGES: picket-edge picket-edge-helper picket-edge-update picket-wire picket-rules picket-bundle picket-lookup picket-api
 jobs:
   changes:
-    name: CI changes
+    name: Changes and lint
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     outputs:
       rust: ${{ steps.select.outputs.rust }}
       edge: ${{ steps.select.outputs.edge }}
       deny: ${{ steps.select.outputs.deny }}
+      fuzz: ${{ steps.select.outputs.fuzz }}
       ui: ${{ steps.select.outputs.ui }}
       extension: ${{ steps.select.outputs.extension }}
+      deps: ${{ steps.select.outputs.deps }}
+      codeql_rust: ${{ steps.select.outputs.codeql_rust }}
+      codeql_js: ${{ steps.select.outputs.codeql_js }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
           fetch-depth: 0
 
-      - name: Test change routing
-        run: python3 -m unittest discover -s scripts -p test_ci_changes.py
+      # Which jobs a change needs. PRs: the PR's diff against its base. Pushes to main: the diff
+      # since the commit before the push. Weekly and manual runs select everything (below).
+      # Changing this workflow selects every job.
+      - name: Select jobs by changed paths
+        id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          token: ''  # git diff, not the GitHub API
+          predicate-quantifier: some-with-excludes
+          filters: |
+            rust:
+              - '**/*.rs'
+              - '**/Cargo.toml'
+              - Cargo.lock
+              - rust-toolchain.toml
+              - '.cargo/**'
+              - 'apps/**'
+              - 'crates/**'
+              - 'build-support/**'
+              # Crate data, templates and local fixtures can be embedded by Rust builds.
+              - 'fixtures/**'
+              - 'dist/**'
+              - clippy.toml
+              - rustfmt.toml
+              - .config/nextest.toml
+              # picket-core's openapi.rs unit test reads the UI's copy of the API document.
+              - ui/src/api/openapi.json
+              - scripts/check-updater-deps.sh
+              - scripts/install-ci-tool.sh
+              - .github/workflows/ci.yml
+              - '!fuzz/**'
+              - '!**/*.{md,rst,adoc}'
+            edge:
+              - Cargo.toml
+              - Cargo.lock
+              - rust-toolchain.toml
+              - '.cargo/**'
+              - 'apps/picket-edge*/**'
+              - 'crates/**'
+              - 'build-support/**'
+              - 'fixtures/**'
+              - 'dist/**'
+              - .config/nextest.toml
+              - scripts/check-edge-aarch64.sh
+              - scripts/install-ci-tool.sh
+              - .github/workflows/ci.yml
+              # Not an edge dependency.
+              - '!crates/picket-schedule/**'
+              - '!**/*.{md,rst,adoc}'
+            deny:
+              - '**/Cargo.toml'
+              - Cargo.lock
+              - deny.toml
+              - scripts/check-deny.sh
+              - scripts/install-ci-tool.sh
+              - .github/workflows/ci.yml
+              - '!fuzz/**'
+            fuzz:
+              - 'fuzz/**'
+              - rust-toolchain.toml
+              - .github/workflows/ci.yml
+              - '!**/*.{md,rst,adoc}'
+            ui:
+              - 'ui/**'
+              - .node-version
+              - .github/workflows/ci.yml
+              - '!**/*.{md,rst,adoc}'
+            extension:
+              - 'extension/**'
+              - .node-version
+              - .github/workflows/ci.yml
+              - '!**/*.{md,rst,adoc}'
+            deps:
+              - '**/Cargo.toml'
+              - '**/Cargo.lock'
+              - '**/package.json'
+              - '**/package-lock.json'
+              - '.github/workflows/**'
+            workflows:
+              - '.github/workflows/**'
+              - .github/dependabot.yml
+              - .github/zizmor.yml
+            codeql_rust:
+              - '**/*.rs'
+              - '**/Cargo.toml'
+              - Cargo.lock
+              - rust-toolchain.toml
+              - '.github/codeql/**'
+              - .github/workflows/ci.yml
+              - '!fuzz/**'
+            codeql_js:
+              - '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}'
+              - '**/package.json'
+              - '**/package-lock.json'
+              - .node-version
+              - '.github/codeql/**'
+              - .github/workflows/ci.yml
 
-      - name: Select components and languages
+      - name: Selected jobs
         id: select
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python3 scripts/ci_changes.py
+          EVENT: ${{ github.event_name }}
+          RUST: ${{ steps.filter.outputs.rust }}
+          EDGE: ${{ steps.filter.outputs.edge }}
+          DENY: ${{ steps.filter.outputs.deny }}
+          FUZZ: ${{ steps.filter.outputs.fuzz }}
+          UI: ${{ steps.filter.outputs.ui }}
+          EXTENSION: ${{ steps.filter.outputs.extension }}
+          DEPS: ${{ steps.filter.outputs.deps }}
+          CODEQL_RUST: ${{ steps.filter.outputs.codeql_rust }}
+          CODEQL_JS: ${{ steps.filter.outputs.codeql_js }}
+        run: |
+          case "$EVENT" in
+            pull_request | push) all=false ;;
+            *) all=true ;;
+          esac
+          for pair in rust:"$RUST" edge:"$EDGE" deny:"$DENY" fuzz:"$FUZZ" ui:"$UI" \
+            extension:"$EXTENSION" deps:"$DEPS" codeql_rust:"$CODEQL_RUST" codeql_js:"$CODEQL_JS"; do
+            name=${pair%%:*}
+            value=${pair#*:}
+            if [ "$all" = true ]; then value=true; fi
+            [ "$value" = true ] || value=false
+            echo "$name=$value" | tee -a "$GITHUB_OUTPUT"
+          done
 
-  rust-checks:
+      # Cheap checks run here, before any long job starts: a mistake fails the run in a minute.
+      - name: Install typos (pinned prebuilt)
+        run: scripts/install-ci-tool.sh typos
+
+      - name: typos
+        run: typos
+
+      - name: Install zizmor (pinned prebuilt)
+        if: steps.filter.outputs.workflows == 'true' || github.event_name != 'pull_request' && github.event_name != 'push'
+        run: scripts/install-ci-tool.sh zizmor
+
+      - name: zizmor (workflow security)
+        if: steps.filter.outputs.workflows == 'true' || github.event_name != 'pull_request' && github.event_name != 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor --format=github .
+
+      - name: Install the pinned Rust toolchain
+        if: steps.select.outputs.rust == 'true' || steps.select.outputs.fuzz == 'true'
+        run: |
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          command -v rustup >/dev/null || { echo "GitHub-hosted Ubuntu must provide rustup" >&2; exit 1; }
+          rustup show active-toolchain || rustup toolchain install --no-self-update
+
+      - name: rustfmt
+        if: steps.select.outputs.rust == 'true' || steps.select.outputs.fuzz == 'true'
+        run: |
+          cargo fmt --all --check
+          # cargo fmt reaches neither the lookup modules nor the fuzz workspaces.
+          find crates/picket-lookup/src/modules fuzz -name '*.rs' -exec rustfmt --edition 2024 --check {} +
+
+  rust:
+    name: Rust (x86_64)
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 120
-    env:
-      RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: 'true'
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -61,51 +220,46 @@ jobs:
           command -v rustup >/dev/null || { echo "GitHub-hosted Ubuntu must provide rustup" >&2; exit 1; }
           rustup show active-toolchain || rustup toolchain install --no-self-update
 
-      - name: Shared compiler cache
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
-        with:
-          version: v0.20.1
-
-      - name: Shared Cargo downloads (no targets or toolchains)
+      # Dependencies compiled for clippy, docs and tests, restored from main's last run.
+      - name: Cargo cache (dependencies and their build output)
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          shared-key: cargo-downloads
-          cache-targets: false
-          cache-bin: false
-          env-vars: CARGO_NET_RETRY CARGO_INCREMENTAL
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' && github.job == 'rust-checks' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: cargo fmt
-        run: cargo fmt --all --check
-
-      - name: rustfmt on lookup modules (cargo fmt doesn't reach them)
-        run: find crates/picket-lookup/src/modules -name '*.rs' -exec rustfmt --edition 2024 --check {} +
+      - name: Install cargo-nextest (pinned prebuilt)
+        run: scripts/install-ci-tool.sh cargo-nextest
 
       - name: Updater dependency allowlist (build-and-test.md §4)
         run: scripts/check-updater-deps.sh
 
       - name: cargo clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --profile ci --workspace --all-targets --locked -- -D warnings
 
-  rust-tests:
-    name: Rust tests (${{ matrix.suite }})
+      - name: cargo doc (broken links fail)
+        env:
+          # Docs may link to private items: they're documented, just not in the public docs.
+          RUSTDOCFLAGS: -D warnings -A rustdoc::private_intra_doc_links
+        run: cargo doc --profile ci --workspace --no-deps --locked
+
+      - name: Tests (all but the edge side)
+        run: |
+          set -f
+          exclude=""
+          for package in $EDGE_PACKAGES; do exclude="$exclude --exclude $package"; done
+          # shellcheck disable=SC2086 # one word per flag
+          cargo nextest run --profile ci --cargo-profile ci --locked --workspace $exclude
+
+      - name: Doctests
+        if: ${{ !cancelled() }}
+        run: cargo test --profile ci --workspace --doc --locked
+
+  edge-arm64:
+    name: Edge tests (arm64)
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    env:
-      RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        suite:
-          - core-unit
-          - core-integration-1
-          - core-integration-2
-          - workspace
-      max-parallel: ${{ github.event.pull_request.user.login == 'dependabot[bot]' && 2 || 4 }}
+    if: needs.changes.outputs.edge == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -118,52 +272,25 @@ jobs:
           command -v rustup >/dev/null || { echo "GitHub-hosted Ubuntu must provide rustup" >&2; exit 1; }
           rustup show active-toolchain || rustup toolchain install --no-self-update
 
-      - name: Shared compiler cache
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
-        with:
-          version: v0.20.1
-
-      - name: Shared Cargo downloads (no targets or toolchains)
+      - name: Cargo cache (dependencies and their build output)
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          shared-key: cargo-downloads
-          cache-targets: false
-          cache-bin: false
-          env-vars: CARGO_NET_RETRY CARGO_INCREMENTAL
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' && github.job == 'rust-checks' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Run the test suite
-        env:
-          SUITE: ${{ matrix.suite }}
-        run: python3 scripts/ci-rust-tests.py "$SUITE"
+      - name: Install cargo-nextest (pinned prebuilt)
+        run: scripts/install-ci-tool.sh cargo-nextest
 
-      - name: Core doctests
-        if: ${{ !cancelled() && matrix.suite == 'core-unit' }}
-        run: cargo test --profile ci --package picket-core --doc --locked --no-fail-fast
-
-  rust:
-    needs:
-      - changes
-      - rust-checks
-      - rust-tests
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-
-      - name: Require selected Rust checks
-        env:
-          CHANGES: ${{ needs.changes.result }}
-          WANTED: ${{ needs.changes.outputs.rust }}
-          CHECKS: ${{ needs.rust-checks.result }}
-          TESTS: ${{ needs.rust-tests.result }}
+      - name: Edge-side tests on aarch64
         run: |
-          test "$CHANGES" = success
-          if [ "$WANTED" = false ]; then exit 0; fi
-          test "$WANTED" = true && test "$CHECKS" = success && test "$TESTS" = success
+          set -f
+          packages=""
+          for package in $EDGE_PACKAGES; do packages="$packages --package $package"; done
+          # shellcheck disable=SC2086 # one word per flag
+          cargo nextest run --profile ci --cargo-profile ci --locked $packages
 
   edge-aarch64:
+    name: Edge aarch64 cross-build
     needs: changes
     if: needs.changes.outputs.edge == 'true'
     runs-on: ubuntu-latest
@@ -173,6 +300,8 @@ jobs:
       ZIG_SHA256: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
       CARGO_ZIGBUILD_VERSION: 0.24.1
       PICKET_RELEASE_PUB: ${{ vars.RELEASE_PUB }}
+      # A PR warns (never fails) when an edge binary grows by more than this against main.
+      EDGE_SIZE_WARN_PERCENT: '2'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -238,7 +367,62 @@ jobs:
       - name: Edge binaries for aarch64, glibc floor 2.41 (build-and-test.md §3)
         run: scripts/check-edge-aarch64.sh
 
+      - name: Edge binary sizes
+        run: |
+          out=target/aarch64-unknown-linux-gnu/release
+          for binary in picket-edge picket-edge-helper picket-edge-update; do
+            echo "$binary $(stat -c %s "$out/$binary")"
+          done | tee edge-binary-sizes.txt
+
+      - name: Edge binary sizes on main
+        if: github.event_name == 'pull_request'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: edge-binary-sizes-main/sizes.txt
+          key: edge-binary-sizes-${{ github.event.pull_request.base.sha }}
+          restore-keys: edge-binary-sizes-
+
+      - name: Compare edge binary sizes with main (warns, never fails)
+        if: github.event_name == 'pull_request'
+        run: |
+          main=edge-binary-sizes-main/sizes.txt
+          if [ ! -f "$main" ]; then
+            echo "No edge binary sizes from main yet." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo '| Edge binary | main (bytes) | this PR (bytes) | change |'
+            echo '|---|---:|---:|---:|'
+          } >> "$GITHUB_STEP_SUMMARY"
+          while read -r binary size; do
+            old=$(awk -v b="$binary" '$1 == b { print $2 }' "$main")
+            if [ -z "$old" ]; then
+              echo "| $binary | | $size | new |" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            delta=$((size - old))
+            percent=$(awk -v d="$delta" -v o="$old" 'BEGIN { printf "%+.2f", 100 * d / o }')
+            echo "| $binary | $old | $size | $delta ($percent %) |" >> "$GITHUB_STEP_SUMMARY"
+            if awk -v d="$delta" -v o="$old" -v w="$EDGE_SIZE_WARN_PERCENT" 'BEGIN { exit !(100 * d / o > w) }'; then
+              echo "::warning title=Edge binary size::$binary grew by $delta bytes ($percent %) against main, over $EDGE_SIZE_WARN_PERCENT %"
+            fi
+          done < edge-binary-sizes.txt
+
+      - name: Keep these sizes for PRs to compare against
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p edge-binary-sizes-main
+          cp edge-binary-sizes.txt edge-binary-sizes-main/sizes.txt
+
+      - name: Save the edge binary sizes
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: edge-binary-sizes-main/sizes.txt
+          key: edge-binary-sizes-${{ github.sha }}
+
   deny:
+    name: cargo deny
     needs: changes
     if: needs.changes.outputs.deny == 'true'
     runs-on: ubuntu-latest
@@ -263,15 +447,13 @@ jobs:
           command -v rustup >/dev/null || { echo "GitHub-hosted Ubuntu must provide rustup" >&2; exit 1; }
           rustup show active-toolchain || rustup toolchain install --no-self-update
 
-      - name: Shared Cargo downloads (no targets or toolchains)
+      - name: Cargo downloads cache (no build output)
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          shared-key: cargo-downloads
           cache-targets: false
           cache-bin: false
-          env-vars: CARGO_NET_RETRY CARGO_INCREMENTAL
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' && github.job == 'rust-checks' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-deny (pinned prebuilt)
         run: scripts/install-ci-tool.sh cargo-deny
@@ -279,44 +461,89 @@ jobs:
       - name: cargo deny
         run: scripts/check-deny.sh
 
-  ui:
-    needs:
-      - changes
-      - ui-build
-      - ui-tests
-      - extension
-    if: always()
+  fuzz:
+    name: Fuzz workspaces
+    needs: changes
+    if: needs.changes.outputs.fuzz == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 60
+    env:
+      # One target directory: the eight workspaces share most of their crates.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/fuzz
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
-      - name: Require selected UI and extension checks
-        env:
-          CHANGES: ${{ needs.changes.result }}
-          UI: ${{ needs.changes.outputs.ui }}
-          EXTENSION: ${{ needs.changes.outputs.extension }}
-          BUILD: ${{ needs.ui-build.result }}
-          TESTS: ${{ needs.ui-tests.result }}
-          PACKAGE: ${{ needs.extension.result }}
+      - name: Install the pinned Rust toolchain
         run: |
-          test "$CHANGES" = success
-          test "$UI" = true || test "$UI" = false
-          test "$EXTENSION" = true || test "$EXTENSION" = false
-          if [ "$UI" = true ]; then test "$BUILD" = success && test "$TESTS" = success || exit 1; fi
-          if [ "$EXTENSION" = true ]; then test "$PACKAGE" = success || exit 1; fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          command -v rustup >/dev/null || { echo "GitHub-hosted Ubuntu must provide rustup" >&2; exit 1; }
+          rustup show active-toolchain || rustup toolchain install --no-self-update
 
-  extension-browser-tests:
-    name: Extension browser (${{ matrix.browser }})
+      - name: Cargo downloads cache (no build output)
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            fuzz/bundle
+            fuzz/core
+            fuzz/edge
+            fuzz/helper
+            fuzz/lookup
+            fuzz/rules
+            fuzz/update
+            fuzz/wire
+          cache-targets: false
+          cache-bin: false
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: cargo check each fuzz workspace
+        run: |
+          status=0
+          for manifest in fuzz/*/Cargo.toml; do
+            echo "::group::$manifest"
+            cargo check --manifest-path "$manifest" --locked --all-targets || status=1
+            echo "::endgroup::"
+          done
+          exit "$status"
+
+  ui:
+    name: UI
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Pinned Node and npm cache
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: UI lint, typecheck, build and tests
+        working-directory: ui
+        run: |
+          npm ci --ignore-scripts --prefer-offline --no-audit --no-fund
+          npm run lint
+          npm run build
+          npm test
+
+  extension:
+    name: Extension
     needs: changes
     if: needs.changes.outputs.extension == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        browser:
-          - chromium
-          - firefox
+    container:
+      image: mcr.microsoft.com/playwright:v1.65.1-noble@sha256:1507cbfc550a63a6b7396791ca4f00df17beb56342d2447b3f106c306f525579
+      options: --ipc=host
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -333,128 +560,10 @@ jobs:
           path: ~/.npm
           key: extension-npm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.node-version') }}-${{ hashFiles('extension/package-lock.json') }}
 
-      - name: Real-browser tests (${{ matrix.browser }})
-        working-directory: extension
-        env:
-          BROWSER: ${{ matrix.browser }}
-        run: |
-          # The tests make their certificates with the openssl CLI.
-          command -v openssl >/dev/null || { apt-get update && apt-get install -y --no-install-recommends openssl; }
-          npm ci --ignore-scripts --no-audit --no-fund
-          # The image must hold the browsers this @playwright/test expects (its tag follows the
-          # version; test/ci.test.ts checks the two match).
-          node -e "const { chromium, firefox } = require('@playwright/test'); const fs = require('node:fs'); for (const b of [chromium, firefox]) { if (!fs.existsSync(b.executablePath())) { console.error('the image has no ' + b.executablePath() + ': its tag does not match @playwright/test'); process.exit(1); } }"
-          # GitHub Actions container jobs run as root with HOME=/github/home (owned by pwuser),
-          # which Firefox refuses unless HOME is owned by the current user.
-          HOME=/root npm run test:browser -- --project="$BROWSER"
-
-      - name: Keep the test results of a failed run
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: extension-browser-test-results-${{ matrix.browser }}
-          path: extension/test-results/
-          retention-days: 7
-    container:
-      image: mcr.microsoft.com/playwright:v1.65.1-noble@sha256:1507cbfc550a63a6b7396791ca4f00df17beb56342d2447b3f106c306f525579
-      options: --ipc=host
-
-  extension-browsers:
-    needs:
-      - changes
-      - extension-browser-tests
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-
-      - name: Require selected browser checks
-        env:
-          CHANGES: ${{ needs.changes.result }}
-          WANTED: ${{ needs.changes.outputs.extension }}
-          RESULT: ${{ needs.extension-browser-tests.result }}
-        run: |
-          test "$CHANGES" = success
-          if [ "$WANTED" = false ]; then exit 0; fi
-          test "$WANTED" = true && test "$RESULT" = success
-
-  ui-build:
-    needs: changes
-    if: needs.changes.outputs.ui == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-
-      - name: Pinned Node and npm cache
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .node-version
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
-
-      - name: UI lint, typecheck and build
-        working-directory: ui
-        run: |
-          npm ci --ignore-scripts --prefer-offline --no-audit --no-fund
-          npm run lint
-          npm run build
-
-  ui-tests:
-    name: UI tests (${{ matrix.shard }}/2)
-    needs: changes
-    if: needs.changes.outputs.ui == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        shard:
-          - 1
-          - 2
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-
-      - name: Pinned Node and npm cache
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .node-version
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
-
-      - name: UI test shard
-        working-directory: ui
-        run: |
-          npm ci --ignore-scripts --prefer-offline --no-audit --no-fund
-          npm test -- --shard="$SHARD/2"
-        env:
-          SHARD: ${{ matrix.shard }}
-
-  extension:
-    needs: changes
-    if: needs.changes.outputs.extension == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-
-      - name: Pinned Node and npm cache
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .node-version
-          cache: npm
-          cache-dependency-path: extension/package-lock.json
-
       - name: Extension build, lint, test and reproducible packages
         working-directory: extension
         run: |
-          npm ci --ignore-scripts --prefer-offline --no-audit --no-fund
+          npm ci --ignore-scripts --no-audit --no-fund
           npm run build
           npm run lint
           npm test
@@ -464,3 +573,119 @@ jobs:
           rm -rf dist
           npm run package
           for f in "$first"/*.sha256; do cmp "$f" "dist/$(basename "$f")"; done
+
+      - name: Real-browser tests (Chromium and Firefox)
+        working-directory: extension
+        run: |
+          # The tests make their certificates with the openssl CLI.
+          command -v openssl >/dev/null || { apt-get update && apt-get install -y --no-install-recommends openssl; }
+          # The image must hold the browsers this @playwright/test expects (its tag follows the
+          # version; test/ci.test.ts checks the two match).
+          node -e "const { chromium, firefox } = require('@playwright/test'); const fs = require('node:fs'); for (const b of [chromium, firefox]) { if (!fs.existsSync(b.executablePath())) { console.error('the image has no ' + b.executablePath() + ': its tag does not match @playwright/test'); process.exit(1); } }"
+          # GitHub Actions container jobs run as root with HOME=/github/home (owned by pwuser),
+          # which Firefox refuses unless HOME is owned by the current user.
+          HOME=/root npm run test:browser -- --project=chromium --project=firefox
+
+      - name: Keep the test results of a failed run
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: extension-browser-test-results
+          path: extension/test-results/
+          retention-days: 7
+
+  dependency-review:
+    name: Review dependency changes
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.deps == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check for newly introduced vulnerabilities
+        uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
+        with:
+          fail-on-severity: high
+          fail-on-scopes: runtime, development, unknown
+          license-check: false
+          comment-summary-in-pr: never
+
+  # CodeQL runs on pushes to main (languages the push changed) and weekly, not on PRs.
+  codeql-rust:
+    name: CodeQL (rust)
+    needs: changes
+    if: github.event_name != 'pull_request' && needs.changes.outputs.codeql_rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read  # CodeQL reads the workflow run's details
+      security-events: write  # uploads the analysis to code scanning
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        with:
+          languages: rust
+          build-mode: none
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Analyze and upload results
+        uses: github/codeql-action/analyze@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        with:
+          category: /language:rust
+
+  codeql-js:
+    name: CodeQL (javascript-typescript)
+    needs: changes
+    if: github.event_name != 'pull_request' && needs.changes.outputs.codeql_js == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read  # CodeQL reads the workflow run's details
+      security-events: write  # uploads the analysis to code scanning
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        with:
+          languages: javascript-typescript
+          build-mode: none
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Analyze and upload results
+        uses: github/codeql-action/analyze@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        with:
+          category: /language:javascript-typescript
+
+  # The one check to require in branch protection. It fails if change selection failed or a
+  # selected job didn't pass; unselected jobs skip, which passes. CodeQL isn't part of it.
+  ci:
+    name: CI
+    needs:
+      - changes
+      - rust
+      - edge-arm64
+      - edge-aarch64
+      - deny
+      - fuzz
+      - ui
+      - extension
+      - dependency-review
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require the selected jobs
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" | jq -e '.changes.result == "success"
+            and ([.[].result] | all(. == "success" or . == "skipped"))' >/dev/null

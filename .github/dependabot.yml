@@ -1,11 +1,17 @@
 version: 2
+# Version updates are weekly (Mondays, Australia/Sydney, staggered) and wait 3 days after a
+# release before proposing it (Dependabot's default, written down here). Security updates are
+# alert-driven and skip both the schedule and the cooldown.
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: daily
+      interval: weekly
+      day: monday
       time: "06:00"
       timezone: Australia/Sydney
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 2
     groups:
       actions:
@@ -16,9 +22,12 @@ updates:
       - /
       - /fuzz/*
     schedule:
-      interval: daily
+      interval: weekly
+      day: monday
       time: "02:00"
       timezone: Australia/Sydney
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 2
     groups:
       cargo-minor-and-patch:
@@ -43,9 +52,12 @@ updates:
       - /ui
       - /extension
     schedule:
-      interval: daily
+      interval: weekly
+      day: monday
       time: "04:00"
       timezone: Australia/Sydney
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 2
     groups:
       npm-minor-and-patch:
@@ -68,7 +80,10 @@ updates:
   - package-ecosystem: docker
     directory: /dist/docker
     schedule:
-      interval: daily
+      interval: weekly
+      day: monday
       time: "08:00"
       timezone: Australia/Sydney
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 2
