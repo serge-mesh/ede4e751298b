@@ -26,6 +26,10 @@ describe("UI WebSocket events (api.md §7)", () => {
     applyEvent(qc, feedRunFrame([{ feed: "f", run: 1 }]));
     expect(keys()).toEqual(expect.arrayContaining(['["feeds"]', '["feed-providers"]']));
     spy.mockClear();
+    applyEvent(qc, { type: "alert", data: { alerts: [], alerts_truncated: false, changes: 1 } });
+    // An open public-suffix list follows its grouped warning (#49).
+    expect(keys()).toEqual(expect.arrayContaining(['["alerts"]', '["bundlePublicSuffixes"]']));
+    spy.mockClear();
     applyEvent(qc, { type: "bundle_version", data: { bundle: "b" } });
     expect(keys()).toEqual(expect.arrayContaining(['["bundles"]', '["browser-lists"]']));
     spy.mockClear();

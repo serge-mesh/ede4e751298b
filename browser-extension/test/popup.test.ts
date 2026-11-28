@@ -108,10 +108,11 @@ describe('the popup', () => {
   });
 
   it('lists what Brave already reported though the restart note is still set (issue #61)', async () => {
+    let reported: unknown[] = blocks;
     background({
       getState: () => state({ detection: true, detectionAfterRestart: true }),
       listAllows: () => list([]),
-      tabBlocks: () => ({ ok: true, value: blocks }),
+      tabBlocks: () => ({ ok: true, value: reported }),
     });
     await startPopup(env());
     await vi.waitFor(() => {
@@ -119,6 +120,14 @@ describe('the popup', () => {
     });
     expect($('blocks-hint').hidden).toBe(true);
     expect($('blocks-actions').hidden).toBe(false);
+    // An empty list on Refresh: the restart hint, without the earlier rows beside it.
+    reported = [];
+    $('refresh').click();
+    await vi.waitFor(() => {
+      expect($('blocks-hint').textContent).toBe(DETECTION_ON_AFTER_RESTART);
+    });
+    expect(rows('blocks')).toHaveLength(0);
+    expect($('blocks-actions').hidden).toBe(true);
   });
 
   it('hints at sub-resource detection while it is off', async () => {

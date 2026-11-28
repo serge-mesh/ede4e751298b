@@ -241,7 +241,7 @@ impl Fetched {
         };
         let config = serde_json::from_slice::<EdgeConfig>(bytes)
             .map_err(|e| json_error(&e))
-            .and_then(|c| validate(&c).map(|()| Arc::new(c)));
+            .and_then(|c| validate(&c).map(|()| effective(c)));
         Ok(Self {
             id,
             requests: Arc::new(requests),
@@ -250,6 +250,19 @@ impl Fetched {
             canonical: Arc::new(canonical),
         })
     }
+}
+
+/// The config the edge runs: without lookup providers and verdict sets no profile attaches
+/// `sync` ([`crate::dns::runtime::keep_required_providers`], #44).
+fn effective(mut c: EdgeConfig) -> Arc<EdgeConfig> {
+    let dropped = crate::dns::runtime::keep_required_providers(&mut c);
+    if !dropped.is_empty() {
+        tracing::debug!(
+            "lookup providers no profile attaches sync, not run: {}",
+            crate::diag::truncate(&dropped.join(", "), 256)
+        );
+    }
+    Arc::new(c)
 }
 
 /// Checks what the edge will use in paths and comparisons (README §2 Untrusted input: core is
@@ -448,7 +461,7 @@ pub fn load_stored(layout: &DataLayout, state: &State) -> Vec<(StoredConfig, Arc
             continue;
         }
         match serde_json::from_slice::<EdgeConfig>(&bytes) {
-            Ok(c) => out.push((sc.clone(), Arc::new(c), Arc::new(bytes))),
+            Ok(c) => out.push((sc.clone(), effective(c), Arc::new(bytes))),
             Err(e) => tracing::warn!(
                 "stored config {} doesn't parse: {}",
                 path.display(),

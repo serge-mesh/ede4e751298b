@@ -50,5 +50,5 @@ pub use module::{
     detail_fits,
 };
 pub use name::check_name;
-pub use registry::{ConfigError, Registry, modules};
+pub use registry::{ConfigError, ModuleFactory, Registry, modules};
 pub use selftest::{SelfTestAction, SelfTestResult, SelfTestRun, SelfTestState};

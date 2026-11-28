@@ -193,6 +193,18 @@ impl Ring {
             .cloned()
     }
 
+    /// The (block time, block TTL) of every block the device's ring keeps for this name.
+    pub fn name_blocks(&self, device: &DeviceKey, name: &[u8]) -> Vec<(Timestamp, u32)> {
+        let g = self.lock();
+        g.devices.get(device).map_or_else(Vec::new, |d| {
+            d.entries
+                .iter()
+                .filter(|e| e.name.as_slice().eq_ignore_ascii_case(name))
+                .map(|e| (e.wall, e.response.ttl))
+                .collect()
+        })
+    }
+
     /// The device's block with this id.
     pub fn find_id(&self, device: &DeviceKey, block_id: &str) -> Option<Entry> {
         let g = self.lock();

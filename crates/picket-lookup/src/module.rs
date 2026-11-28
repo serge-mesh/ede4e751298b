@@ -19,9 +19,11 @@ pub fn detail_fits(serialised_len: usize) -> bool {
 
 /// A lookup module: compiled-in code that answers whether a name is bad (providers.md §4).
 ///
-/// One module backs any number of lookup providers. The registry builds one `Module` for each
-/// module and shares it: `cfg` is the calling lookup provider's `config` with secrets resolved, so
-/// `self` keeps no per-provider state (per-provider state lives in [`LookupCtx::state`]).
+/// One module backs any number of lookup providers. The registry builds a `Module` when a
+/// provider first needs it and shares it among the providers of that module while any holds it,
+/// then drops it (#44): state in `self` is shared and lives only that long. `cfg` is the calling
+/// lookup provider's `config` with secrets resolved, so `self` keeps no per-provider state
+/// (per-provider state lives in [`LookupCtx::state`]).
 #[async_trait::async_trait]
 pub trait LookupModule: Send + Sync {
     fn id(&self) -> &'static str;

@@ -2,6 +2,9 @@
 //! configured lookup provider, updated in place on activation (keeping its RAM tier, breaker,
 //! pause and token bucket), dropped when no profile attaches it `sync` any more.
 //!
+//! - Only providers some profile attaches `sync` get a client, whatever else the config lists
+//!   ([`super::runtime::required_providers`], #44). A dropped client's module, connections, RAM
+//!   tier and verdict set go once the calls still running let go of them.
 //! - Each provider gets its own connections ([`EdgeConnections`]): an HTTP client (hyper +
 //!   rustls, no redirects, bounded) whose host names resolve through the edge's own upstreams,
 //!   unfiltered, and a DNS server client over the upstream transports (servers by IP, never an
@@ -156,18 +159,28 @@ impl UpstreamNames {
 pub struct EdgeConnections {
     pub names: Arc<UpstreamNames>,
     /// Extra roots for HTTPS APIs (tests; production uses the Mozilla roots).
-    pub http_roots: Option<String>,
+    pub http_roots: Option<Arc<str>>,
+    /// The live HTTP clients by provider, for [`Lookups::http_tls_builds`].
+    pub http: Mutex<HashMap<String, Weak<super::http_client::EdgeHttpClient>>>,
 }
 
 impl EdgeConnections {
     pub fn factory(self: &Arc<Self>) -> ConnectionFactory {
         let me = Arc::clone(self);
-        Arc::new(move |_provider: &str| Connections {
-            http: Arc::new(super::http_client::EdgeHttpClient::new(
+        Arc::new(move |provider: &str| {
+            // Cheap until used: the HTTP client builds its TLS configuration for its first
+            // connection, the DNS client a transport per server it queries (#44).
+            let http = Arc::new(super::http_client::EdgeHttpClient::new(
                 Arc::clone(&me.names),
-                me.http_roots.as_deref(),
-            )),
-            dns: Arc::new(EdgeDnsClient::default()),
+                me.http_roots.clone(),
+            ));
+            let mut made = me.http.lock().unwrap_or_else(|p| p.into_inner());
+            made.retain(|_, w| w.strong_count() > 0);
+            made.insert(provider.to_owned(), Arc::downgrade(&http));
+            Connections {
+                http,
+                dns: Arc::new(EdgeDnsClient::default()),
+            }
         })
     }
 }
@@ -203,7 +216,8 @@ impl Lookups {
                     resolver,
                     group: ArcSwap::from_pointee(None),
                 }),
-                http_roots,
+                http_roots: http_roots.map(Arc::from),
+                http: Mutex::new(HashMap::new()),
             }),
             levels: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             retired: Mutex::new(HashMap::new()),
@@ -252,7 +266,13 @@ impl Lookups {
             .store(Arc::new(group.map(|g| g.as_str().into())));
         let old = self.clients.load_full();
         let mut next = HashMap::new();
-        for (id, pc) in &cfg.lookup_providers {
+        // Only providers a profile attaches sync, even if the config lists more (#44).
+        let required = super::runtime::required_providers(cfg);
+        for (id, pc) in cfg
+            .lookup_providers
+            .iter()
+            .filter(|(id, _)| required.contains(id.as_str()))
+        {
             let spec = ProviderSpec::from_edge(id, pc);
             match old.get(id) {
                 Some(c) => {
@@ -283,11 +303,22 @@ impl Lookups {
                 add_counters(e, &m);
             }
         }
+        drop(retired);
         self.clients.store(Arc::new(next));
+        // Forget HTTP clients no provider holds any more (#44).
+        let mut made = self.connections.http.lock().unwrap_or_else(|p| p.into_inner());
+        made.retain(|_, w| w.strong_count() > 0);
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<LookupClient>> {
         self.clients.load().get(id).cloned()
+    }
+
+    /// How many times `provider`'s live HTTP client built its TLS configuration (0 or 1); `None`
+    /// without a live client (#44).
+    pub fn http_tls_builds(&self, provider: &str) -> Option<u32> {
+        let made = self.connections.http.lock().unwrap_or_else(|p| p.into_inner());
+        made.get(provider).and_then(Weak::upgrade).map(|c| c.tls_builds())
     }
 
     pub fn ids(&self) -> Vec<String> {
@@ -377,5 +408,98 @@ mod tests {
         assert_eq!(a.calls, 5);
         assert_eq!(a.call_ms.count, 3);
         assert_eq!(a.breaker_open, 0, "gauges aren't summed");
+    }
+
+    fn cfg(providers: serde_json::Value, attach: &[&str]) -> EdgeConfig {
+        let atts: Vec<serde_json::Value> = attach
+            .iter()
+            .map(|p| serde_json::json!({"provider": p, "mode": "sync"}))
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "edge": {"id": "e-01", "name": "t", "platform": "debian"},
+            "default_profile": "p",
+            "profiles": {"p": {"upstream": "g", "lookup_providers": atts,
+                "block_response": {"type": "nxdomain", "ttl": 10}}},
+            "upstream_groups": {"g": {"upstreams": [], "strategy": "failover"}},
+            "lookup_providers": providers,
+        }))
+        .unwrap()
+    }
+
+    fn provider(module: &str, config: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"module": module, "config": config, "cache_generation": "0123456789abcdef",
+            "sync_timeout_ms": 300, "async_timeout_ms": 600, "fail_mode": "open",
+            "scope": {"exclude_bundles": [], "qtypes": ["A"]}})
+    }
+
+    async fn look(l: &Lookups, id: &str) {
+        let _ = l
+            .get(id)
+            .unwrap()
+            .lookup_sync(picket_lookup::SyncRequest {
+                name: "a.example",
+                deadline: tokio::time::Instant::now() + Duration::from_millis(300),
+                call: true,
+                tag: None,
+            })
+            .await;
+    }
+
+    /// #44: no module or client for a provider no profile attaches sync; a DNS provider never
+    /// builds the HTTP client's TLS configuration; an HTTP provider builds it for its first
+    /// request, not before; removing the providers releases their modules.
+    #[tokio::test]
+    async fn modules_clients_and_tls_only_when_needed() {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((c, _)) = l.accept().await {
+                drop(c);
+            }
+        });
+        let providers = serde_json::json!({
+            "d1": provider("dns", serde_json::json!({"transport": "udp", "servers": [{"ip": "127.0.0.1", "port": 9}],
+                "qtype": "A", "rules": [{"id": "b", "when": {"ede": [15]}, "verdict": "block"}]})),
+            "h1": provider("http_json", serde_json::json!({"url": format!("https://127.0.0.1:{port}/v1/{{domain}}"),
+                "verdict": {"pointer": "/risk_score", "block_if": ">= 7.0", "clean_if": "< 4.0"}})),
+        });
+        let registry = Arc::new(Registry::builtin());
+        let (logs, _rx) = LogProducer::new("b".into(), Arc::default());
+        let lk = Lookups::with_registry(Weak::new(), logs, Arc::clone(&registry), None);
+
+        lk.configure(&cfg(providers.clone(), &[]));
+        assert!(lk.ids().is_empty(), "listed but not attached");
+        assert!(!registry.is_live("dns") && !registry.is_live("http_json"));
+        assert_eq!(lk.http_tls_builds("d1"), None);
+
+        lk.configure(&cfg(providers.clone(), &["d1"]));
+        assert_eq!(lk.ids(), ["d1"]);
+        look(&lk, "d1").await;
+        assert!(registry.is_live("dns") && !registry.is_live("http_json"));
+        assert_eq!(
+            lk.http_tls_builds("d1"),
+            Some(0),
+            "a DNS provider builds no HTTP TLS"
+        );
+
+        lk.configure(&cfg(providers.clone(), &["d1", "h1"]));
+        assert_eq!(lk.http_tls_builds("h1"), Some(0), "not before the first request");
+        look(&lk, "h1").await;
+        assert_eq!(lk.http_tls_builds("h1"), Some(1));
+        look(&lk, "h1").await;
+        assert_eq!(lk.http_tls_builds("h1"), Some(1), "built once");
+
+        lk.configure(&cfg(providers, &[]));
+        assert!(lk.ids().is_empty());
+        // Calls still running hold their module until they end.
+        let released = async {
+            while registry.is_live("dns") || registry.is_live("http_json") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5), released)
+            .await
+            .expect("modules released");
+        assert_eq!(lk.http_tls_builds("h1"), None);
     }
 }

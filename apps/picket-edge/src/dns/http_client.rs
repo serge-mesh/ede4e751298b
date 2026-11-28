@@ -8,11 +8,13 @@
 //! - The request's `timeout` bounds the whole exchange, body included; at most `max_body` body
 //!   bytes are read; response headers are bounded (hyper's limits, set below).
 //! - Host names resolve through the edge's own upstreams, unfiltered; IP literals are used as is.
-//! - Each lookup provider has its own client and so its own connections.
+//! - Each lookup provider has its own client and so its own connections and TLS sessions. The
+//!   TLS configuration is built for the client's first connection, not before (#44).
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -89,18 +91,44 @@ struct Pool {
 
 pub struct EdgeHttpClient {
     names: Arc<UpstreamNames>,
-    tls: Option<Arc<ClientConfig>>,
+    /// Extra roots for HTTPS APIs (tests; production uses the Mozilla roots only).
+    extra_roots: Option<Arc<str>>,
+    /// The TLS configuration (its root store and session cache), built for the first connection
+    /// (#44): a provider that never makes an HTTP request, or is answered from its caches, never
+    /// builds one. Per client, so providers share no TLS sessions; dropped with the client.
+    tls: OnceLock<Option<Arc<ClientConfig>>>,
+    tls_builds: AtomicU32,
     pool: tokio::sync::Mutex<Pool>,
 }
 
 impl EdgeHttpClient {
-    pub fn new(names: Arc<UpstreamNames>, extra_roots: Option<&str>) -> Self {
-        let tls = super::upstream::tls::web_client_config(extra_roots, &[b"h2", b"http/1.1"]).ok();
+    pub fn new(names: Arc<UpstreamNames>, extra_roots: Option<Arc<str>>) -> Self {
         Self {
             names,
-            tls,
+            extra_roots,
+            tls: OnceLock::new(),
+            tls_builds: AtomicU32::new(0),
             pool: tokio::sync::Mutex::new(Pool::default()),
         }
+    }
+
+    /// The TLS configuration, built once on first use (concurrent first uses wait for the one
+    /// build).
+    fn tls(&self) -> Option<&Arc<ClientConfig>> {
+        self.tls
+            .get_or_init(|| {
+                self.tls_builds.fetch_add(1, Ordering::Relaxed);
+                super::upstream::tls::web_client_config(self.extra_roots.as_deref(), &[b"h2", b"http/1.1"])
+                    .inspect_err(|e| tracing::warn!("lookup HTTP client: no TLS configuration: {e:#}"))
+                    .ok()
+            })
+            .as_ref()
+    }
+
+    /// How many times this client built its TLS configuration: 0 before its first connection,
+    /// then 1 (#44).
+    pub fn tls_builds(&self) -> u32 {
+        self.tls_builds.load(Ordering::Relaxed)
     }
 
     async fn pooled(&self, o: &Origin) -> Option<Sender> {
@@ -163,7 +191,7 @@ impl EdgeHttpClient {
                     }
                 };
             let _ = tcp.set_nodelay(true);
-            let Some(tls) = &self.tls else {
+            let Some(tls) = self.tls() else {
                 return Err(HttpError::Refused("no TLS configuration".into()));
             };
             let stream = match tokio::time::timeout_at(
@@ -389,6 +417,7 @@ mod tests {
                 "{url}: {e:?}"
             );
         }
+        assert_eq!(c.tls_builds(), 0, "a refused request builds no TLS configuration");
     }
 
     /// An HTTPS API at an IP literal, IPv6 included: the certificate is checked against the IP
@@ -437,12 +466,16 @@ mod tests {
                     });
                 }
             });
-            let c = EdgeHttpClient::new(Arc::new(UpstreamNames::detached()), Some(&cert.pem()));
-            let r = c
-                .send(request(&format!("https://{host}:{port}/v1/x")))
-                .await
-                .unwrap_or_else(|e| panic!("{host}: {e:?}"));
-            assert_eq!((r.status, r.body.as_slice()), (200, &b"ok"[..]), "{host}");
+            let c = EdgeHttpClient::new(Arc::new(UpstreamNames::detached()), Some(cert.pem().into()));
+            assert_eq!(c.tls_builds(), 0, "{host}: no TLS configuration before a request");
+            // #44: concurrent first requests build the TLS configuration once; later ones reuse it.
+            let url = format!("https://{host}:{port}/v1/x");
+            let first = futures_util::future::join_all((0..8).map(|_| c.send(request(&url)))).await;
+            for r in first.into_iter().chain([c.send(request(&url)).await]) {
+                let r = r.unwrap_or_else(|e| panic!("{host}: {e:?}"));
+                assert_eq!((r.status, r.body.as_slice()), (200, &b"ok"[..]), "{host}");
+            }
+            assert_eq!(c.tls_builds(), 1, "{host}");
             server.abort();
         }
     }
