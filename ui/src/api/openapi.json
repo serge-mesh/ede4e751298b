@@ -12225,6 +12225,7 @@
                 "feed_added",
                 "feed_provider_trigger_down",
                 "feed_provider_listing_incomplete",
+                "feed_limit_reached",
                 "config_upgraded",
                 "feed_held",
                 "bundle_build_failed",

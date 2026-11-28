@@ -1423,3 +1423,222 @@ async fn a_listings_blank_path_is_no_file() {
     assert_eq!(listing["items"].as_array().unwrap().len(), 1, "{listing}");
     assert_eq!(listing["listing"]["files"], 1, "{listing}");
 }
+
+/// Adds `n` disabled manual feeds straight to the configuration (filler toward the feed limit).
+async fn fill_feeds(c: &Core, n: i64) {
+    c.state
+        .config
+        .change(move |tx| {
+            for i in 0..n {
+                let f = picket_core::config::model::FeedDef {
+                    id: format!("filler-{i}"),
+                    name: format!("Filler {i}"),
+                    enabled: false,
+                    ..Default::default()
+                };
+                picket_core::config::store::write_feed(tx, &f).map_err(picket_core::error::CoreError::Other)?;
+                picket_core::feeds::store::new_source_gen(tx, &f.id)
+                    .map_err(|e| picket_core::error::CoreError::Other(e.into()))?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
+async fn feed_count(c: &Core) -> i64 {
+    q_i64(c, "SELECT count(*) FROM feeds WHERE ?1 = ?1", "").await
+}
+
+/// #72: feeds core creates for selected files never take the configuration past its feed limit
+/// (the one a restore enforces): not a fixed-file `http` provider's save, not a listing of many
+/// files, with manual feeds and other providers taking the slots. The files skipped for lack of
+/// room raise one deduplicated operational warning per provider, with the limit, the feeds in
+/// use, how many were skipped and a bounded sample, distinct from the per-provider cap's; freed
+/// room gives the skipped files their feeds and resolves it; the configuration exports and
+/// restores.
+#[tokio::test(flavor = "multi_thread")]
+async fn auto_created_feeds_stay_within_the_feed_limit() {
+    const LIMIT: i64 = 1024;
+    let c = core_with(None, Some(json!({"feeds": {"max_per_provider": 50}}))).await;
+    let have = feed_count(&c).await;
+    // Two slots left.
+    fill_feeds(&c, LIMIT - 2 - have).await;
+    let http = |id: &str| {
+        json!({"id": id, "name": id, "module": "http", "enabled": false,
+               "config": {"url": format!("https://lists.example/{id}.txt")}})
+    };
+    // Just below the limit: each fixed-file provider's save creates its feed.
+    for id in ["a", "b"] {
+        let (st, v) = post(&c, "/feed-providers", http(id)).await;
+        assert_eq!(st, StatusCode::CREATED, "{v}");
+        assert_eq!(v["feeds_added"], json!([id]), "{v}");
+    }
+    assert_eq!(feed_count(&c).await, LIMIT);
+    // At the limit: the provider is saved, its file gets no feed, and the save says why.
+    let (st, v) = post(&c, "/feed-providers", http("c")).await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    assert!(v.get("feeds_added").is_none(), "{v}");
+    assert!(
+        v["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["code"] == "feed_limit" && w["field"] == "files"),
+        "{v}"
+    );
+    assert_eq!(feed_count(&c).await, LIMIT, "never past the limit");
+    wait_until("the limit warning", || async {
+        alert_state(&c, "feed_limit_reached:c").await.as_deref() == Some("open")
+    })
+    .await;
+    let a = c.state.alerts.get_by_key("feed_limit_reached:c").await.unwrap().unwrap();
+    assert_eq!(
+        (
+            serde_json::to_value(a.alert_type).unwrap(),
+            serde_json::to_value(a.severity).unwrap(),
+            a.kind.as_str(),
+            a.feed_provider.as_deref()
+        ),
+        (json!("operational"), json!("warning"), "feed_limit_reached", Some("c"))
+    );
+    assert_eq!(
+        (
+            &a.details["limit"],
+            &a.details["feeds"],
+            &a.details["skipped"],
+            &a.details["files"]
+        ),
+        (&json!(LIMIT), &json!(LIMIT), &json!(1), &json!(["response"])),
+        "{}",
+        a.details
+    );
+    assert!(a.details["guidance"].as_str().unwrap().contains("Delete feeds you don't use"));
+    // It isn't the per-provider cap's alert.
+    assert_eq!(alert_state(&c, "feed_added:provider:c").await, None);
+    // A provider that lists files: a listing of three files with one slot freed creates one
+    // feed and skips two; repeated saves don't raise the warning again.
+    let (st, v) = post(
+        &c,
+        "/feed-providers",
+        json!({"id": "hz", "name": "HZ", "module": "github", "enabled": false,
+               "config": {"owner": "o", "repo": "r"},
+               "files": [{"match": "*.txt", "feed": {"format": "adblock", "category": "mixed"}}]}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    c.state
+        .db
+        .write(|db| {
+            db.execute(
+                "UPDATE feed_provider_state SET listing_json = ?1 WHERE provider_id = 'hz'",
+                [r#"{"files": ["1.txt", "2.txt", "3.txt"], "whole": true}"#],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .unwrap();
+    // Freeing a slot (a filler deleted) gives it to the provider skipped first, in id order: c.
+    let r = ui(&c, Method::DELETE, "/feeds/filler-0").json(&json!({})).send().await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK, "{}", r.text().await.unwrap());
+    assert_eq!(feed_count(&c).await, LIMIT);
+    assert_eq!(
+        q_i64(&c, "SELECT count(*) FROM feeds WHERE provider_id = ?1", "c").await,
+        1,
+        "freed room goes to the skipped file"
+    );
+    wait_until("c's warning to resolve", || async {
+        alert_state(&c, "feed_limit_reached:c").await.as_deref() == Some("resolved")
+    })
+    .await;
+    // The listing applied with no room: three files skipped.
+    let hz = get_json(&c, "/feed-providers/hz").await;
+    for _ in 0..2 {
+        let (st, v) = put(&c, "/feed-providers/hz", hz.clone()).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+    }
+    assert_eq!(feed_count(&c).await, LIMIT);
+    wait_until("hz's warning", || async {
+        alert_state(&c, "feed_limit_reached:hz").await.as_deref() == Some("open")
+    })
+    .await;
+    let a = c.state.alerts.get_by_key("feed_limit_reached:hz").await.unwrap().unwrap();
+    assert_eq!(a.count, 1, "repeated checks don't raise it again");
+    assert_eq!(a.details["skipped"], json!(3), "{}", a.details);
+    assert_eq!(a.details["files"], json!(["1.txt", "2.txt", "3.txt"]));
+    // Two slots freed: two of the three files get feeds, the warning's details follow.
+    for f in ["filler-1", "filler-2"] {
+        let r = ui(&c, Method::DELETE, &format!("/feeds/{f}")).json(&json!({})).send().await.unwrap();
+        assert_eq!(r.status(), StatusCode::OK, "{}", r.text().await.unwrap());
+    }
+    assert_eq!(feed_count(&c).await, LIMIT);
+    assert_eq!(q_i64(&c, "SELECT count(*) FROM feeds WHERE provider_id = ?1", "hz").await, 2);
+    wait_until("hz's warning updated", || async {
+        c.state
+            .alerts
+            .get_by_key("feed_limit_reached:hz")
+            .await
+            .unwrap()
+            .is_some_and(|a| a.details["skipped"] == json!(1) && a.count == 1)
+    })
+    .await;
+    assert_eq!(alert_state(&c, "feed_limit_reached:hz").await.as_deref(), Some("open"));
+    // A manual feed at the limit is refused as before.
+    let (st, v) = post(
+        &c,
+        "/feeds",
+        json!({"id": "m", "name": "M", "format": "plain", "category": "mixed"}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    // The configuration these paths produced exports and restores.
+    let r = ui(&c, Method::GET, "/config/export").send().await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let doc: Value = r.json().await.unwrap();
+    assert_eq!(doc["configuration"]["feeds"].as_array().unwrap().len() as i64, LIMIT);
+    let r = ui(&c, Method::PUT, "/config/export").json(&doc).send().await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK, "{}", r.text().await.unwrap());
+}
+
+/// #72: the per-provider cap still applies on its own, under the feed limit: a provider past
+/// `feeds.max_per_provider` skips its files into the cap's alert, not the limit's.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_per_provider_cap_is_not_the_feed_limit() {
+    let c = core_with(None, Some(json!({"feeds": {"max_per_provider": 1}}))).await;
+    let (st, v) = post(
+        &c,
+        "/feed-providers",
+        json!({"id": "hz", "name": "HZ", "module": "github", "enabled": false,
+               "config": {"owner": "o", "repo": "r"},
+               "files": [{"match": "*.txt", "feed": {"format": "adblock", "category": "mixed"}}]}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    c.state
+        .db
+        .write(|db| {
+            db.execute(
+                "UPDATE feed_provider_state SET listing_json = ?1 WHERE provider_id = 'hz'",
+                [r#"{"files": ["1.txt", "2.txt"], "whole": true}"#],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .unwrap();
+    let hz = get_json(&c, "/feed-providers/hz").await;
+    let (st, v) = put(&c, "/feed-providers/hz", hz).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert!(
+        v["warnings"].as_array().unwrap().iter().any(|w| w["code"] == "feed_cap"),
+        "{v}"
+    );
+    assert!(
+        !v["warnings"].as_array().unwrap().iter().any(|w| w["code"] == "feed_limit"),
+        "{v}"
+    );
+    wait_until("the cap alert", || async {
+        alert_state(&c, "feed_added:provider:hz").await.as_deref() == Some("open")
+    })
+    .await;
+    assert_eq!(alert_state(&c, "feed_limit_reached:hz").await, None);
+}
