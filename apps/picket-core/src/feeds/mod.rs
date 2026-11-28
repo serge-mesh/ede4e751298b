@@ -222,6 +222,15 @@ struct ProviderRt {
     checking: bool,
     /// "Check now" or a nudge while a check runs: another check when it ends.
     queued: Option<Cause>,
+    /// No check is dispatched before this ([`Feeds::retry_at`]): a full light lane's retry, a
+    /// voided check's wait for its configuration reload, a failed setup's backoff. Recomputing
+    /// the schedule never puts `due` earlier; it ends when a check starts or an edit of the
+    /// provider's source makes it due.
+    retry_at: Option<Timestamp>,
+    /// An edit of the provider (`module`, `config`, `files`, `exclude`, enabling it) arrived
+    /// during the running check: when the check ends, its edit replaces any `retry_at` the check
+    /// left (a voided check's wait is for exactly that edit).
+    edited_during: bool,
     /// Due at once (within `min_interval`) whatever `cause` is: a cause made it due now
     /// ([`Feeds::want_now`]), until its check is taken.
     force: bool,
@@ -238,6 +247,23 @@ struct ProviderRt {
     /// The provider's source generation as the runtime last loaded it: another one with the
     /// same config means the provider was deleted and created again between two reloads.
     source_gen: Option<i64>,
+}
+
+impl ProviderRt {
+    /// An edit of the provider's source (`module`, `config`, `files`, `exclude`, enabling it)
+    /// makes it due at once. During a check, the edit's check follows it (the running check's
+    /// end would otherwise drop the cause) and replaces the retry the check leaves: a voided
+    /// check's wait is for this edit (#45).
+    fn edited(&mut self) {
+        if self.checking {
+            self.queued = Some(Cause::merge(self.queued, Cause::Edit));
+            self.edited_during = true;
+        } else {
+            self.cause = Some(Cause::merge(self.cause, Cause::Edit));
+            self.force = true;
+            self.retry_at = None;
+        }
+    }
 }
 
 #[derive(Default)]
@@ -582,7 +608,35 @@ impl Feeds {
             .flatten()
     }
 
-    /// Puts a provider's next check at `at` (the loop's retry after a lane refusal, a pause).
+    /// Holds a provider's next check until `at` at the earliest: a full light lane's retry, a
+    /// voided check's wait for its configuration reload, a failed setup's backoff. Set before
+    /// the check ends ([`Feeds::provider_done`]), so the scheduler never sees the provider free
+    /// without it, and kept through every recomputation of the schedule until a check starts or
+    /// an edit of the provider's source makes it due (feeds.md §3; #45).
+    pub(crate) fn retry_at(&self, provider: &str, at: Timestamp) {
+        self.with(|i| {
+            if let Some(p) = i.providers.get_mut(provider) {
+                p.retry_at = Some(p.retry_at.map_or(at, |r| r.max(at)));
+                p.due = Some(p.due.map_or(at, |d| d.max(at)));
+            }
+        });
+        self.wake.notify_one();
+    }
+
+    /// The retry a provider's next check waits for, if one holds ([`Feeds::retry_at`]; tests).
+    #[doc(hidden)]
+    pub fn retry_pending(&self, provider: &str) -> Option<Timestamp> {
+        let now = Timestamp::now();
+        self.with(|i| {
+            i.providers
+                .get(provider)
+                .and_then(|p| p.retry_at)
+                .filter(|r| *r > now)
+        })
+        .flatten()
+    }
+
+    /// Puts a provider's next check at `at` (a module pause).
     pub(crate) fn set_due(&self, provider: &str, at: Timestamp) {
         self.with(|i| {
             if let Some(p) = i.providers.get_mut(provider) {
@@ -638,7 +692,15 @@ impl Feeds {
                 globs: def.has_globs(),
                 now_wanted: p.force || p.cause.is_some_and(Cause::now_wanted),
             });
-            p.due = Some(due);
+            // An explicit retry holds whatever the schedule says (#45).
+            p.due = Some(match p.retry_at {
+                Some(r) if r > now => due.max(r),
+                Some(_) => {
+                    p.retry_at = None;
+                    due
+                }
+                None => due,
+            });
         });
         self.wake.notify_one();
     }
@@ -695,22 +757,50 @@ impl Feeds {
         .unwrap_or_default()
     }
 
-    /// A provider check ended: frees the provider, and runs a check queued meanwhile.
+    /// A provider check ended: frees the provider, and runs a check queued meanwhile
+    /// ([`Feeds::complete`]).
     pub(crate) fn provider_done(&self, state: &SharedState, provider: &str) {
-        let queued = self
+        if let Some(cause) = self.complete(provider, Timestamp::now()) {
+            spawn_check(state, provider, cause);
+        }
+    }
+
+    /// The end of a provider check, in one step under the runtime's lock (#45): the provider
+    /// is freed, a retry the check left is kept (or replaced by an edit that arrived meanwhile),
+    /// and the follow-up queued during the check is consumed once. A queued "Check now" starts
+    /// here, in the same step, when it may (else it is scheduled as [`Feeds::trigger_provider`]
+    /// would); any other queued cause makes the provider due at once. Neither the scheduler nor
+    /// another explicit start can see the provider free with its follow-up still queued, so the
+    /// follow-up runs once. A provider deleted during the check leaves the runtime now (one
+    /// created again with its id meanwhile has its definition back, and stays). Returns the
+    /// cause of the check this started: the caller spawns it.
+    pub(crate) fn complete(&self, provider: &str, now: Timestamp) -> Option<Cause> {
+        let started = self
             .with(|i| {
                 let p = i.providers.get_mut(provider)?;
                 p.checking = false;
-                p.queued.take()
+                if std::mem::take(&mut p.edited_during) {
+                    p.retry_at = None;
+                }
+                if p.def.is_none() {
+                    // Deleted while it ran (`reload` kept it for this check): nothing waits.
+                    i.providers.remove(provider);
+                    return None;
+                }
+                let c = p.queued.take()?;
+                if c == Cause::First {
+                    p.first = true;
+                }
+                p.cause = Some(Cause::merge(p.cause, c));
+                p.force = true;
+                if c == Cause::CheckNow && start_decision(i, provider, c, now).is_ok() {
+                    return Some(c);
+                }
+                None
             })
             .flatten();
-        if let Some(c) = queued {
-            self.want_now(provider, c);
-            if c == Cause::CheckNow {
-                let _ = self.trigger_provider(state, provider, Cause::CheckNow);
-            }
-        }
         self.recompute_due(provider);
+        started
     }
 
     /// Queues the purge of a deleted feed's data ([`purge`]) once the feed id is free; a feed
@@ -995,60 +1085,14 @@ impl Feeds {
     /// queues it behind a running one, or schedules it at `min_interval` (or a module pause).
     pub fn trigger_provider(&self, state: &SharedState, provider: &str, cause: Cause) -> Triggered {
         let now = Timestamp::now();
-        let decision = self.with(|i| {
-            let module = {
-                let Some(p) = i.providers.get(provider) else {
-                    return Err(Triggered::Unknown);
-                };
-                let Some(def) = &p.def else {
-                    return Err(Triggered::Unknown);
-                };
-                if !def.enabled {
-                    return Err(Triggered::Disabled);
-                }
-                def.module.clone()
-            };
-            let pause = i.pauses.get(&module).copied().filter(|u| *u > now);
-            let p = i.providers.get_mut(provider).ok_or(Triggered::Unknown)?;
-            let Some(def) = p.def.clone() else {
-                return Err(Triggered::Unknown);
-            };
-            if p.checking {
-                p.queued = Some(Cause::merge(p.queued, cause));
-                return Err(Triggered::Queued);
-            }
-            let min =
-                jiff::SignedDuration::from_secs(crate::util::sat_i64(def.trigger.min_interval().as_secs()));
-            if let Some(lc) = p.last_check
-                && picket_api::time::saturating_add(lc, min) > now
-            {
-                let at = picket_api::time::saturating_add(lc, min);
-                p.cause = Some(cause);
-                p.force = true;
-                p.due = Some(p.due.map_or(at, |d| d.min(at)));
-                return Err(Triggered::Scheduled(at));
-            }
-            if let Some(u) = pause {
-                p.cause = Some(cause);
-                p.force = true;
-                p.due = Some(u);
-                return Err(Triggered::Scheduled(u));
-            }
-            p.checking = true;
-            p.cause = None;
-            p.force = false;
-            p.first = false;
-            Ok(())
-        });
-        match decision {
+        match self.with(|i| start_decision(i, provider, cause, now)) {
             None => Triggered::Unknown,
             Some(Err(r)) => {
                 self.wake.notify_one();
                 r
             }
             Some(Ok(())) => {
-                let (s, p) = (state.clone(), provider.to_string());
-                tokio::spawn(async move { check::run(s, p, cause).await });
+                spawn_check(state, provider, cause);
                 Triggered::Started
             }
         }
@@ -1235,6 +1279,8 @@ impl Feeds {
                 if d <= now {
                     p.checking = true;
                     p.force = false;
+                    p.retry_at = None;
+                    p.edited_during = false;
                     let first = std::mem::take(&mut p.first);
                     let cause = match p.cause.take() {
                         // "Check now" keeps its name (it bypasses a cron `! Expires:` floor).
@@ -1506,14 +1552,7 @@ impl Feeds {
                             }
                         }
                         if edit {
-                            // During a check, the edit's check follows it (the running check's
-                            // end would otherwise drop the cause).
-                            if p.checking {
-                                p.queued = Some(Cause::merge(p.queued, Cause::Edit));
-                            } else {
-                                p.cause = Some(Cause::merge(p.cause, Cause::Edit));
-                                p.force = true;
-                            }
+                            p.edited();
                         }
                     }
                 }
@@ -1763,6 +1802,64 @@ impl Feeds {
     }
 }
 
+/// Whether an explicit cause may start a check of `provider` now, decided under the runtime's
+/// lock ([`Feeds::trigger_provider`], a queued "Check now" at [`Feeds::complete`]): `Ok` marks it
+/// checking (the caller spawns the check); otherwise it is queued behind a running check, or
+/// scheduled at `min_interval` or the end of a module pause. An explicit cause doesn't wait
+/// for a retry ([`Feeds::retry_at`]); the check it starts ends that retry.
+fn start_decision(i: &mut Inner, provider: &str, cause: Cause, now: Timestamp) -> Result<(), Triggered> {
+    let module = {
+        let Some(p) = i.providers.get(provider) else {
+            return Err(Triggered::Unknown);
+        };
+        let Some(def) = &p.def else {
+            return Err(Triggered::Unknown);
+        };
+        if !def.enabled {
+            return Err(Triggered::Disabled);
+        }
+        def.module.clone()
+    };
+    let pause = i.pauses.get(&module).copied().filter(|u| *u > now);
+    let p = i.providers.get_mut(provider).ok_or(Triggered::Unknown)?;
+    let Some(def) = p.def.clone() else {
+        return Err(Triggered::Unknown);
+    };
+    if p.checking {
+        p.queued = Some(Cause::merge(p.queued, cause));
+        return Err(Triggered::Queued);
+    }
+    let min = jiff::SignedDuration::from_secs(crate::util::sat_i64(def.trigger.min_interval().as_secs()));
+    if let Some(lc) = p.last_check
+        && picket_api::time::saturating_add(lc, min) > now
+    {
+        let at = picket_api::time::saturating_add(lc, min);
+        p.cause = Some(cause);
+        p.force = true;
+        p.due = Some(p.due.map_or(at, |d| d.min(at)));
+        return Err(Triggered::Scheduled(at));
+    }
+    if let Some(u) = pause {
+        p.cause = Some(cause);
+        p.force = true;
+        p.due = Some(u);
+        return Err(Triggered::Scheduled(u));
+    }
+    p.checking = true;
+    p.cause = None;
+    p.force = false;
+    p.first = false;
+    p.retry_at = None;
+    p.edited_during = false;
+    Ok(())
+}
+
+/// Spawns the check of a provider just marked checking.
+fn spawn_check(state: &SharedState, provider: &str, cause: Cause) {
+    let (s, p) = (state.clone(), provider.to_string());
+    tokio::spawn(async move { check::run(s, p, cause).await });
+}
+
 /// Takes the feed id for a purge: true when the caller queues it now; a busy feed runs it when
 /// freed; one under way is left alone (another deletion's newer run id is picked up after it).
 fn mark_purge(f: &mut FeedRt, run: i64) -> bool {
@@ -1977,8 +2074,7 @@ fn spawn_loop(state: SharedState) {
                 tokio::spawn(async move { s.feeds.resume_import(&s, &feed, true).await });
             }
             for (provider, cause) in due {
-                let s = state.clone();
-                tokio::spawn(async move { check::run(s, provider, cause).await });
+                spawn_check(&state, &provider, cause);
             }
             for feed in manual {
                 let s = state.clone();
@@ -2070,5 +2166,285 @@ pub fn sweep_expired(state: &SharedState) {
         if state.feeds.try_acquire(&feed) {
             state.feeds.submit(state, &feed, Work::Expire);
         }
+    }
+}
+
+/// The provider runtime's check lifecycle (#45), driven step by step on a bare [`Feeds`]: no
+/// timers or sleeps, each interleaving is the order of the calls.
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use jiff::SignedDuration;
+    use picket_api::DurationStr;
+
+    const P: &str = "prov";
+
+    fn feeds_with(min_interval_s: u64) -> Feeds {
+        let f = Feeds::default();
+        f.with(|i| {
+            i.providers.insert(
+                P.into(),
+                ProviderRt {
+                    def: Some(FeedProviderDef {
+                        id: P.into(),
+                        module: "http".into(),
+                        trigger: Trigger::Dynamic {
+                            min_interval: DurationStr::secs(min_interval_s),
+                        },
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            );
+        });
+        f
+    }
+
+    fn rt<T>(f: &Feeds, g: impl FnOnce(&mut ProviderRt) -> T) -> T {
+        f.with(|i| g(i.providers.get_mut(P).unwrap())).unwrap()
+    }
+
+    fn secs(n: i64) -> SignedDuration {
+        SignedDuration::from_secs(n)
+    }
+
+    /// Claims the provider as the scheduler loop would at `now`: the causes it dispatched.
+    fn tick(f: &Feeds, now: Timestamp) -> Vec<Cause> {
+        f.take_due(now).0.into_iter().map(|(_, c)| c).collect()
+    }
+
+    /// A due provider claimed by the scheduler, then checked: its check is under way.
+    fn claimed(f: &Feeds, now: Timestamp) {
+        rt(f, |p| {
+            p.due = Some(now - secs(1));
+            p.last_check = Some(now - secs(3600));
+        });
+        assert_eq!(tick(f, now).len(), 1, "claimed");
+        assert!(f.is_checking(P));
+    }
+
+    #[test]
+    fn a_retry_holds_through_completion_and_recomputation() {
+        let f = feeds_with(0);
+        let now = Timestamp::now();
+        claimed(&f, now);
+        // A full light lane (1 min), set before the check ends, as `check::run` does.
+        f.retry_at(P, now + secs(60));
+        assert_eq!(f.complete(P, now), None);
+        assert!(!f.is_checking(P));
+        // The schedule still says "due" (the check stored nothing): the retry holds anyway.
+        f.recompute_due(P);
+        assert!(f.next_due(P).unwrap() >= now + secs(60), "{:?}", f.next_due(P));
+        assert!(tick(&f, now).is_empty(), "no rapid retry");
+        assert!(tick(&f, now + secs(30)).is_empty());
+        assert_eq!(tick(&f, now + secs(61)).len(), 1, "due once the retry passed");
+        assert_eq!(
+            rt(&f, |p| p.retry_at),
+            None,
+            "the check that started ended the retry"
+        );
+    }
+
+    #[test]
+    fn a_setup_backoff_is_in_place_before_the_provider_is_free() {
+        let f = feeds_with(0);
+        let now = Timestamp::now();
+        claimed(&f, now);
+        f.retry_at(P, now + schedule::backoff(1));
+        // The scheduler runs between the two steps: still checking, nothing to claim.
+        assert!(tick(&f, now).is_empty());
+        f.complete(P, now);
+        assert!(tick(&f, now).is_empty(), "free, but backing off");
+        assert_eq!(tick(&f, now + schedule::backoff(1) + secs(1)).len(), 1);
+    }
+
+    #[test]
+    fn an_edit_replaces_a_voided_checks_retry() {
+        // The edit's reload arrives during the check: it replaces the retry the void leaves.
+        let f = feeds_with(0);
+        let now = Timestamp::now();
+        claimed(&f, now);
+        rt(&f, ProviderRt::edited);
+        f.retry_at(P, now + secs(5));
+        assert_eq!(f.complete(P, now), None);
+        assert_eq!(rt(&f, |p| p.retry_at), None);
+        // (`recompute_due` reads the clock: "at once" is a moment after `now`.)
+        assert_eq!(
+            tick(&f, now + secs(1)),
+            vec![Cause::Edit],
+            "the edit's check, at once"
+        );
+        // The reload arrives after the check ended: it replaces the retry then.
+        let f = feeds_with(0);
+        claimed(&f, now);
+        f.retry_at(P, now + secs(5));
+        f.complete(P, now);
+        assert!(tick(&f, now).is_empty(), "waiting for the reload");
+        rt(&f, ProviderRt::edited);
+        f.recompute_due(P);
+        assert_eq!(tick(&f, now + secs(1)), vec![Cause::Edit]);
+    }
+
+    #[test]
+    fn a_queued_check_now_runs_once_when_completion_races_the_scheduler() {
+        let f = feeds_with(120);
+        let now = Timestamp::now();
+        claimed(&f, now);
+        // Timer ticks during the check skip it; "Check now" twice coalesces into one follow-up.
+        assert!(tick(&f, now).is_empty());
+        for _ in 0..2 {
+            let r = f.with(|i| start_decision(i, P, Cause::CheckNow, now)).unwrap();
+            assert_eq!(r, Err(Triggered::Queued));
+        }
+        // An early exit records no check: `min_interval` doesn't hold the follow-up, so the end
+        // starts it in the same step; neither the scheduler nor another explicit start sees
+        // the provider free with it still queued.
+        assert_eq!(f.complete(P, now), Some(Cause::CheckNow));
+        assert!(f.is_checking(P), "the follow-up is under way");
+        assert_eq!(rt(&f, |p| p.queued), None, "consumed");
+        assert!(tick(&f, now).is_empty(), "the scheduler can't claim it again");
+        let r = f.with(|i| start_decision(i, P, Cause::Sqs, now)).unwrap();
+        assert_eq!(r, Err(Triggered::Queued), "at most one check at a time");
+        // That follow-up ends with nothing queued but the nudge: one more check, no more.
+        assert_eq!(f.complete(P, now), None);
+        assert_eq!(tick(&f, now + secs(1)), vec![Cause::Sqs]);
+        // This one records its check: nothing more is due within `min_interval`.
+        rt(&f, |p| p.last_check = Some(now + secs(1)));
+        f.complete(P, now + secs(1));
+        assert!(tick(&f, now + secs(2)).is_empty());
+    }
+
+    #[test]
+    fn a_queued_check_now_within_min_interval_is_scheduled_once() {
+        let f = feeds_with(120);
+        let now = Timestamp::now();
+        claimed(&f, now);
+        let _ = f.with(|i| start_decision(i, P, Cause::CheckNow, now));
+        // The check recorded its time: the follow-up waits for `min_interval`.
+        rt(&f, |p| p.last_check = Some(now));
+        assert_eq!(f.complete(P, now), None);
+        assert!(!f.is_checking(P));
+        assert!(tick(&f, now + secs(60)).is_empty());
+        assert_eq!(tick(&f, now + secs(121)), vec![Cause::CheckNow]);
+        f.complete(P, now + secs(121));
+        assert!(tick(&f, now + secs(121)).is_empty(), "once");
+    }
+
+    #[test]
+    fn a_queued_check_now_waits_for_a_module_pause() {
+        let f = feeds_with(0);
+        let now = Timestamp::now();
+        claimed(&f, now);
+        f.set_pause("http", now + secs(300));
+        let _ = f.with(|i| start_decision(i, P, Cause::CheckNow, now));
+        assert_eq!(f.complete(P, now), None, "paused: not started");
+        assert!(tick(&f, now + secs(299)).is_empty());
+        assert_eq!(tick(&f, now + secs(301)), vec![Cause::CheckNow]);
+    }
+
+    #[test]
+    fn a_provider_deleted_during_its_check_leaves_when_the_check_ends() {
+        let f = feeds_with(0);
+        let now = Timestamp::now();
+        claimed(&f, now);
+        // `reload` keeps a deleted provider while it checks, without its definition.
+        rt(&f, |p| {
+            p.def = None;
+            p.due = None;
+        });
+        let _ = f.with(|i| start_decision(i, P, Cause::CheckNow, now));
+        assert_eq!(f.complete(P, now), None);
+        assert!(!f.with(|i| i.providers.contains_key(P)).unwrap(), "retired");
+        // Created again with the same id during the check: the new provider stays, and its
+        // first check is the next.
+        let f = feeds_with(0);
+        claimed(&f, now);
+        let def = rt(&f, |p| p.def.take());
+        rt(&f, |p| {
+            p.def = def;
+            p.cause = Some(Cause::First);
+            p.first = true;
+        });
+        assert_eq!(f.complete(P, now), None);
+        assert!(f.with(|i| i.providers.contains_key(P)).unwrap(), "kept");
+        assert_eq!(tick(&f, now + secs(1)), vec![Cause::First]);
+    }
+
+    /// A check task that panics or is cancelled frees its provider, but only once its
+    /// light-lane job has ended.
+    #[tokio::test]
+    async fn a_cancelled_or_panicking_check_frees_the_provider_after_its_download() {
+        for panics in [false, true] {
+            let f = Arc::new(feeds_with(0));
+            let now = Timestamp::now();
+            claimed(&f, now);
+            let (lane_gate, lane_wait) = tokio::sync::oneshot::channel::<()>();
+            let lane = tokio::spawn(async move {
+                let _ = lane_wait.await;
+            });
+            let (in_lane, mut reached) = tokio::sync::mpsc::channel::<()>(1);
+            let f2 = Arc::clone(&f);
+            let task = tokio::spawn(async move {
+                let f3 = Arc::clone(&f2);
+                let mut release = check::Release::new(move || {
+                    f3.complete(P, Timestamp::now());
+                });
+                release.lane(lane);
+                let _ = in_lane.send(()).await;
+                if panics {
+                    panic!("injected fault outside the light worker");
+                }
+                std::future::pending::<()>().await;
+                release.now();
+            });
+            reached.recv().await.unwrap();
+            if !panics {
+                task.abort();
+            }
+            assert!(task.await.is_err());
+            tokio::task::yield_now().await;
+            assert!(
+                f.is_checking(P),
+                "the download still runs: not freed (panics {panics})"
+            );
+            assert!(tick(&f, now).is_empty());
+            lane_gate.send(()).unwrap();
+            for _ in 0..100 {
+                if !f.is_checking(P) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            assert!(
+                !f.is_checking(P),
+                "freed once the download ended (panics {panics})"
+            );
+            rt(&f, |p| p.due = Some(now - secs(1)));
+            assert_eq!(tick(&f, now).len(), 1, "a later check starts without a restart");
+        }
+        // Without a running download, the provider is freed at once.
+        let f = Arc::new(feeds_with(0));
+        let now = Timestamp::now();
+        claimed(&f, now);
+        let f2 = Arc::clone(&f);
+        drop(check::Release::new(move || {
+            f2.complete(P, Timestamp::now());
+        }));
+        assert!(!f.is_checking(P));
+    }
+
+    #[test]
+    fn different_providers_check_at_once() {
+        let f = feeds_with(0);
+        let now = Timestamp::now();
+        f.with(|i| {
+            let mut q = i.providers.get(P).unwrap().clone();
+            q.def.as_mut().unwrap().id = "other".into();
+            i.providers.insert("other".into(), q);
+            for p in i.providers.values_mut() {
+                p.due = Some(now - secs(1));
+            }
+        });
+        assert_eq!(tick(&f, now).len(), 2);
     }
 }
