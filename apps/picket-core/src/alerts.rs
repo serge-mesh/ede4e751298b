@@ -37,8 +37,7 @@
 //! `compiler::commit` (`hot_max_mib`) and `edges::publish` (an edge's budget); `bundle_warning`,
 //! `broad_block` and `broad_allow` in `compiler::guard` (browser-list `bundle_warning` in
 //! `lists`); `warninglist_hit` and `allow_override` in `compiler::warn`; `bundle_cold_share`
-//! in `logs::cold_share` (through [`Alerts::condition_in`] and its threshold). `temporary_allow`
-//! (off by default: `alerts.temporary_allow`) in `logs::ingest`, with its evidence rule.
+//! in `logs::cold_share` (through [`Alerts::condition_in`] and its threshold).
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -65,7 +64,6 @@ pub const KINDS: &[(&str, AlertType)] = &[
     ("edge_key_mismatch", AlertType::Security),
     ("feed_rules_dropped", AlertType::Security),
     ("feed_redirect_added", AlertType::Security),
-    ("temporary_allow", AlertType::Security),
     ("ui_auth_failures", AlertType::Security),
     ("edge_offline", AlertType::Operational),
     ("edge_update_failed", AlertType::Operational),
@@ -154,19 +152,6 @@ pub fn category_answered_severity(security: bool) -> Severity {
 /// domain), the device being the record's `device`, else its client address.
 pub fn category_blocked_key(device: &str, name: &str) -> String {
     format!("category_blocked:{device}:{}", crate::psl::grouping_key(name))
-}
-
-/// The dedupe key of a `temporary_allow` alert (core.md §9; the spec names none): grouped as
-/// `category_blocked` (§9 Grouping), on the edge, the device (the record's `device`, else its
-/// client address) and the target's registrable domain (a DNS allow) or the IP (an IP allow),
-/// so a device's repeated allows of one site count on one alert.
-pub fn temporary_allow_key(edge: &str, device: &str, dns: bool, target: &str) -> String {
-    let target = if dns {
-        crate::psl::grouping_key(target)
-    } else {
-        target.to_string()
-    };
-    format!("temporary_allow:{edge}:{device}:{target}")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -829,6 +814,65 @@ impl Alerts {
         let a = tx.query_row(
             &format!("SELECT {ALERT_COLUMNS} FROM alerts WHERE dedupe_key = ?1"),
             [dedupe_key],
+            row_to_alert,
+        )?;
+        ch.changed.push(a);
+        Ok(true)
+    }
+
+    /// Moves an open alert to another severity in place, without raising it again (its count,
+    /// state, `last_seen` and history stay): its title becomes `title`, each key of `extra` is
+    /// set in its details (a null removes the key), and a `reclassified` history row records the
+    /// old and new severity. A rule whose severity policy changed keeps one alert (#67). Returns
+    /// false when no alert with `dedupe_key` is open.
+    pub fn reclassify_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        dedupe_key: &str,
+        severity: Severity,
+        title: &str,
+        extra: &Value,
+        ch: &mut Changes,
+    ) -> rusqlite::Result<bool> {
+        let row: Option<(i64, String, String)> = tx
+            .query_row(
+                "SELECT id, severity, details_json FROM alerts WHERE dedupe_key = ?1 AND state = 'open'",
+                [dedupe_key],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        let Some((id, from, details)) = row else {
+            return Ok(false);
+        };
+        let mut d: Value = serde_json::from_str(&details).unwrap_or(Value::Null);
+        if !d.is_object() {
+            d = Value::Object(serde_json::Map::new());
+        }
+        if let (Some(o), Some(extra)) = (d.as_object_mut(), extra.as_object()) {
+            for (k, v) in extra {
+                if v.is_null() {
+                    o.remove(k);
+                } else {
+                    o.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        let d = serde_json::to_string(&d).unwrap_or_else(|_| "null".into());
+        let details = if d.len() > MAX_DETAILS { details } else { d };
+        let title: String = title.chars().take(MAX_TITLE).collect();
+        tx.execute(
+            "UPDATE alerts SET severity = ?2, title = ?3, details_json = ?4 WHERE id = ?1",
+            params![id, s(severity), title, details],
+        )?;
+        let note = serde_json::json!({"from": from, "to": s(severity)}).to_string();
+        tx.execute(
+            "INSERT INTO alert_history(alert_id, at, change, detail_json) VALUES (?1, ?2, 'reclassified', ?3)",
+            params![id, crate::util::now_ts(), note],
+        )?;
+        trim_history(tx, id, self.history_cap)?;
+        let a = tx.query_row(
+            &format!("SELECT {ALERT_COLUMNS} FROM alerts WHERE id = ?1"),
+            [id],
             row_to_alert,
         )?;
         ch.changed.push(a);

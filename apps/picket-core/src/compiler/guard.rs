@@ -1,11 +1,19 @@
 //! Compile-time guardrails and alerts (bundles.md §2 "Guardrails", "Broad blocks", "Broad
 //! allows"; core.md §9). Nothing is held: each finding raises an alert when new.
 //!
-//! - **`broad_block`** (critical, once per rule naming its feed, rule and line): a block of a whole
-//!   TLD, a pattern matching most of the probe set, or an IP range of a public /8 or IPv6 /16 or
-//!   more ([`picket_rules::compile::is_broad`]). **`broad_allow`** the same for an exception in a
-//!   block bundle, or any rule of an allow bundle, from a downloaded feed. Both resolve when the
-//!   rule leaves the bundle.
+//! - **`broad_block`** (once per rule naming its feed, rule and line): a block of a whole TLD, a
+//!   pattern matching most of the probe set, or an IP range of a public /8 or IPv6 /16 or more
+//!   ([`picket_rules::compile::is_broad`]). Critical, except a manual feed's block restricted to a
+//!   selected audience ([`picket_rules::compile::has_scoped_audience`]: a positive `$client` or
+//!   `$ctag` alternative and no `$client` range wider than 16 addresses), a warning: a deliberate
+//!   parental or device rule stays visible without taking the critical tier
+//!   ([`broad_block_severity`]). Exclusion-only selectors, broad source ranges, `$dnstype` or
+//!   `$denyallow` alone, and every downloaded feed's broad block (even under `client_rules: keep`)
+//!   stay critical. **`broad_allow`** (critical) the same breadth for an exception in a block
+//!   bundle, or any rule of an allow bundle, from a downloaded feed. Both resolve when the rule
+//!   leaves the bundle. An open finding whose severity the policy now puts elsewhere (an older
+//!   release's, or a re-evaluation) is reclassified in place at the next commit: one alert, its
+//!   count and history kept, the change noted in its history.
 //! - **`bundle_warning`** for public suffixes (#49): one per (bundle, feed) whose rules block a
 //!   public suffix below the top level (private-section wildcards excluded), keyed
 //!   `bundle_warning:{bundle}:public_suffix:{feed}` whatever the suffixes are. The affected rules
@@ -37,7 +45,7 @@ use picket_rules::badfilter::{
     CANCELLATION_SAMPLE, CancelKind, CrossFeedReport, ScanLimits, cross_feed_cancellations_within,
     is_pattern_exception, keyed_equivalent_key,
 };
-use picket_rules::compile::{blocks_public_suffix_below_tld, is_broad};
+use picket_rules::compile::{blocks_public_suffix_below_tld, has_scoped_audience, is_broad};
 use picket_rules::name::reverse_dotted;
 use picket_rules::{Flags, Kind, Rule, RuleType};
 use rusqlite::OptionalExtension;
@@ -233,24 +241,19 @@ pub fn check_entry(
     let ident = Identity::of(&m.feed, rt.as_str(), kind, key, flags, value_json);
     let bundle = ctx.spec.id.clone();
     if is_broad(&rule) {
-        let (kind, title) = if is_allow {
-            (
-                "broad_allow",
-                format!("A broad allow in bundle {bundle} from feed {}", m.feed),
-            )
+        let (kind, severity) = if is_allow {
+            ("broad_allow", Severity::Critical)
         } else {
-            (
-                "broad_block",
-                format!("A broad block in bundle {bundle} from feed {}", m.feed),
-            )
+            ("broad_block", broad_block_severity(&rule, m.downloaded))
         };
+        let (title, detail) = broad_text(kind, severity, &bundle, &m.feed);
         ctx.findings.push(Finding {
             kind,
-            severity: Severity::Critical,
+            severity,
             dedupe_key: format!("{kind}:{bundle}:{}", ident.short()),
             title,
             identity: ident.clone(),
-            detail: json!({}),
+            detail,
         });
     }
     if !is_allow
@@ -261,6 +264,41 @@ pub fn check_entry(
             suffix: name.as_str().to_string(),
             identity: ident,
         });
+    }
+}
+
+/// A broad block's severity (#67): a warning for a manual feed's rule restricted to a selected
+/// audience ([`has_scoped_audience`]), critical otherwise (an unscoped rule, exclusion-only
+/// selectors, a broad source range, and every downloaded feed's rule, whatever its feed policy
+/// keeps). Breadth itself is [`is_broad`]'s, shared with `broad_allow`.
+pub fn broad_block_severity(rule: &Rule, downloaded: bool) -> Severity {
+    if !downloaded && has_scoped_audience(rule) {
+        Severity::Warning
+    } else {
+        Severity::Critical
+    }
+}
+
+/// A broad finding's title and extra detail: a scoped warning says the breadth concerns the
+/// audience its `$client` / `$ctag` conditions select.
+fn broad_text(kind: &str, severity: Severity, bundle: &str, feed: &str) -> (String, Value) {
+    match (kind, severity) {
+        ("broad_allow", _) => (
+            format!("A broad allow in bundle {bundle} from feed {feed}"),
+            json!({}),
+        ),
+        (_, Severity::Critical) => (
+            format!("A broad block in bundle {bundle} from feed {feed}"),
+            // `note: null` drops a scoped warning's note on a reclassification.
+            json!({"scope": "everyone", "note": null}),
+        ),
+        _ => (
+            format!("A broad block for a selected audience in bundle {bundle} from feed {feed}"),
+            json!({
+                "scope": "selected_audience",
+                "note": "The rule blocks broadly for the clients its $client / $ctag conditions select; a name or tag can stand for many devices.",
+            }),
+        ),
     }
 }
 
@@ -1035,12 +1073,18 @@ pub fn apply(
     tx: &rusqlite::Transaction<'_>,
     alerts: &crate::alerts::Alerts,
     bundle: &str,
-    members: &[String],
+    members: &[Member],
     findings: &Findings,
     ch: &mut Changes,
 ) -> rusqlite::Result<()> {
     for f in &findings.items {
-        if crate::alerts::Alerts::is_open_in(tx, &f.dedupe_key)? {
+        if let Some(open) = open_severity(tx, &f.dedupe_key)? {
+            // Already open: no new occurrence; only a severity the policy now puts elsewhere
+            // changes, in place.
+            if open != f.severity {
+                let detail = broad_text(f.kind, f.severity, bundle, &f.identity.feed).1;
+                alerts.reclassify_in(tx, &f.dedupe_key, f.severity, &f.title, &detail, ch)?;
+            }
             continue;
         }
         let (raw, line): (String, Option<i64>) = tx
@@ -1063,7 +1107,7 @@ pub fn apply(
         });
         if let (Some(d), Some(extra)) = (detail.as_object_mut(), f.detail.as_object()) {
             for (k, v) in extra {
-                if !(k == "rule" && v.as_str().is_some_and(str::is_empty)) {
+                if !(v.is_null() || k == "rule" && v.as_str().is_some_and(str::is_empty)) {
                     d.insert(k.clone(), v.clone());
                 }
             }
@@ -1085,17 +1129,19 @@ pub fn apply(
             }
         }
     }
-    apply_public_suffix(tx, alerts, bundle, members, &findings.psl, ch)?;
-    // Per-rule alerts whose rule left the bundle.
-    let open: Vec<(String, String)> = {
+    let feeds: Vec<String> = members.iter().map(|m| m.feed.clone()).collect();
+    apply_public_suffix(tx, alerts, bundle, &feeds, &findings.psl, ch)?;
+    // Per-rule alerts whose rule left the bundle; open broad blocks of rules still in it take
+    // the severity the policy gives them now (an older release's critical scoped block).
+    let open: Vec<(String, String, String, String)> = {
         let mut st = tx.prepare(
-            "SELECT dedupe_key, details_json FROM alerts WHERE bundle_id = ?1 AND state = 'open'
+            "SELECT dedupe_key, details_json, kind, severity FROM alerts WHERE bundle_id = ?1 AND state = 'open'
                AND kind IN ('broad_block', 'broad_allow', 'bundle_warning')",
         )?;
-        st.query_map([bundle], |r| Ok((r.get(0)?, r.get(1)?)))?
+        st.query_map([bundle], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
             .collect::<rusqlite::Result<_>>()?
     };
-    for (key, details) in open {
+    for (key, details, kind, severity) in open {
         let Ok(d) = serde_json::from_str::<Value>(&details) else {
             continue;
         };
@@ -1105,9 +1151,31 @@ pub fn apply(
         else {
             continue;
         };
-        let present = members.contains(&ident.feed) && entry_present(tx, &ident);
+        let member = members.iter().find(|m| m.feed == ident.feed);
+        let present = member.is_some() && entry_present(tx, &ident);
         if !present {
             alerts.resolve_in(tx, &key, Some(&json!({"rule_left_bundle": true})), ch)?;
+            continue;
+        }
+        if kind != "broad_block" || findings.items.iter().any(|f| f.dedupe_key == key) {
+            continue;
+        }
+        let (Some(m), Ok(rule)) = (
+            member,
+            Rule::from_stored(
+                &ident.rule_type,
+                &ident.kind,
+                &ident.key,
+                ident.flags,
+                &ident.value_json,
+            ),
+        ) else {
+            continue;
+        };
+        let want = broad_block_severity(&rule, m.downloaded);
+        if serde_json::from_value::<Severity>(Value::String(severity)).ok() != Some(want) {
+            let (title, detail) = broad_text("broad_block", want, bundle, &ident.feed);
+            alerts.reclassify_in(tx, &key, want, &title, &detail, ch)?;
         }
     }
     Ok(())
@@ -1306,6 +1374,19 @@ pub fn retire_public_suffix(
     Ok(())
 }
 
+/// The severity of the open alert with `dedupe_key`, if one is open.
+fn open_severity(tx: &rusqlite::Transaction<'_>, dedupe_key: &str) -> rusqlite::Result<Option<Severity>> {
+    let s: Option<String> = tx
+        .query_row(
+            "SELECT severity FROM alerts WHERE dedupe_key = ?1 AND state = 'open'",
+            [dedupe_key],
+            |r| r.get(0),
+        )
+        .optional()?;
+    // An unreadable severity reads as none, so the finding takes its own.
+    Ok(s.map(|s| serde_json::from_value(Value::String(s)).unwrap_or(Severity::Info)))
+}
+
 /// An aggregate `bundle_warning` condition for `bundle` (raised with `detail` when `on`).
 pub fn aggregate(
     bundle: &str,
@@ -1343,14 +1424,18 @@ mod tests {
         assert_eq!(a.short().len(), 16);
     }
 
+    fn rule(line: &str) -> Rule {
+        match picket_rules::classify::classify_adblock_line(line, false) {
+            picket_rules::classify::Line::Items(v) => match v.into_iter().next() {
+                Some(picket_rules::classify::Item::Rule(r)) => r,
+                o => panic!("{line}: {o:?}"),
+            },
+            o => panic!("{line}: {o:?}"),
+        }
+    }
+
     fn row(line: &str, feed: &str) -> Row {
-        use picket_rules::classify::{Item, Line, classify_adblock_line};
-        let Line::Items(items) = classify_adblock_line(line, false) else {
-            panic!("{line}");
-        };
-        let Some(Item::Rule(rule)) = items.into_iter().next() else {
-            panic!("{line}");
-        };
+        let rule = rule(line);
         Row {
             order: OrderKey {
                 position: 0,
@@ -1365,6 +1450,28 @@ mod tests {
             rule,
             first_seen_at: String::new(),
             entry_id: 0,
+        }
+    }
+
+    #[test]
+    fn broad_block_severity_follows_the_feed_and_the_audience() {
+        for l in [
+            "$client=kids-tablet",
+            "||com^$ctag=kids",
+            "/./$client=kids-tablet,dnstype=A",
+        ] {
+            assert!(is_broad(&rule(l)), "{l}");
+            assert_eq!(broad_block_severity(&rule(l), false), Severity::Warning, "{l}");
+            // A downloaded feed's (kept by `client_rules: keep`) stays critical.
+            assert_eq!(broad_block_severity(&rule(l), true), Severity::Critical, "{l}");
+        }
+        for l in [
+            "$client=~kids-tablet",
+            "$client=10.0.0.0/8",
+            "$dnstype=A",
+            "||com^",
+        ] {
+            assert_eq!(broad_block_severity(&rule(l), false), Severity::Critical, "{l}");
         }
     }
 

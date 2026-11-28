@@ -108,8 +108,10 @@ pub enum StoreError {
 /// `None` when the partition doesn't exist (retention deleted it, or nothing was stored there).
 type PartitionFn = Box<dyn FnOnce(Option<&mut Partition>) + Send>;
 
-/// A flag that, set when the writer comes to a store job, refuses it ([`LogWriter::write_unless`]).
-type Refusal = Option<Arc<std::sync::atomic::AtomicBool>>;
+/// A check that, true when the writer comes to a store job, refuses it
+/// ([`LogWriter::write_unless`]).
+pub type Refuse = Arc<dyn Fn() -> bool + Send + Sync>;
+type Refusal = Option<Refuse>;
 
 enum Job {
     Store(
@@ -167,9 +169,7 @@ impl LogWriter {
                 let mut open: VecDeque<Open> = VecDeque::new();
                 while let Some(job) = rx.blocking_recv() {
                     match job {
-                        Job::Store(_, Some(refuse), reply)
-                            if refuse.load(std::sync::atomic::Ordering::SeqCst) =>
-                        {
+                        Job::Store(_, Some(refuse), reply) if refuse() => {
                             let _ = reply.send(Err(StoreError::Refused));
                         }
                         Job::Store(j, _, reply) => {
@@ -208,16 +208,14 @@ impl LogWriter {
         self.send_store(job, None).await
     }
 
-    /// [`LogWriter::write`], unless `refuse` is set when the writer thread comes to the job:
-    /// then nothing is stored ([`StoreError::Refused`]). The flag is read on the thread that also
-    /// runs [`LogWriter::delete`], so the check is ordered with partition deletions: a config
-    /// restore's flag (core.md §2), set before it empties the partitions and cleared after,
-    /// keeps every write that reaches the writer in between out of the partitions it empties.
-    pub async fn write_unless(
-        &self,
-        job: StoreJob,
-        refuse: Arc<std::sync::atomic::AtomicBool>,
-    ) -> Result<StoreOutcome, StoreError> {
+    /// [`LogWriter::write`], unless `refuse` is true when the writer thread comes to the job:
+    /// then nothing is stored ([`StoreError::Refused`]). It runs on the thread that also runs
+    /// [`LogWriter::delete`], so the check is ordered with partition deletions: a config
+    /// restore's `logs_pending` flag (core.md §2), set before it empties the partitions and
+    /// cleared after, and the restore generation a batch started under
+    /// ([`crate::logs::ingest`]) keep every write that reaches the writer after the restore
+    /// committed out of the partitions.
+    pub async fn write_unless(&self, job: StoreJob, refuse: Refuse) -> Result<StoreOutcome, StoreError> {
         self.send_store(job, Some(refuse)).await
     }
 

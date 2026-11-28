@@ -101,7 +101,8 @@ pub struct FeedStatus {
     /// Consecutive failed checks.
     pub failures: u32,
     pub failing_since: Option<String>,
-    /// The module's rate-limit pause.
+    /// The rate-limit pause of the provider's scope (a server cooldown: `github`'s rate limit,
+    /// or an `http` origin's `Retry-After`): no check, "Check now" included, starts before it.
     pub paused_until: Option<String>,
     /// The last download (a run's source).
     pub last_download: Option<String>,
@@ -184,11 +185,7 @@ async fn status_of(s: &SharedState, def: &FeedDef) -> ApiResult<FeedStatus> {
     let learner = s.feeds.learner(&id);
     let hits = hits_24h(s, &id).await;
     let last_change = change.as_ref().and_then(|r| r.updated_at.clone());
-    let module = def
-        .provider
-        .as_deref()
-        .and_then(|p| s.feeds.provider_def(p))
-        .map(|p| p.module);
+    let pdef = def.provider.as_deref().and_then(|p| s.feeds.provider_def(p));
     Ok(FeedStatus {
         feed: id.clone(),
         name: def.name.clone(),
@@ -206,8 +203,9 @@ async fn status_of(s: &SharedState, def: &FeedDef) -> ApiResult<FeedStatus> {
         last_ok: st.last_ok_at.map(|t| crate::util::ts(&t)),
         failures: st.failures,
         failing_since: st.failing_since.map(|t| crate::util::ts(&t)),
-        paused_until: module
-            .and_then(|m| s.feeds.paused_until(&m))
+        paused_until: pdef
+            .as_ref()
+            .and_then(|p| s.feeds.provider_paused_until(p))
             .map(|t| crate::util::ts(&t)),
         last_download: st.last_download_at.map(|t| crate::util::ts(&t)),
         since_last_change_s: last_change
@@ -1122,12 +1120,19 @@ pub struct ProviderStatus {
     pub last_ok: Option<String>,
     /// The current streak of checks that failed as a whole or in every file.
     pub failing_since: Option<String>,
-    /// The module's rate-limit pause.
+    /// The rate-limit pause of the provider's scope (a server cooldown: `github`'s rate limit,
+    /// or an `http` origin's `Retry-After`): no check, "Check now" included, starts before it.
     pub paused_until: Option<String>,
     pub checks_24h: u64,
     pub failures_24h: u64,
     /// The aggressiveness chosen weekly (`dynamic`).
     pub k: Option<f64>,
+    /// The last weekly choice of `k` with the per-provider planning budget's part in it: the
+    /// preferred and selected `k`, whether the budget slowed the provider (`slowed`) or no `k`
+    /// fit it (`none_fits`), the replay window, the predicted checks a day and, after such a
+    /// compromise, each feed's estimated change in its share caught within 2 minutes. The budget
+    /// is a planning figure, not a runtime quota.
+    pub k_choice: Option<super::schedule::KChoiceRecord>,
     /// Its feeds.
     pub feeds: Vec<String>,
     pub listing: Option<ListingSummary>,
@@ -1141,10 +1146,14 @@ pub struct ProviderStatus {
 async fn provider_status_of(s: &SharedState, p: &FeedProviderDef) -> ApiResult<ProviderStatus> {
     let id = p.id.clone();
     let day = crate::util::ts(&(Timestamp::now() - jiff::SignedDuration::from_hours(24)));
-    let (st, counts, incomplete) = {
+    // Only a `dynamic` provider chooses `k`; a choice kept from before a move to `cron` or `sqs`
+    // no longer says anything.
+    let dynamic = matches!(p.trigger, crate::config::model::Trigger::Dynamic { .. });
+    let (st, counts, incomplete, k_choice) = {
         let id = id.clone();
         s.db.read(move |c| {
             let st = store::load_provider_state(c, &id)?;
+            let k_choice = if dynamic { store::load_k_choice(c, &id)? } else { None };
             let counts: (i64, i64) = c.query_row(
                 "SELECT (SELECT count(*) FROM feed_provider_checks WHERE provider_id = ?1 AND t >= ?2),
                         (SELECT count(*) FROM feed_provider_checks WHERE provider_id = ?1 AND t >= ?2 AND ok = 0)",
@@ -1156,7 +1165,7 @@ async fn provider_status_of(s: &SharedState, p: &FeedProviderDef) -> ApiResult<P
                 [format!("feed_provider_listing_incomplete:{id}")],
                 |r| r.get(0),
             )?;
-            Ok::<_, anyhow::Error>((st, counts, incomplete))
+            Ok::<_, anyhow::Error>((st, counts, incomplete, k_choice))
         })
         .await?
     };
@@ -1176,12 +1185,13 @@ async fn provider_status_of(s: &SharedState, p: &FeedProviderDef) -> ApiResult<P
         last_check: st.last_check_at.map(|t| crate::util::ts(&t)),
         last_ok: st.last_ok_at.map(|t| crate::util::ts(&t)),
         failing_since: st.failing_since.map(|t| crate::util::ts(&t)),
-        paused_until: s.feeds.paused_until(&p.module).map(|t| crate::util::ts(&t)),
+        paused_until: s.feeds.provider_paused_until(p).map(|t| crate::util::ts(&t)),
         checks_24h: crate::util::nonneg(counts.0),
         failures_24h: crate::util::nonneg(counts.1),
         k: st
             .k
             .or_else(|| feeds.first().and_then(|f| s.feeds.learner(f)).map(|l| l.k)),
+        k_choice,
         feeds,
         listing: st.listing.as_ref().map(|l| ListingSummary {
             files: l.files.len(),
@@ -1216,7 +1226,7 @@ async fn all_provider_status(
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 pub struct CheckNow {
     /// `started`, `queued` (a check of the provider is in progress: another runs when it ends)
-    /// or `scheduled` (`min_interval`, or the module's rate-limit pause).
+    /// or `scheduled` (`min_interval`, or a rate-limit pause of the provider's scope).
     pub result: String,
     /// When a scheduled check runs.
     pub at: Option<String>,
@@ -1628,13 +1638,28 @@ pub struct AddedUrl {
     pub outcome: crate::config::Outcome,
 }
 
+/// The outcome of adding a URL whose feed exists: nothing changed, the provider as it is, masked
+/// as every entity the UI API returns (an older release's literal credential).
+fn unchanged_provider(p: &FeedProviderDef) -> crate::config::Outcome {
+    crate::config::Outcome {
+        id: p.id.clone(),
+        entity: serde_json::to_value(p)
+            .ok()
+            .map(|v| crate::config::store::for_ui(crate::config::EntityKind::FeedProvider, v)),
+        warnings: vec![],
+        feeds_added: vec![],
+        feeds_deleted: vec![],
+    }
+}
+
 async fn add_by_url(
     State(s): State<SharedState>,
     peer: Option<axum::Extension<PeerAddr>>,
     crate::web::error::ApiJson(body): crate::web::error::ApiJson<AddUrl>,
 ) -> ApiResult<Json<AddedUrl>> {
     let actor = actor(peer);
-    let model = s.config.model_of(crate::config::EntityKind::FeedProvider).await?;
+    // The providers and their feeds (a URL whose feed exists changes nothing).
+    let model = s.config.model_of(crate::config::EntityKind::Feed).await?;
     let template = body
         .feed
         .clone()
@@ -1691,6 +1716,23 @@ async fn add_by_url(
                     .or_else(|| default_branch.clone());
                 pb == want
             });
+            // Its feed is there: returned as it is, the provider's selection and the feed's
+            // settings untouched (as for an http URL below).
+            if let Some(p) = found
+                && let Some(f) = model.feeds.values().find(|f| {
+                    f.provider.as_deref() == Some(p.id.as_str()) && f.file.as_deref() == Some(u.path.as_str())
+                })
+            {
+                return Ok(Json(AddedUrl {
+                    provider: p.id.clone(),
+                    created_provider: false,
+                    file: u.path,
+                    feed: Some(f.id.clone()),
+                    existing: true,
+                    notice: u.notice,
+                    outcome: unchanged_provider(p),
+                }));
+            }
             let (pid, created) = match found {
                 Some(p) => (p.id.clone(), false),
                 None => {
@@ -1787,7 +1829,6 @@ async fn add_by_url(
                         .and_then(|u| url::Url::parse(u).ok())
                         .is_some_and(|u| http::url_key(&u) == key)
             };
-            let model = s.config.model_of(crate::config::EntityKind::Feed).await?;
             let feed_of = |m: &crate::config::Model, pid: &str| {
                 m.feeds
                     .values()
@@ -1799,18 +1840,9 @@ async fn add_by_url(
                 .as_ref()
                 .is_some_and(|p| feed_of(&model, &p.id).is_some());
             let (pid, created, outcome) = match existing {
-                // Its feed is there: returned as it is (no duplicate), the provider masked as
-                // every entity the UI API returns (an older release's literal credential).
+                // Its feed is there: returned as it is (no duplicate), nothing changed.
                 Some(p) if feed_of(&model, &p.id).is_some() => {
-                    let outcome = crate::config::Outcome {
-                        id: p.id.clone(),
-                        entity: serde_json::to_value(&p).ok().map(|v| {
-                            crate::config::store::for_ui(crate::config::EntityKind::FeedProvider, v)
-                        }),
-                        warnings: vec![],
-                        feeds_added: vec![],
-                        feeds_deleted: vec![],
-                    };
+                    let outcome = unchanged_provider(&p);
                     (p.id, false, outcome)
                 }
                 // Its feed was deleted: added again.

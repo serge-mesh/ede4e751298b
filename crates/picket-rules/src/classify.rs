@@ -17,7 +17,8 @@ use crate::rule::{Kind, Rule, RuleSpec, RuleType};
 pub enum WarnReason {
     /// An option neither AdGuard's DNS engine nor browsers know (rules.md §2).
     UnknownModifier,
-    /// A pattern under 3 characters (or `*`, `|`, `||`) with no restriction (rules.md §2).
+    /// A DNS rule whose pattern is under 3 characters (or `*`, `|`, `||`) with no restriction
+    /// (rules.md §2). A browser rule like it is kept ([`NoticeReason::BroadBrowser`]).
     TooWide,
     /// AdGuard-only browser syntax uBlock Origin can't read: `#%#`, `#@%#`, `$$`, `$@$`, and
     /// options such as `$replace`, `$cookie`, `$network`, `$jsonprune` (`ADGUARD_ONLY_MODIFIERS`).
@@ -28,6 +29,16 @@ pub enum WarnReason {
     InvalidModifierValue,
     /// A value Picket can't express: a host-IP mapping whose name isn't a key name.
     UnsupportedValue,
+}
+
+/// Something worth knowing about a rule that is kept (it doesn't drop the rule).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NoticeReason {
+    /// A browser network rule whose pattern is under 3 characters (or `*`, `|`, `||`) with no
+    /// restriction (`$image`, `*$third-party`, `$removeparam=utm_source`): it applies to most
+    /// requests. The browser blocker applies it with its own semantics, so it is kept; only DNS
+    /// rules are dropped for this (rules.md §2).
+    BroadBrowser,
 }
 
 /// Why a line can't be read (a parse error, feeds.md §5).
@@ -61,6 +72,8 @@ pub enum Item {
         reason: WarnReason,
     },
     Error(ErrorReason),
+    /// About the rule before it on the same line, which is kept.
+    Notice(NoticeReason),
 }
 
 /// What a line is.
@@ -209,7 +222,11 @@ pub fn classify_adblock_line(line: &str, in_conditional: bool) -> Line {
         return Line::Items(items);
     }
     // 3. Network rule.
-    Line::Items(vec![classify_network(line, in_conditional)])
+    let (item, notice) = classify_network_noting(line, in_conditional, false);
+    Line::Items(match notice {
+        Some(n) => vec![item, Item::Notice(n)],
+        None => vec![item],
+    })
 }
 
 /// urlfilter `isComment`: `!…`, or `#…` that isn't a cosmetic rule without domains.
@@ -490,6 +507,26 @@ pub fn path_rule_as_pattern(line: &str) -> Option<Rule> {
 }
 
 fn classify_network_as(line: &str, in_conditional: bool, allow_paths: bool) -> Item {
+    classify_network_noting(line, in_conditional, allow_paths).0
+}
+
+/// [`classify_network_as`], and a notice about the rule it keeps, if any.
+fn classify_network_noting(
+    line: &str,
+    in_conditional: bool,
+    allow_paths: bool,
+) -> (Item, Option<NoticeReason>) {
+    let mut notice = None;
+    let item = classify_network_inner(line, in_conditional, allow_paths, &mut notice);
+    (item, notice)
+}
+
+fn classify_network_inner(
+    line: &str,
+    in_conditional: bool,
+    allow_paths: bool,
+    notice: &mut Option<NoticeReason>,
+) -> Item {
     let browser_item = || {
         if in_conditional {
             Item::Warning {
@@ -505,16 +542,15 @@ fn classify_network_as(line: &str, in_conditional: bool, allow_paths: bool) -> I
     };
     let opts = match read_options(&text.options) {
         OptionsOutcome::Dns(d) => d,
-        // rules.md §2 "(dropped)": the too-wide test holds for browser rules too.
-        OptionsOutcome::Browser { restricted }
-            if !restricted && adguard::is_pattern_too_wide(&text.pattern) =>
-        {
-            return Item::Warning {
-                rule_type: Some(RuleType::Browser),
-                reason: WarnReason::TooWide,
-            };
+        // A browser rule is the browser blocker's to apply, however wide its pattern: kept, with
+        // a notice when it applies to most requests (the too-wide drop is for DNS rules only).
+        OptionsOutcome::Browser { restricted } => {
+            let item = browser_item();
+            if matches!(item, Item::Rule(_)) && !restricted && adguard::is_pattern_too_wide(&text.pattern) {
+                *notice = Some(NoticeReason::BroadBrowser);
+            }
+            return item;
         }
-        OptionsOutcome::Browser { .. } => return browser_item(),
         OptionsOutcome::Warn(w) => {
             let rt = if w == WarnReason::AdguardOnly {
                 Some(RuleType::Browser)
@@ -1195,21 +1231,36 @@ mod tests {
     }
 
     #[test]
-    fn too_wide_browser_rules() {
-        // rules.md §2 "(dropped)": patterns under 3 characters with no restrictions, whatever
-        // the modifiers; `$domain`, `from`, `to` and the DNS restrictions count.
-        let w = |l: &str| match one(l) {
-            Item::Warning { rule_type, reason } => (rule_type, reason),
-            other => panic!("{l}: {other:?}"),
-        };
+    fn broad_browser_rules_are_kept_with_a_notice() {
+        // Patterns under 3 characters with no restriction, whatever the modifiers: a browser
+        // rule (the line itself, its modifiers and exception as written) and a notice; `$domain`,
+        // `from`, `to` and the DNS restrictions count as restrictions (no notice).
         for l in [
             "$image",
             "*$third-party",
             "|$popup",
+            "||$script,third-party",
             "$removeparam=utm_source",
             "@@*$script",
+            "@@$image,1p",
         ] {
-            assert_eq!(w(l), (Some(RuleType::Browser), WarnReason::TooWide), "{l}");
+            let Line::Items(items) = classify_adblock_line(l, false) else {
+                panic!("{l}")
+            };
+            assert_eq!(
+                items,
+                vec![
+                    Item::Rule(Rule {
+                        rule_type: RuleType::Browser,
+                        kind: Kind::Network,
+                        key: l.to_string(),
+                        flags: Flags::NONE,
+                        spec: RuleSpec::default(),
+                    }),
+                    Item::Notice(NoticeReason::BroadBrowser),
+                ],
+                "{l}"
+            );
         }
         for l in [
             "*$image,domain=example.org",
@@ -1220,15 +1271,51 @@ mod tests {
             "ads$image",
         ] {
             assert_eq!(kind(l), (RuleType::Browser, Kind::Network), "{l}");
+            let Line::Items(items) = classify_adblock_line(l, false) else {
+                panic!("{l}")
+            };
+            assert_eq!(items.len(), 1, "no notice: {l}");
         }
-        let in_if = classify_adblock_line("$image", true);
+        // Inside `!#if`, a browser rule is dropped as conditional whatever its pattern.
         assert_eq!(
-            in_if,
+            classify_adblock_line("$image", true),
             Line::Items(vec![Item::Warning {
                 rule_type: Some(RuleType::Browser),
-                reason: WarnReason::TooWide
+                reason: WarnReason::Conditional
             }])
         );
+        // AdGuard-only and unknown options are still warnings, not kept rules.
+        assert!(matches!(
+            one("$replace=/a/b/"),
+            Item::Warning {
+                reason: WarnReason::AdguardOnly,
+                ..
+            }
+        ));
+        assert!(matches!(
+            one("*$bogusmodifier"),
+            Item::Warning {
+                reason: WarnReason::UnknownModifier,
+                ..
+            }
+        ));
+        // The DNS too-wide drop is unchanged.
+        for l in ["*", "||", "|", "a*", "*$dnstype=A,important", "$important"] {
+            let got = classify_adblock_line(l, false);
+            let Line::Items(items) = &got else { panic!("{l}") };
+            if l.contains("dnstype") {
+                assert!(matches!(items[..], [Item::Rule(_)]), "restricted: {l}: {got:?}");
+            } else {
+                assert_eq!(
+                    items,
+                    &vec![Item::Warning {
+                        rule_type: Some(RuleType::Dns),
+                        reason: WarnReason::TooWide
+                    }],
+                    "{l}"
+                );
+            }
+        }
     }
 
     #[test]

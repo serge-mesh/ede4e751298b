@@ -18,6 +18,15 @@
 //!   new validators in `state`); a `404` or `410` is `Missing`.
 //! - **Change time:** `Last-Modified`, else a header date line, else an interval.
 //!   `version` = the ETag, else the SHA-256; `updated_at` = that time, or the download time.
+//! - **Server cooldowns:** a `429` or `503` with a valid `Retry-After` (delta-seconds or an HTTP
+//!   date, [`cooldown_of`]) is `RateLimited` until then, however long past an hour (held to
+//!   [`super::dates::MAX_COOLDOWN`]). Every request of a check, the probes and the `range` rung's
+//!   full GET included, goes through [`Module::send`]: none goes out while the provider's pause
+//!   scope cools down, and the first cooldown met stops the check's requests. The scope is the
+//!   URL's origin ([`pause_scope_of`]), so lists on other hosts carry on. Without a valid
+//!   `Retry-After` (or with a date already past) the status is an ordinary failure, under the
+//!   error backoff and `min_interval`. A probe that meets a cooldown after its download keeps
+//!   the download and leaves `method` unset, so the next check probes again.
 //!
 //! A `Range` answer never confirms a held run (feeds.md §5): its method is `range`.
 
@@ -210,6 +219,33 @@ pub async fn read_head(f: &StagedFile, n: u64) -> Vec<u8> {
     out
 }
 
+/// A server cooldown (providers.md §2): on a `429` (RFC 6585 §4) or `503` (RFC 9110 §15.6.4),
+/// the deadline its `Retry-After` names ([`super::dates::retry_after`]), bounded
+/// ([`super::dates::bound_cooldown`]). `None` for any other status, or without a valid
+/// `Retry-After` after `now`: the answer is then an ordinary failure.
+pub fn cooldown_of(resp: &Resp, now: Timestamp) -> Option<Timestamp> {
+    cooldown_from(resp.status.as_u16(), resp.header("retry-after"), now)
+}
+
+/// [`cooldown_of`] from an answer's status and `Retry-After`.
+pub fn cooldown_from(status: u16, retry_after: Option<&str>, now: Timestamp) -> Option<Timestamp> {
+    if !matches!(status, 429 | 503) {
+        return None;
+    }
+    let until = super::dates::retry_after(retry_after?, now)?;
+    super::dates::bound_cooldown(until, now)
+}
+
+/// The pause scope of a provider at `url` (providers.md §2): `http:` and the URL's origin
+/// (scheme, host, a port other than the default), so providers on one server share a cooldown
+/// and those on others don't. `http` alone for a URL that doesn't parse.
+pub fn pause_scope_of(url: &str) -> String {
+    Url::parse(url).map_or_else(
+        |_| "http".to_string(),
+        |u| format!("http:{}", u.origin().ascii_serialization()),
+    )
+}
+
 /// A failed check for an unexpected status (providers.md §2: anything but 200, 206 or 304).
 pub fn bad_status(resp: &Resp) -> CheckError {
     CheckError::Failed(anyhow::anyhow!(
@@ -263,8 +299,24 @@ fn missing_or_bad(resp: &Resp) -> CheckError {
 }
 
 impl Module {
-    async fn get(&self, ctx: &Ctx, req: Req) -> Result<Resp, CheckError> {
-        Ok(ctx.http.send(req).await?)
+    /// Sends one request of a check behind the server's cooldown (providers.md §2): none goes
+    /// out while the provider's pause scope cools down ([`Ctx::cooldown`]); an answer that asks
+    /// for a cooldown ([`cooldown_of`]) is `RateLimited`, noted in `ctx` so no later request of
+    /// the check goes out either.
+    async fn send(&self, ctx: &Ctx, req: Req) -> Result<Resp, CheckError> {
+        if let Some(until) = ctx.cooldown() {
+            return Err(CheckError::RateLimited { until });
+        }
+        let resp = ctx.http.send(req).await?;
+        // The answer's own time: a `Retry-After` in seconds counts from it, not from the check's
+        // start.
+        let now = Timestamp::now().max(ctx.now);
+        if let Some(until) = cooldown_of(&resp, now) {
+            resp.discard();
+            ctx.note_cooldown(until);
+            return Err(CheckError::RateLimited { until });
+        }
+        Ok(resp)
     }
 
     /// The outcome of a full download, given the previous state.
@@ -316,21 +368,26 @@ impl Module {
         }
     }
 
-    /// First check: plain GET, then the conditional and Range probes (providers.md §3).
+    /// First check: plain GET, then the conditional and Range probes (providers.md §3). A probe
+    /// that meets a server cooldown stops probing: the download stands, `method` stays unset
+    /// and the next check probes again; the cooldown is noted in `ctx` ([`Module::send`]).
+    /// `prev`: the file's state when an earlier probe was cut short (empty on its first check).
     async fn probe(
         &self,
         ctx: &Ctx,
         cfg: &Config,
         url: &Url,
         re: Option<&regex::Regex>,
+        prev: &State,
     ) -> Result<CheckOutcome, CheckError> {
-        let resp = self.get(ctx, base_get(url, &cfg.headers)?).await?;
+        let resp = self.send(ctx, base_get(url, &cfg.headers)?).await?;
         if resp.status != http::StatusCode::OK {
             return Err(missing_or_bad(&resp));
         }
         let full = full_from(ctx, resp, re).await?;
         // The same GET, conditionally.
         let mut conditional = false;
+        let mut cut_short = false;
         if full.etag.is_some() || full.last_modified.is_some() {
             let mut r = base_get(url, &cfg.headers)?;
             if let Some(e) = &full.etag {
@@ -339,28 +396,36 @@ impl Module {
             if let Some((lm, _)) = &full.last_modified {
                 r = r.header("if-modified-since", lm)?;
             }
-            if let Ok(resp) = ctx.http.send(r).await {
-                conditional = resp.status == http::StatusCode::NOT_MODIFIED;
-                resp.discard();
+            match self.send(ctx, r).await {
+                Ok(resp) => {
+                    conditional = resp.status == http::StatusCode::NOT_MODIFIED;
+                    resp.discard();
+                }
+                Err(CheckError::RateLimited { .. }) => cut_short = true,
+                Err(_) => {}
             }
         }
         let mut method = if conditional { "conditional" } else { "full" };
-        if !conditional {
+        if !conditional && !cut_short {
             let r = base_get(url, &cfg.headers)?
                 .header("range", &format!("bytes=0-{}", HEAD_BYTES - 1))?
                 .header("accept-encoding", "identity")?;
-            if let Ok(resp) = ctx.http.send(r).await
-                && resp.status == http::StatusCode::PARTIAL_CONTENT
-                && resp
-                    .header("content-range")
-                    .and_then(content_range_total)
-                    .is_some_and(|t| t == full.file.size())
-            {
-                method = "range";
+            match self.send(ctx, r).await {
+                Ok(resp)
+                    if resp.status == http::StatusCode::PARTIAL_CONTENT
+                        && resp
+                            .header("content-range")
+                            .and_then(content_range_total)
+                            .is_some_and(|t| t == full.file.size()) =>
+                {
+                    method = "range";
+                }
+                Err(CheckError::RateLimited { .. }) => cut_short = true,
+                _ => {}
             }
         }
-        let prev = State::default();
-        Ok(self.outcome(ctx, full, Some(method.to_string()), &prev, "probe"))
+        let method = (!cut_short).then(|| method.to_string());
+        Ok(self.outcome(ctx, full, method, prev, "probe"))
     }
 
     async fn full_check(
@@ -371,7 +436,7 @@ impl Module {
         req: Req,
         method: &'static str,
     ) -> Result<CheckOutcome, CheckError> {
-        let resp = self.get(ctx, req).await?;
+        let resp = self.send(ctx, req).await?;
         match resp.status {
             http::StatusCode::NOT_MODIFIED if method == "conditional" => Ok(CheckOutcome::Unchanged {
                 state: None,
@@ -401,7 +466,10 @@ impl Module {
             .and_then(|l| serde_json::from_value(l.state.clone()).ok())
             .unwrap_or_default();
         let Some(method) = st.method.clone().filter(|_| last.is_some()) else {
-            return self.probe(ctx, cfg, url, re).await;
+            // The first check, or one after a probe a cooldown cut short (its state kept, so an
+            // unchanged body is `Unchanged`).
+            let prev = if last.is_some() { st } else { State::default() };
+            return self.probe(ctx, cfg, url, re, &prev).await;
         };
         match method.as_str() {
             "conditional" => {
@@ -420,7 +488,7 @@ impl Module {
                     let r = base_get(url, &cfg.headers)?
                         .header("range", &format!("bytes=0-{}", HEAD_BYTES - 1))?
                         .header("accept-encoding", "identity")?;
-                    let resp = self.get(ctx, r).await?;
+                    let resp = self.send(ctx, r).await?;
                     match resp.status {
                         http::StatusCode::PARTIAL_CONTENT => {
                             if resp.is_html() {
@@ -493,6 +561,10 @@ impl DownloadModule for Module {
 
     fn fixed_file(&self) -> Option<&'static str> {
         Some(FILE)
+    }
+
+    fn pause_scope(&self, cfg: &Value) -> String {
+        pause_scope_of(cfg.get("url").and_then(Value::as_str).unwrap_or_default())
     }
 
     fn normalize_config(&self, cfg: &Value) -> Result<Normalized, String> {

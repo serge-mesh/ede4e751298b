@@ -43,6 +43,22 @@ pub struct Ctx {
     slot: Option<crate::scheduler::LightSlot>,
     /// Set by a module whose listing walk couldn't finish (providers.md §3).
     incomplete: std::sync::Mutex<Option<String>>,
+    /// The cooldown core holds for the provider's pause scope (a sibling's rate limit that
+    /// started while this check ran), asked before each request ([`Ctx::cooldown`]).
+    gate: Option<CooldownGate>,
+    /// A server cooldown a module met in this check ([`Ctx::note_cooldown`]).
+    cooldown: std::sync::Mutex<Option<Timestamp>>,
+}
+
+/// Core's side of a check's server cooldowns (providers.md §2): the provider's pause scope as
+/// core holds it.
+#[derive(Clone)]
+pub struct CooldownGate {
+    /// The end of the scope's running pause, if any: asked before each request.
+    pub held: std::sync::Arc<dyn Fn() -> Option<Timestamp> + Send + Sync>,
+    /// Pauses the scope at once when a module notes a cooldown ([`Ctx::note_cooldown`]), so a
+    /// sibling's check already under way sends nothing more either; the check's end stores it.
+    pub pause: std::sync::Arc<dyn Fn(Timestamp) + Send + Sync>,
 }
 
 impl std::fmt::Debug for Ctx {
@@ -72,7 +88,44 @@ impl Ctx {
             staging: staging.to_path_buf(),
             slot: None,
             incomplete: std::sync::Mutex::new(None),
+            gate: None,
+            cooldown: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Asks `gate` before each request for a pause of the provider's scope that started while
+    /// the check ran (core's pauses, providers.md §2).
+    pub fn with_cooldown_gate(mut self, gate: CooldownGate) -> Self {
+        self.gate = Some(gate);
+        self
+    }
+
+    /// The server met a cooldown in this check (a `Retry-After` on `429`/`503`) until `until`:
+    /// no further request of the check goes out before then ([`Ctx::cooldown`]), and core pauses
+    /// the provider's scope once the check ends, even when the module kept the check's result
+    /// (an `http` probe answered `429` after its download succeeded).
+    pub fn note_cooldown(&self, until: Timestamp) {
+        if let Ok(mut g) = self.cooldown.lock() {
+            *g = Some(g.map_or(until, |u| u.max(until)));
+        }
+        if let Some(gate) = &self.gate {
+            (gate.pause)(until);
+        }
+    }
+
+    /// The cooldown a module noted in this check, if any ([`Ctx::note_cooldown`]).
+    pub fn take_cooldown(&self) -> Option<Timestamp> {
+        self.cooldown.lock().ok().and_then(|mut g| g.take())
+    }
+
+    /// When the provider's scope may be asked again, if not now: the later of a cooldown noted
+    /// in this check and core's pause of the scope. Modules ask before every request, so a
+    /// probe or a follow-up request never goes out during a cooldown.
+    pub fn cooldown(&self) -> Option<Timestamp> {
+        let now = Timestamp::now();
+        let noted = self.cooldown.lock().ok().and_then(|g| *g);
+        let held = self.gate.as_ref().and_then(|g| (g.held)());
+        noted.into_iter().chain(held).filter(|u| *u > now).max()
     }
 
     /// A module's listing walk couldn't finish (`why` says how far it got): the check gives no

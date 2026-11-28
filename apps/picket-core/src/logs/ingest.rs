@@ -26,12 +26,22 @@
 //!    (deduplicated on (edge, boot, seq), update events also on their `result_id`), `allow`
 //!    records to `temp_allows` (never undoing a newer record; a capped number of rows per edge),
 //!    with their alert effects (update outcomes, activation failures for targets core offered,
-//!    listener rejections, panics, page-file refetches, TLS version refusals, firewall repairs,
-//!    and `temporary_allow` for a created allow while `alerts.temporary_allow` is on) and the
-//!    condition changes in the matching alerts' history, all in the same transaction (core.md §9;
-//!    README §2 Restarts). The edge's live update record follows right after the commit.
+//!    listener rejections, panics, page-file refetches, TLS version refusals and firewall
+//!    repairs; an allow is history, never an alert) and the condition changes in the matching
+//!    alerts' history, all in the same transaction (core.md §9; README §2 Restarts). The edge's live update record follows right after the commit.
 //! 6. **Ack** only after every write above is durable (`synchronous=FULL`). A failure that isn't
-//!    a record's own gets `503`. Analysis never delays the ack: the wire check, attribution,
+//!    a record's own gets `503`.
+//!
+//! **Config restores.** A batch takes the restore generation when it starts
+//! ([`crate::config::export::RestoreGate`]) and each step that commits checks it again inside its
+//! serialized writer operation, ordered with the restore's commit and cleanup there: the boots,
+//! events and lookup transactions on the `core.db` writer, each partition write on the log
+//! writer (with `logs_pending`), the metric increments on the `metrics.db` writer. Once a restore
+//! committed since the batch started, the step commits nothing and the batch gets the usual
+//! retryable `503` ([`RestoreOvertook`]), never an ack, so no pre-restore work lands in restored
+//! state and reports success. What a batch committed before the restore is pre-restore state,
+//! kept or dropped by the restore like any; the edge's retry, under the new generation, stores
+//! the batch again, deduplicated on (edge, boot, seq) against whatever the restore kept. Analysis never delays the ack: the wire check, attribution,
 //!    retro-match, trial checks and lookups find their work in the partitions (`wire_check` and
 //!    `trial_check` null, no `attribution` row) and are woken through [`IngestSeams`].
 //!
@@ -115,6 +125,26 @@ impl Default for IngestSeams {
     }
 }
 
+/// A config restore committed after the batch started (module docs): the step refused, nothing
+/// of it committed; the edge retries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("a config restore replaced the configuration while the batch was stored; retry")]
+pub struct RestoreOvertook;
+
+/// Tests: the places a batch can be held ([`Ingest::pause_at`]), each after one step committed.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum IngestPoint {
+    /// After the boots' transaction.
+    AfterBoots,
+    /// After every partition write.
+    AfterPartitions,
+    /// After the events' transaction.
+    AfterEvents,
+    /// After the lookups' transaction, before the metrics.
+    AfterLookups,
+}
+
 /// The ingest service.
 pub struct Ingest {
     writer: LogWriter,
@@ -122,6 +152,7 @@ pub struct Ingest {
     slots: Arc<Semaphore>,
     admit_wait_ms: std::sync::atomic::AtomicU64,
     pub seams: IngestSeams,
+    pauses: std::sync::Mutex<HashMap<IngestPoint, Arc<super::analysis::Pause>>>,
 }
 
 /// An edge's one batch in progress ([`Ingest::admit`]), held from before its body is read
@@ -150,6 +181,25 @@ impl Ingest {
             slots: Arc::new(Semaphore::new(SLOTS)),
             admit_wait_ms: std::sync::atomic::AtomicU64::new(picket_api::duration::as_millis_u64(ADMIT_WAIT)),
             seams: IngestSeams::default(),
+            pauses: Default::default(),
+        }
+    }
+
+    /// Tests: the next batch to reach `point` signals `reached` and waits for `resume`.
+    #[doc(hidden)]
+    pub fn pause_at(&self, point: IngestPoint) -> Arc<super::analysis::Pause> {
+        let p = Arc::new(super::analysis::Pause::default());
+        if let Ok(mut m) = self.pauses.lock() {
+            m.insert(point, p.clone());
+        }
+        p
+    }
+
+    async fn paused_at(&self, point: IngestPoint) {
+        let p = self.pauses.lock().ok().and_then(|mut m| m.remove(&point));
+        if let Some(p) = p {
+            p.reached.notify_one();
+            p.resume.notified().await;
         }
     }
 
@@ -235,16 +285,28 @@ impl Ingest {
             ack,
             ..Default::default()
         };
+        // The restore generation the batch works under, checked again in each step's writer
+        // (module docs).
+        let gate = state.restore.clone();
+        let generation = gate.generation();
+        let overtook = || IngestError::Unavailable(RestoreOvertook.to_string());
 
         // 3. Boots: register those core never heard a hello from, up to the edge's share. Past
         // it, records are stored anyway (release `unknown` either way).
         let boots: BTreeSet<String> = batch.records.iter().map(|r| r.header().boot.clone()).collect();
         let (edge_s, key_s) = (edge.to_string(), key.to_string());
+        let g = gate.clone();
         let unregistered = state
             .db
-            .write(move |c| register_boots(c, &edge_s, &key_s, &boots))
+            .write(move |c| {
+                if !g.is_current(generation) {
+                    return Ok(Err(RestoreOvertook));
+                }
+                register_boots(c, &edge_s, &key_s, &boots).map(Ok)
+            })
             .await
             .map_err(|e| unavailable(&e))?
+            .map_err(|_| overtook())?
             .ok_or(IngestError::KeyGone)?;
         if unregistered > 0 {
             tracing::debug!(
@@ -253,6 +315,8 @@ impl Ingest {
                 "unknown boots over the edge's share; their records are kept as release unknown"
             );
         }
+
+        self.paused_at(IngestPoint::AfterBoots).await;
 
         // 4a. Records clamped from a later hour keep their first attempt's hour (core.md §6:
         // dedupe on (edge, boot, seq), whatever the clamp).
@@ -299,10 +363,12 @@ impl Ingest {
         }
         let answers = Arc::new(answers);
         let mut stored_hours = Vec::new();
-        // While a config restore empties the partitions of pre-restore records, the log writer
-        // refuses each write (`503`, the edge retries): checked on the writer thread, so it is
-        // ordered with the restore's deletions (core.md §2; `config::export::RestoreGate`).
-        let refuse = state.restore.logs_pending_flag();
+        // While a config restore empties the partitions of pre-restore records, or once one
+        // committed after the batch started, the log writer refuses each write (`503`, the edge
+        // retries): checked on the writer thread, so it is ordered with the restore's deletions
+        // (core.md §2; `config::export::RestoreGate`).
+        let g = gate.clone();
+        let refuse: super::writer::Refuse = Arc::new(move || g.logs_pending() || !g.is_current(generation));
         for (hour, rows) in by_hour {
             let n = rows.len();
             let out = self
@@ -345,37 +411,51 @@ impl Ingest {
             }
         }
 
+        self.paused_at(IngestPoint::AfterPartitions).await;
+
         // 5. Events, conditions and allows into core.db, with their alert effects.
         let ctx = OthersCtx::new(state, edge, key, &others).await;
+        let g = gate.clone();
         let mut effects = state
             .db
-            .write(move |c| store_others(c, &ctx, others))
+            .write(move |c| {
+                if !g.is_current(generation) {
+                    return Ok(Err(RestoreOvertook));
+                }
+                store_others(c, &ctx, others).map(Ok)
+            })
             .await
             .map_err(|e| unavailable(&e))?
+            .map_err(|_| overtook())?
             .ok_or(IngestError::KeyGone)?;
         report.events = effects.stored;
         if effects.failed > 0 {
             *batch.dropped.entry(DropReason::StoreFailed).or_insert(0) += effects.failed as u64;
         }
         state.alerts.announce(std::mem::take(&mut effects.alerts));
-        if effects.evidence_rules {
-            super::evidence::wake_backfills(state);
-        }
         if effects.revoke_list_changed {
             state.edges.publisher.trigger(Some(edge));
         }
 
+        self.paused_at(IngestPoint::AfterEvents).await;
+
         // 5b. Async lookups (core.md §7): verdicts, Blocks, retries, async attachments, re-check
         // deadlines and answers checked against Blocks, in core.db before the ack.
         let lookup_records: Vec<LookupRecord> = lookups.iter().map(|(_, l)| l.clone()).collect();
-        crate::lookups::ingest::apply(
+        crate::lookups::ingest::apply_within(
             state,
             edge,
             lookup_q.into_values().flatten().collect(),
             lookup_records,
+            Some(generation),
         )
         .await
-        .map_err(|e| unavailable(&e))?;
+        .map_err(|e| match e.downcast_ref::<RestoreOvertook>() {
+            Some(_) => overtook(),
+            None => unavailable(&e),
+        })?;
+
+        self.paused_at(IngestPoint::AfterLookups).await;
 
         // Metrics (core.md §10): at each record's event time.
         let now_ms = Timestamp::now().as_millisecond();
@@ -437,7 +517,15 @@ impl Ingest {
                 effects.tls_unlogged as f64,
             ));
         }
-        state.metrics.count(&state.metrics_db, items).await;
+        let g = gate.clone();
+        let current: crate::metrics::store::WriteGuard = Arc::new(move || g.is_current(generation));
+        if !state
+            .metrics
+            .count_if(&state.metrics_db, items, Some(current))
+            .await
+        {
+            return Err(overtook());
+        }
         report.dropped = batch
             .dropped
             .iter()
@@ -836,8 +924,6 @@ pub struct Effects {
     pub revoke_list_changed: bool,
     /// Allow records stored (a `temp_allow` UI event, api.md §7).
     pub allows: u64,
-    /// A raise made an evidence rule (`temporary_allow`): its backfill is woken after the commit.
-    pub evidence_rules: bool,
     /// The alert changes committed with these records.
     pub alerts: Changes,
 }
@@ -852,7 +938,6 @@ impl Effects {
         self.tls_unlogged += other.tls_unlogged;
         self.revoke_list_changed |= other.revoke_list_changed;
         self.allows += other.allows;
-        self.evidence_rules |= other.evidence_rules;
         self.alerts.extend(other.alerts);
     }
 }
@@ -872,8 +957,6 @@ pub struct OthersCtx {
     /// whether it still asks this edge for its bind, the bind, and whether the edge's
     /// `allowed_binds` admits it.
     listeners: Option<HashMap<String, (bool, String, bool)>>,
-    /// `alerts.temporary_allow` when the batch arrived (core.md §9: off by default).
-    temporary_allow_alerts: bool,
 }
 
 impl OthersCtx {
@@ -909,7 +992,6 @@ impl OthersCtx {
             hub: state.edges.hub.clone(),
             coalesced: state.events.coalesced().clone(),
             listeners,
-            temporary_allow_alerts: state.settings().alerts.temporary_allow,
         }
     }
 }
@@ -1201,16 +1283,13 @@ fn store_one(
         }
         Record::Allow(a) => {
             let ts = crate::util::ts(&a.h.ts);
-            let row: Option<(Option<String>, Option<String>)> = tx
+            let updated: Option<Option<String>> = tx
                 .query_row(
-                    "SELECT updated_at, created_at FROM temp_allows WHERE edge_id = ?1 AND allow_id = ?2",
+                    "SELECT updated_at FROM temp_allows WHERE edge_id = ?1 AND allow_id = ?2",
                     params![edge, a.allow_id],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    |r| r.get(0),
                 )
                 .optional()?;
-            // The allow's creation was stored before (a repeated delivery, or a re-time).
-            let creation_seen = row.as_ref().is_some_and(|(_, c)| c.is_some());
-            let updated = row.map(|(u, _)| u);
             // Delivery is at-least-once: a record older than the one applied changes nothing.
             if let Some(Some(u)) = &updated
                 && u.as_str() > ts.as_str()
@@ -1237,13 +1316,6 @@ fn store_one(
                             updated_at = excluded.updated_at",
                         params![edge, a.allow_id, a.client, a.device, kind, a.target, ts, expires],
                     )?;
-                    if a.action == AllowAction::Created
-                        && !creation_seen
-                        && ctx.temporary_allow_alerts
-                        && temporary_allow_in(tx, ctx, a, &mut fx.alerts)?
-                    {
-                        fx.evidence_rules = true;
-                    }
                 }
                 AllowAction::Revoked | AllowAction::Expired => {
                     tx.execute(
@@ -1264,59 +1336,6 @@ fn store_one(
         }
         _ => Ok(Stored::Old),
     }
-}
-
-/// `temporary_allow` (core.md §9: security, info, "an allow is created"), raised in the ingest
-/// transaction for a created allow core hadn't stored yet, whatever made it (`via`: the
-/// extension's bypass API, edge.md §12). Grouped by [`crate::alerts::temporary_allow_key`]; the
-/// details are the latest allow's. As a security alert it keeps full copies of its related log
-/// records (§9 Evidence), those of its key: the device's queries for names under the target's
-/// registrable domain (a DNS allow), or those whose answer holds the address (an IP allow); the
-/// rule and its backfill go in with the raise ([`super::evidence::raise_security_with_rule_in`]),
-/// and capture goes on until the alert is deleted, as for every security alert. Returns true
-/// when it made the rule (wake the backfill after the commit).
-fn temporary_allow_in(
-    tx: &Transaction<'_>,
-    ctx: &OthersCtx,
-    a: &picket_api::logs::AllowRecord,
-    ch: &mut Changes,
-) -> rusqlite::Result<bool> {
-    let dns = a.kind == picket_api::logs::AllowKind::Dns;
-    let device = a.device.as_deref().filter(|d| !d.is_empty()).unwrap_or(&a.client);
-    let key = crate::alerts::temporary_allow_key(&ctx.edge, device, dns, &a.target);
-    let expires = a.expires_at.map(|t| crate::util::ts(&t));
-    let title = format!(
-        "Edge {}: {} was allowed {} until {}",
-        ctx.name,
-        crate::util::sanitize_for_message(device, 64),
-        crate::util::sanitize_for_message(&a.target, 128),
-        expires.as_deref().unwrap_or("?")
-    );
-    let spec = RaiseSpec::new(
-        "temporary_allow",
-        Severity::Info,
-        key,
-        title,
-        json!({"edge": ctx.edge, "allow_id": a.allow_id, "device": a.device, "client": a.client,
-               "kind": enum_str(&a.kind), "target": a.target, "subdomains": a.subdomains,
-               "profile": a.profile, "block_id": a.block_id, "expires_at": expires, "via": a.via,
-               "created_at": crate::util::ts(&a.h.ts)}),
-    )
-    .edge(&ctx.edge);
-    let rule = if dns {
-        super::evidence::EvidenceRule {
-            domain: crate::psl::grouping_key(&a.target),
-            device: Some(device.to_string()),
-            ..Default::default()
-        }
-    } else {
-        super::evidence::EvidenceRule {
-            device: Some(device.to_string()),
-            ips: vec![a.target.clone()],
-            ..Default::default()
-        }
-    };
-    Ok(super::evidence::raise_security_with_rule_in(&ctx.alerts, tx, &spec, &rule, ch)?.is_some())
 }
 
 /// The edge's `temp_allows` row count.

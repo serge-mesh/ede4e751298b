@@ -210,6 +210,27 @@ pub fn cost_factor(mean_unchanged_bytes: Option<f64>) -> f64 {
     (b / 600.0).sqrt().clamp(1.0, 10.0)
 }
 
+/// A provider's last weekly `k` choice (feed-scheduling.md §5) as its status shows it
+/// (`feed_provider_state.k_choice_json`): what the planning budget did to it. The budget only
+/// picks among replayed schedules; this record is how a compromise it forced is diagnosed.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct KChoiceRecord {
+    pub chosen_at: String,
+    /// The pooled replay's window, `[window_start, window_end)`: the latest of the voting feeds'
+    /// replay starts, and the choice's time.
+    pub window_start: String,
+    pub window_end: String,
+    /// The voting feeds (those with a day or more of their own checks).
+    pub voting_feeds: Vec<String>,
+    /// The planning budget the choice was made under (checks a day, per provider).
+    pub budget_per_day: f64,
+    pub choice: learner::KChoice,
+    /// After a compromise (`slowed`, `none_fits`): each voting feed's estimated change in its
+    /// share of changes caught within 2 minutes, against its standalone schedule, both replayed
+    /// over the window. Empty when the budget changed nothing.
+    pub feeds: Vec<learner::FeedImpact>,
+}
+
 /// Unix seconds.
 pub fn to_secs(t: Timestamp) -> f64 {
     secs(t)

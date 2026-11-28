@@ -571,7 +571,23 @@ async fn blob_mismatch_and_rate_limits() {
     );
     match Module.check(&ctx(&opts, d.path(), None), &cfg(), None, &[], &[]).await {
         Err(CheckError::RateLimited { until }) => {
-            assert!(until <= Timestamp::now() + jiff::SignedDuration::from_hours(1) + jiff::SignedDuration::from_secs(5), "capped at 1 h");
+            // A valid deadline past an hour is kept whole (issue #65), not cut to an hour.
+            let want = Timestamp::from_second(reset).unwrap();
+            assert_eq!(until, want, "the reset time, 5 h away");
+        }
+        o => panic!("{o:?}"),
+    }
+    // A reset beyond the longest cooldown honoured is held to it.
+    let far = (Timestamp::now() + jiff::SignedDuration::from_hours(24 * 30)).as_second();
+    repo.lock().unwrap().rate_limit = Some(
+        Reply::status(403)
+            .header("x-ratelimit-remaining", "0")
+            .header("x-ratelimit-reset", &far.to_string()),
+    );
+    match Module.check(&ctx(&opts, d.path(), None), &cfg(), None, &[], &[]).await {
+        Err(CheckError::RateLimited { until }) => {
+            let max = Timestamp::now() + crate::modules::download::dates::MAX_COOLDOWN;
+            assert!(until <= max && until > max - jiff::SignedDuration::from_mins(1), "{until}");
         }
         o => panic!("{o:?}"),
     }

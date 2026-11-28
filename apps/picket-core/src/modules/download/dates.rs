@@ -166,13 +166,33 @@ pub fn find_date_line(head: &[u8], regex: Option<&regex::Regex>) -> Option<Times
     None
 }
 
-/// `Retry-After` (seconds or an HTTP date) as a time after `now`.
+/// The longest server cooldown honoured (`Retry-After`, GitHub's `x-ratelimit-reset`): a week.
+/// Any valid deadline up to it is kept whole, however far past an hour; a later one is held to
+/// it ([`bound_cooldown`]), so a bad header can't park a provider for good.
+pub const MAX_COOLDOWN: jiff::SignedDuration = jiff::SignedDuration::from_hours(7 * 24);
+
+/// `Retry-After` (RFC 9110 §10.2.3) as the deadline it names: delta-seconds (ASCII digits only;
+/// more than fit in 64 bits saturate) after `now`, or an HTTP date ([`parse_http_date`]).
+/// Unbounded and possibly not after `now`: [`bound_cooldown`] makes it a wait. `None` for
+/// anything else (a sign, a fraction, junk, more than [`MAX_DATE`] bytes).
 pub fn retry_after(v: &str, now: Timestamp) -> Option<Timestamp> {
     let v = v.trim();
-    if let Ok(secs) = v.parse::<u64>() {
-        return Some(now + jiff::SignedDuration::from_secs(crate::util::sat_i64(secs.min(86_400))));
+    if v.is_empty() || v.len() > MAX_DATE {
+        return None;
+    }
+    if v.bytes().all(|b| b.is_ascii_digit()) {
+        let secs = v.parse::<u64>().unwrap_or(u64::MAX);
+        let d = jiff::SignedDuration::from_secs(crate::util::sat_i64(secs));
+        return Some(picket_api::time::saturating_add(now, d));
     }
     parse_http_date(v)
+}
+
+/// A server's cooldown deadline as a wait from `now`: `None` when it isn't after `now` (nothing
+/// to wait for: the ordinary error backoff applies), else the deadline, held to at most
+/// [`MAX_COOLDOWN`] after `now`.
+pub fn bound_cooldown(until: Timestamp, now: Timestamp) -> Option<Timestamp> {
+    (until > now).then(|| until.min(picket_api::time::saturating_add(now, MAX_COOLDOWN)))
 }
 
 #[cfg(test)]
@@ -237,6 +257,27 @@ mod tests {
             Some(utc(2026, 1, 1, 0, 10, 0))
         );
         assert_eq!(retry_after("soon", now), None);
+        assert_eq!(retry_after("+5", now), None, "digits only");
+        assert_eq!(retry_after("1.5", now), None);
+        // Longer than an hour: kept whole.
+        assert_eq!(retry_after("7200", now), Some(utc(2026, 1, 1, 2, 0, 0)));
+    }
+
+    #[test]
+    fn cooldowns_are_bounded() {
+        let now = utc(2026, 1, 1, 0, 0, 0);
+        let h3 = utc(2026, 1, 1, 3, 0, 0);
+        assert_eq!(bound_cooldown(h3, now), Some(h3), "a 3 h wait is kept whole");
+        assert_eq!(bound_cooldown(now, now), None, "nothing to wait for");
+        assert_eq!(bound_cooldown(utc(2025, 12, 31, 0, 0, 0), now), None);
+        assert_eq!(
+            bound_cooldown(Timestamp::MAX, now),
+            Some(utc(2026, 1, 8, 0, 0, 0)),
+            "at most a week"
+        );
+        let huge = retry_after("99999999999999999999999", now).unwrap();
+        assert_eq!(huge, Timestamp::MAX, "saturates, never wraps");
+        assert_eq!(bound_cooldown(huge, now), Some(utc(2026, 1, 8, 0, 0, 0)));
     }
 
     fn f1(t: Option<picket_api::time::Timestamp>) -> Option<String> {
@@ -385,8 +426,7 @@ mod tests {
         for (input, want) in [
             ("120", Some("2026-11-13T10:24:01.000000Z")),
             (" 7 ", Some("2026-11-13T10:22:08.000000Z")),
-            ("100000", Some("2026-11-14T10:22:01.000000Z")),
-            ("18446744073709551615", Some("2026-11-14T10:22:01.000000Z")),
+            ("100000", Some("2026-11-14T14:08:41.000000Z")),
             (
                 "Fri, 13 Nov 2026 10:22:31 GMT",
                 Some("2026-11-13T10:22:31.000000Z"),
@@ -395,8 +435,8 @@ mod tests {
                 "Fri, 13 Nov 2026 10:00:00 GMT",
                 Some("2026-11-13T10:00:00.000000Z"),
             ),
-            ("18446744073709551616", None),
             ("-1", None),
+            ("+1", None),
             ("soon", None),
         ] {
             assert_eq!(f1(retry_after(input, now)).as_deref(), want, "{input:?}");

@@ -380,7 +380,7 @@ pub const TABLES: &[(&str, Fate)] = &[
     // Run ids and source generations: AUTOINCREMENT keeps them increasing across the restore.
     ("feed_run_ids", Fate::Deleted),
     ("feed_runs_open", Fate::Deleted),
-    ("module_pauses", Fate::Kept),
+    ("rate_limit_pauses", Fate::Kept),
     ("feed_imports", Fate::Deleted),
     ("feed_purges", Fate::Deleted),
     ("retro_runs", Fate::Deleted),
@@ -438,8 +438,8 @@ pub const TABLES: &[(&str, Fate)] = &[
 /// - The generation goes up on the writer, right after the restore's transaction commits
 ///   ([`RestoreGate::committed`]), so a write closure that runs after the commit sees the new
 ///   value: background work (DNSSEC validations, cross-checks, log analysis batches, evidence
-///   copies, bundle builds) takes the generation when it starts and writes nothing when it
-///   changed.
+///   copies, bundle builds, log batches: [`crate::logs::ingest`]) takes the generation when it
+///   starts and writes nothing when it changed.
 /// - `logs_pending`: the log partitions still hold pre-restore records until
 ///   [`finish_pending`] empties them; the analysis waits for that, and log batches are answered
 ///   `503` meanwhile (the edge keeps them in its spool and sends them again), so the partitions

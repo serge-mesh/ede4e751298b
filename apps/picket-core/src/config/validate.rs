@@ -1449,6 +1449,11 @@ fn trial_scope_rules(m: &Model, o: &mut Out) {
     }
 }
 
+/// True for an IPv6 link-local address (`fe80::/10`).
+fn is_link_local(ip: IpAddr) -> bool {
+    matches!(crate::net::canonical_ip(ip), IpAddr::V6(v6) if v6.is_unicast_link_local())
+}
+
 fn upstream_rules(m: &Model, o: &mut Out) {
     let e = "upstream";
     for (id, u) in &m.upstreams {
@@ -1465,6 +1470,18 @@ fn upstream_rules(m: &Model, o: &mut Out) {
         }
         if u.port == 0 {
             o.err(e, id, Some("port"), "range", "the port can't be 0".into());
+        }
+        // An IPv6 link-local address is reachable only through the interface it is scoped to,
+        // which an upstream (an IP and a port) can't say: the edge's socket would carry no scope
+        // and every query would fail (EINVAL), whatever the protocol.
+        if is_link_local(u.ip) {
+            o.err(
+                e,
+                id,
+                Some("ip"),
+                "link_local",
+                "an IPv6 link-local address (fe80::/10) needs an interface scope, which an upstream can't carry; use the resolver's ULA, private or global address, or 127.0.0.1/::1 for one beside the edge".into(),
+            );
         }
         // edge.md §6: presets fill `operator`, and a custom endpoint must set it.
         match u.operator.as_deref().map(str::trim) {
@@ -1498,9 +1515,7 @@ fn upstream_rules(m: &Model, o: &mut Out) {
         } else {
             // edge.md §6: plain upstreams only to private or loopback IPs.
             let ip = crate::net::canonical_ip(u.ip);
-            let local = ip.is_loopback()
-                || crate::net::is_lan_ip(&ip)
-                || matches!(ip, IpAddr::V6(v6) if (v6.segments()[0] & 0xffc0) == 0xfe80);
+            let local = ip.is_loopback() || crate::net::is_lan_ip(&ip) || is_link_local(ip);
             if !local {
                 o.err(
                     e,
@@ -1662,6 +1677,8 @@ fn feed_provider_rules(m: &Model, o: &mut Out) {
     let e = "feed_provider";
     let reg = crate::modules::download::builtin();
     let mut queues: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    // Every provider's location once, for the overlap warnings below.
+    let overlaps = crate::feeds::select::Overlaps::new(m);
     for (id, p) in &m.feed_providers {
         check_id(o, e, id);
         check_name(o, e, id, &p.name);
@@ -1888,7 +1905,7 @@ fn feed_provider_rules(m: &Model, o: &mut Out) {
             }
         }
         // providers.md §2: overlapping providers save with a warning naming the other.
-        let others = crate::feeds::select::overlapping(m, p);
+        let others = overlaps.of(p);
         if !others.is_empty() {
             let what = if module.as_ref().is_some_and(|md| md.fixed_file().is_some()) {
                 "has the same URL"

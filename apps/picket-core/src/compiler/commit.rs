@@ -27,7 +27,7 @@ pub async fn commit(state: &SharedState, bundle: &str, ctx: Ctx, started: std::t
     let now = crate::util::now_ts();
     let b = bundle.to_string();
     let alerts = state.alerts.clone();
-    let members: Vec<String> = ctx.spec.members.iter().map(|m| m.feed.clone()).collect();
+    let members = ctx.spec.members.clone();
     let runs_json = super::spec::runs_json(&ctx.runs);
     let def_hash = ctx.spec.def_hash.clone();
     // Replay reads each member feed as this version took it (core.md §6 step 1).

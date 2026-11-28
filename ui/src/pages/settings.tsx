@@ -57,17 +57,6 @@ const TABS: [string, string][] = [
   ["changes", "Change journal"],
 ];
 
-/** Settings → Alerts: `alerts.temporary_allow` (core.md §9: off by default) says what it does. */
-const ALERTS_LABELS = { "alerts.temporary_allow": "Alert on temporary allows" };
-const ALERTS_OVERRIDES: Record<string, FieldOverride> = {
-  "alerts.temporary_allow": ({ renderDefault }) => (
-    <div className="space-y-1">
-      {renderDefault()}
-      <p className="text-xs text-muted-foreground">Raises an info alert whenever an edge creates a temporary allow.</p>
-    </div>
-  ),
-};
-
 export function SettingsPage() {
   const search = useSearch({ strict: false }) as { tab?: string };
   const navigate = useNavigate();
@@ -128,9 +117,7 @@ export function SettingsPage() {
             <SettingsSection
               keys={["alerts"]}
               title="Alerts"
-              description="Thresholds per alert kind (how long a condition must hold), the evidence limits, and alerts that are off by default."
-              labels={ALERTS_LABELS}
-              overrides={ALERTS_OVERRIDES}
+              description="Thresholds per alert kind (how long a condition must hold), the evidence limits and the feed_stale allowance."
             />
           </TabsContent>
           <TabsContent value="edges">

@@ -1841,12 +1841,6 @@ export interface components {
              */
             feed_stale_days?: number;
             /**
-             * @description Raise `temporary_allow` (security, info) when an edge logs a created temporary allow:
-             *     off by default (core.md §9).
-             * @default false
-             */
-            temporary_allow?: boolean;
-            /**
              * @description Alert kind → how long its condition must hold before it fires (core.md §9). Kinds not
              *     listed use core.md §9's defaults: `edge_offline` 5 min; `edge_upstream_down`,
              *     `edge_redirect_missing`, `edge_fw_layout_unknown` and `edge_fw_catch_all` 2 min;
@@ -1989,6 +1983,8 @@ export interface components {
              */
             enabled?: boolean;
         };
+        /** @description How the planning budget shaped a provider's `k` (`KChoice::budget`). */
+        BudgetFit: "within" | "slowed" | "none_fits";
         BuildQueued: {
             bundle: string;
             queued: boolean;
@@ -2169,7 +2165,7 @@ export interface components {
             at?: string | null;
             /**
              * @description `started`, `queued` (a check of the provider is in progress: another runs when it ends)
-             *     or `scheduled` (`min_interval`, or the module's rate-limit pause).
+             *     or `scheduled` (`min_interval`, or a rate-limit pause of the provider's scope).
              */
             result: string;
         };
@@ -3349,6 +3345,33 @@ export interface components {
         };
         /** @enum {string} */
         FeedFormat: "adblock" | "hosts" | "plain" | "misp-warninglist";
+        /**
+         * @description One feed's estimated cost of a budget-driven compromise (`slowed`, `none_fits`): its share of
+         *     changes caught within 2 minutes on its standalone schedule (alone, at its own choice) against
+         *     the provider's (beside its siblings, at the `k` taken), both replayed over the same window.
+         */
+        FeedImpact: {
+            /**
+             * Format: double
+             * @description `grouped − standalone`, in percentage points (negative: the compromise costs this feed).
+             */
+            change_points: number;
+            /**
+             * Format: uint
+             * @description Its changes in the window.
+             */
+            changes: number;
+            feed: string;
+            /** Format: double */
+            grouped_share_2min: number;
+            /**
+             * Format: double
+             * @description The feed's own choice (`choose_k`); `None` when its replay saw no change.
+             */
+            standalone_k?: number | null;
+            /** Format: double */
+            standalone_share_2min: number;
+        };
         /** @description A JSON export (first key picket_feed_export, feed before entries), or {"file": "…"} holding a file export or a plain list as text. The body may be gzip-compressed; up to 32 times the download size cap after decompression. */
         FeedImport: components["schemas"]["FeedExport"] | {
             file: string;
@@ -3451,6 +3474,21 @@ export interface components {
             /** @description The file version it read. */
             version: string | null;
         };
+        /** @description One feed's part of a provider replay (`SimResult::feeds`). */
+        FeedSim: {
+            /**
+             * Format: uint
+             * @description Changes caught within 2 minutes.
+             */
+            caught_2min: number;
+            /** Format: uint */
+            changes: number;
+            /**
+             * Format: double
+             * @description `caught_2min ÷ changes` (1 without changes).
+             */
+            share_2min: number;
+        };
         /** @description A feed's status (feeds.md §6, feed-scheduling.md §6 UI). */
         FeedStatus: {
             /** @description A check or run is in progress. */
@@ -3503,7 +3541,10 @@ export interface components {
             p90_delay_s?: number | null;
             /** @description The learned pattern in words. */
             pattern?: string | null;
-            /** @description The module's rate-limit pause. */
+            /**
+             * @description The rate-limit pause of the provider's scope (a server cooldown: `github`'s rate limit,
+             *     or an `http` origin's `Retry-After`): no check, "Check now" included, starts before it.
+             */
             paused_until?: string | null;
             /** @description Its feed provider (null for a manual feed). */
             provider?: string | null;
@@ -3866,6 +3907,57 @@ export interface components {
             light_depth: number;
             /** Format: uint64 */
             light_dropped: number;
+        };
+        /** @description The weekly `k` choice of a provider with the planning budget's part in it (`provider_k`). */
+        KChoice: {
+            budget: components["schemas"]["BudgetFit"];
+            /** Format: double */
+            checks_per_day?: number | null;
+            /**
+             * Format: double
+             * @description The `k` taken.
+             */
+            k: number;
+            /**
+             * Format: double
+             * @description The most aggressive of the feeds' own choices: what the provider would take without the
+             *     budget.
+             */
+            preferred: number;
+            /**
+             * Format: double
+             * @description The pooled replay's predicted checks a day at `preferred` and at `k` (`None` when it
+             *     didn't replay that `k`).
+             */
+            preferred_checks_per_day?: number | null;
+        };
+        /**
+         * @description A provider's last weekly `k` choice (feed-scheduling.md §5) as its status shows it
+         *     (`feed_provider_state.k_choice_json`): what the planning budget did to it. The budget only
+         *     picks among replayed schedules; this record is how a compromise it forced is diagnosed.
+         */
+        KChoiceRecord: {
+            /**
+             * Format: double
+             * @description The planning budget the choice was made under (checks a day, per provider).
+             */
+            budget_per_day: number;
+            choice: components["schemas"]["KChoice"];
+            chosen_at: string;
+            /**
+             * @description After a compromise (`slowed`, `none_fits`): each voting feed's estimated change in its
+             *     share of changes caught within 2 minutes, against its standalone schedule, both replayed
+             *     over the window. Empty when the budget changed nothing.
+             */
+            feeds: components["schemas"]["FeedImpact"][];
+            /** @description The voting feeds (those with a day or more of their own checks). */
+            voting_feeds: string[];
+            window_end: string;
+            /**
+             * @description The pooled replay's window, `[window_start, window_end)`: the latest of the voting feeds'
+             *     replay starts, and the choice's time.
+             */
+            window_start: string;
         };
         /** @description A `lagged` frame's data: this socket missed `missed` events (it closes next; refetch). */
         LaggedEvent: {
@@ -4790,6 +4882,19 @@ export interface components {
              */
             misp_type?: string | null;
             /**
+             * @description The first few of those rules: line, reason, text (cut).
+             * @default []
+             */
+            notice_samples?: components["schemas"]["ErrorSample"][];
+            /**
+             * @description Rules kept that are worth a look, by reason (`BroadBrowser`: a browser rule with no
+             *     restriction whose pattern matches most requests). They are entries like any other.
+             * @default {}
+             */
+            notices?: {
+                [key: string]: number;
+            };
+            /**
              * Format: uint64
              * @default 0
              */
@@ -5070,6 +5175,14 @@ export interface components {
              * @description The aggressiveness chosen weekly (`dynamic`).
              */
             k?: number | null;
+            /**
+             * @description The last weekly choice of `k` with the per-provider planning budget's part in it: the
+             *     preferred and selected `k`, whether the budget slowed the provider (`slowed`) or no `k`
+             *     fit it (`none_fits`), the replay window, the predicted checks a day and, after such a
+             *     compromise, each feed's estimated change in its share caught within 2 minutes. The budget
+             *     is a planning figure, not a runtime quota.
+             */
+            k_choice?: components["schemas"]["KChoiceRecord"] | null;
             last_check?: string | null;
             last_ok?: string | null;
             listing?: components["schemas"]["ListingSummary"] | null;
@@ -5079,7 +5192,10 @@ export interface components {
             name: string;
             next_check?: string | null;
             nudged_at?: string | null;
-            /** @description The module's rate-limit pause. */
+            /**
+             * @description The rate-limit pause of the provider's scope (a server cooldown: `github`'s rate limit,
+             *     or an `http` origin's `Retry-After`): no check, "Check now" included, starts before it.
+             */
             paused_until?: string | null;
             provider: string;
             /** @description An `sqs` trigger: the last receive, message and error; a pending nudge. */
@@ -5550,7 +5666,6 @@ export interface components {
              *       "evidence_per_alert": 1000,
              *       "evidence_total_mib": 128,
              *       "feed_stale_days": 30,
-             *       "temporary_allow": false,
              *       "thresholds": {}
              *     }
              */
@@ -5684,11 +5799,6 @@ export interface components {
                 evidence_total_mib?: number | null;
                 /** @description The days per false `feed_stale` alert its threshold allows (feed-scheduling.md §8). */
                 feed_stale_days?: number | null;
-                /**
-                 * @description Raise `temporary_allow` (security, info) when an edge logs a created temporary allow:
-                 *     off by default (core.md §9).
-                 */
-                temporary_allow?: boolean | null;
                 /**
                  * @description Alert kind → how long its condition must hold before it fires (core.md §9). Kinds not
                  *     listed use core.md §9's defaults: `edge_offline` 5 min; `edge_upstream_down`,
@@ -5861,6 +5971,11 @@ export interface components {
             checks: number;
             /** Format: double */
             checks_per_day: number;
+            /**
+             * @description A provider replay's result per feed, in the order of its feeds, so an aggregate never
+             *     hides one feed's losses (empty for a single-feed simulation, `simulate`).
+             */
+            feeds: components["schemas"]["FeedSim"][];
             /** Format: double */
             k: number;
             /** Format: double */
@@ -6464,7 +6579,7 @@ export interface operations {
                 /** @description open or resolved */
                 state?: "open" | "resolved";
                 /** @description An alert kind */
-                kind?: "dnssec_bogus" | "upstream_disagrees" | "category_answered" | "category_blocked" | "broad_allow" | "upstream_invalid_spike" | "edge_key_mismatch" | "feed_rules_dropped" | "feed_redirect_added" | "temporary_allow" | "ui_auth_failures" | "edge_offline" | "edge_update_failed" | "edge_activation_failed" | "edge_listener_rejected" | "edge_listener_failed" | "edge_upstream_down" | "edge_spool_evicting" | "edge_memory_low" | "edge_fw_set_full" | "edge_fw_repairs" | "edge_fw_drift" | "edge_helper_unreachable" | "edge_ssd_unavailable" | "edge_crash_loop" | "edge_panic" | "edge_redirect_missing" | "edge_unifi_conflict" | "edge_fw_layout_unknown" | "edge_fw_catch_all" | "edge_helper_disabled" | "edge_page_file_refetched" | "edge_tls_version_refused" | "edge_firmware_unsupported" | "edge_firmware_check_failed" | "release_invalid" | "feed_provider_down" | "feed_down" | "feed_stale" | "feed_added" | "feed_provider_trigger_down" | "feed_provider_listing_incomplete" | "feed_limit_reached" | "config_upgraded" | "feed_held" | "bundle_build_failed" | "bundle_over_budget" | "bundle_cold_share" | "broad_block" | "allow_override" | "bundle_warning" | "warninglist_hit" | "lookup_provider_down" | "lookup_self_test_failed" | "dnssec_unavailable" | "attribution_mismatch" | "attribution_unavailable" | "wire_mismatch" | "core_disk_low" | "alert_evidence_full";
+                kind?: "dnssec_bogus" | "upstream_disagrees" | "category_answered" | "category_blocked" | "broad_allow" | "upstream_invalid_spike" | "edge_key_mismatch" | "feed_rules_dropped" | "feed_redirect_added" | "ui_auth_failures" | "edge_offline" | "edge_update_failed" | "edge_activation_failed" | "edge_listener_rejected" | "edge_listener_failed" | "edge_upstream_down" | "edge_spool_evicting" | "edge_memory_low" | "edge_fw_set_full" | "edge_fw_repairs" | "edge_fw_drift" | "edge_helper_unreachable" | "edge_ssd_unavailable" | "edge_crash_loop" | "edge_panic" | "edge_redirect_missing" | "edge_unifi_conflict" | "edge_fw_layout_unknown" | "edge_fw_catch_all" | "edge_helper_disabled" | "edge_page_file_refetched" | "edge_tls_version_refused" | "edge_firmware_unsupported" | "edge_firmware_check_failed" | "release_invalid" | "feed_provider_down" | "feed_down" | "feed_stale" | "feed_added" | "feed_provider_trigger_down" | "feed_provider_listing_incomplete" | "feed_limit_reached" | "config_upgraded" | "feed_held" | "bundle_build_failed" | "bundle_over_budget" | "bundle_cold_share" | "broad_block" | "allow_override" | "bundle_warning" | "warninglist_hit" | "lookup_provider_down" | "lookup_self_test_failed" | "dnssec_unavailable" | "attribution_mismatch" | "attribution_unavailable" | "wire_mismatch" | "core_disk_low" | "alert_evidence_full";
                 /** @description An edge id */
                 edge?: string;
                 /** @description The `next_cursor` of the previous page. */

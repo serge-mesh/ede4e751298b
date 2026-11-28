@@ -755,6 +755,33 @@ pub struct SimResult {
     pub share_2min: f64,
     pub median_delay_s: Option<f64>,
     pub p90_delay_s: Option<f64>,
+    /// A provider replay's result per feed, in the order of its feeds, so an aggregate never
+    /// hides one feed's losses (empty for a single-feed simulation, `simulate`).
+    pub feeds: Vec<FeedSim>,
+}
+
+/// One feed's part of a provider replay (`SimResult::feeds`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct FeedSim {
+    pub changes: usize,
+    /// Changes caught within 2 minutes.
+    pub caught_2min: usize,
+    /// `caught_2min ÷ changes` (1 without changes).
+    pub share_2min: f64,
+}
+
+impl FeedSim {
+    fn new(changes: usize, caught_2min: usize) -> Self {
+        Self {
+            changes,
+            caught_2min,
+            share_2min: if changes == 0 {
+                1.0
+            } else {
+                caught_2min as f64 / changes as f64
+            },
+        }
+    }
 }
 
 /// Replays `[start, end)` with simulated checks: `base` is the learner trained on what came
@@ -832,6 +859,7 @@ pub fn simulate(
         },
         median_delay_s: pct(0.5),
         p90_delay_s: pct(0.9),
+        feeds: vec![],
     }
 }
 
@@ -876,6 +904,7 @@ pub fn simulate_provider(
         .collect();
     let total: usize = sorted.iter().map(Vec::len).sum();
     let mut idx = vec![0usize; ls.len()];
+    let mut caught_by_feed = vec![0usize; ls.len()];
     let mut delays = Vec::new();
     let mut checks = 0usize;
     let mut last = start;
@@ -910,6 +939,9 @@ pub fn simulate_provider(
             }
             for c in &seen {
                 delays.push(next - c);
+                if next - c <= 120.0 {
+                    caught_by_feed[j] += 1;
+                }
             }
             let changed = !seen.is_empty();
             l.observe(
@@ -955,11 +987,22 @@ pub fn simulate_provider(
         },
         median_delay_s: pct(0.5),
         p90_delay_s: pct(0.9),
+        feeds: sorted
+            .iter()
+            .zip(&caught_by_feed)
+            .map(|(c, n)| FeedSim::new(c.len(), *n))
+            .collect(),
     }
 }
 
-/// The `k` values tried each week, and the daily budget.
+/// The `k` values tried each week.
 pub const K_CHOICES: [f64; 4] = [1.0, 2.0, 3.0, 5.0];
+/// The per-provider **planning budget** (feed-scheduling.md §5): the checks a day a provider's
+/// replayed schedule may predict when the weekly choice picks its `k`. It shapes which `k` is
+/// chosen and nothing else: it is not a runtime quota (when no `k` fits, the least aggressive is
+/// used anyway, [`BudgetFit::NoneFits`]), it guarantees no detection rate (the backtests measure
+/// that, per feed, [`crate::backtest`]), and it isn't what keeps core from asking a server too
+/// often (the error backoff, `min_interval` and server cooldowns do that, in core).
 pub const BUDGET_PER_DAY: f64 = 400.0;
 /// The days the weekly `k` replay covers (feed-scheduling.md §5): long enough that a feed
 /// changing once a day brings ~28 changes, so one change more or less is noise, not a verdict.
@@ -1021,24 +1064,106 @@ pub fn choose_k(results: &[SimResult]) -> Option<f64> {
 /// eagerly than it would be alone, and feeds that change together don't count a change twice;
 /// but if `pooled` (the replay of all those feeds together) puts that `k` over the budget, the
 /// most aggressive `k` that keeps within it, else the largest. `None` (keep `k`) when no feed
-/// has a choice.
+/// has a choice. [`provider_k_choice`] says how the budget shaped it.
 pub fn provider_k<'a>(
     per_feed: impl IntoIterator<Item = &'a [SimResult]>,
     pooled: &[SimResult],
 ) -> Option<f64> {
-    let want = per_feed.into_iter().filter_map(choose_k).reduce(f64::min)?;
-    let fits = |k: f64| {
-        pooled
-            .iter()
-            .find(|r| r.k == k)
-            .is_none_or(|r| r.checks_per_day <= BUDGET_PER_DAY)
-    };
-    K_CHOICES
+    provider_k_choice(per_feed, pooled).map(|c| c.k)
+}
+
+/// How the planning budget shaped a provider's `k` (`KChoice::budget`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BudgetFit {
+    /// The feeds' preferred `k` fits the budget: the provider takes it.
+    Within,
+    /// The preferred `k` predicts more checks a day than the budget: the provider takes the most
+    /// aggressive `k` that fits, less eager than its feeds would be.
+    Slowed,
+    /// No `k` fits: the least aggressive is taken anyway (the budget is no runtime ceiling).
+    NoneFits,
+}
+
+/// The weekly `k` choice of a provider with the planning budget's part in it (`provider_k`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct KChoice {
+    /// The `k` taken.
+    pub k: f64,
+    /// The most aggressive of the feeds' own choices: what the provider would take without the
+    /// budget.
+    pub preferred: f64,
+    pub budget: BudgetFit,
+    /// The pooled replay's predicted checks a day at `preferred` and at `k` (`None` when it
+    /// didn't replay that `k`).
+    pub preferred_checks_per_day: Option<f64>,
+    pub checks_per_day: Option<f64>,
+}
+
+/// [`provider_k`] with how the budget shaped the choice.
+pub fn provider_k_choice<'a>(
+    per_feed: impl IntoIterator<Item = &'a [SimResult]>,
+    pooled: &[SimResult],
+) -> Option<KChoice> {
+    let preferred = per_feed.into_iter().filter_map(choose_k).reduce(f64::min)?;
+    let cpd = |k: f64| pooled.iter().find(|r| r.k == k).map(|r| r.checks_per_day);
+    let fits = |k: f64| cpd(k).is_none_or(|c| c <= BUDGET_PER_DAY);
+    let fitting = K_CHOICES
         .iter()
         .copied()
-        .filter(|k| *k >= want)
-        .find(|k| fits(*k))
-        .or_else(|| K_CHOICES.iter().copied().reduce(f64::max))
+        .filter(|k| *k >= preferred)
+        .find(|k| fits(*k));
+    let (k, budget) = match fitting {
+        Some(k) if k == preferred => (k, BudgetFit::Within),
+        Some(k) => (k, BudgetFit::Slowed),
+        None => (
+            K_CHOICES.iter().copied().fold(preferred, f64::max),
+            BudgetFit::NoneFits,
+        ),
+    };
+    Some(KChoice {
+        k,
+        preferred,
+        budget,
+        preferred_checks_per_day: cpd(preferred),
+        checks_per_day: cpd(k),
+    })
+}
+
+/// One feed's estimated cost of a budget-driven compromise (`slowed`, `none_fits`): its share of
+/// changes caught within 2 minutes on its standalone schedule (alone, at its own choice) against
+/// the provider's (beside its siblings, at the `k` taken), both replayed over the same window.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct FeedImpact {
+    pub feed: String,
+    /// The feed's own choice (`choose_k`); `None` when its replay saw no change.
+    pub standalone_k: Option<f64>,
+    /// Its changes in the window.
+    pub changes: usize,
+    pub standalone_share_2min: f64,
+    pub grouped_share_2min: f64,
+    /// `grouped − standalone`, in percentage points (negative: the compromise costs this feed).
+    pub change_points: f64,
+}
+
+impl FeedImpact {
+    /// The impact from the two shares (0–1).
+    pub fn new(
+        feed: String,
+        standalone_k: Option<f64>,
+        changes: usize,
+        standalone_share_2min: f64,
+        grouped_share_2min: f64,
+    ) -> Self {
+        Self {
+            feed,
+            standalone_k,
+            changes,
+            standalone_share_2min,
+            grouped_share_2min,
+            change_points: (grouped_share_2min - standalone_share_2min) * 100.0,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1428,11 +1553,84 @@ mod tests {
             pooled(5.0, 200.0),
         ];
         assert_eq!(provider_k([&busy[..], &rare[..]], &together), Some(3.0));
-        let flooded = together.map(|r| SimResult {
+        let flooded = together.clone().map(|r| SimResult {
             checks_per_day: 900.0,
             ..r
         });
         assert_eq!(provider_k([&busy[..], &rare[..]], &flooded), Some(5.0));
+
+        // How the budget shaped each choice (issue #65): the diagnostics tell a fit, a slowdown
+        // and a fallback apart.
+        let c = provider_k_choice([&busy[..], &rare[..]], &[]).unwrap();
+        assert_eq!((c.k, c.preferred, c.budget), (2.0, 2.0, BudgetFit::Within));
+        assert_eq!(c.checks_per_day, None, "no pooled replay");
+        let c = provider_k_choice([&busy[..], &rare[..]], &together).unwrap();
+        assert_eq!(
+            c,
+            KChoice {
+                k: 3.0,
+                preferred: 2.0,
+                budget: BudgetFit::Slowed,
+                preferred_checks_per_day: Some(420.0),
+                checks_per_day: Some(330.0),
+            }
+        );
+        let c = provider_k_choice([&busy[..], &rare[..]], &flooded).unwrap();
+        assert_eq!((c.k, c.preferred, c.budget), (5.0, 2.0, BudgetFit::NoneFits));
+        assert_eq!(c.checks_per_day, Some(900.0), "over the budget all the same");
+        assert_eq!(provider_k_choice([&quiet[..]], &[]), None);
+        let impact = FeedImpact::new("f".into(), Some(2.0), 40, 0.9, 0.85);
+        assert!((impact.change_points + 5.0).abs() < 1e-9, "{impact:?}");
+    }
+
+    /// A provider replay reports each feed's own catches (issue #65), so an aggregate can't hide
+    /// one feed's losses: the per-feed figures add up to the aggregate.
+    #[test]
+    fn provider_replays_report_each_feed() {
+        let start = 1_800_000_000.0 - (1_800_000_000.0 % H);
+        let hourly: Vec<f64> = (0..24 * 14).map(|i| start + i as f64 * H + 300.0).collect();
+        let daily: Vec<f64> = (0..14).map(|i| start + i as f64 * DAY + 4.0 * H).collect();
+        let mut warm_h = Learner::new();
+        let mut warm_d = Learner::new();
+        for d in 0..14 {
+            let t = start - 14.0 * DAY + d as f64 * DAY;
+            let hours: Vec<f64> = (0..24).map(|h| t + h as f64 * H + 300.0).collect();
+            warm_h.observe(
+                &Obs {
+                    t: t + DAY - 1.0,
+                    exact: hours,
+                    interval: false,
+                },
+                true,
+            );
+            warm_d.observe(
+                &Obs {
+                    t: t + DAY - 1.0,
+                    exact: vec![t + 4.0 * H],
+                    interval: false,
+                },
+                true,
+            );
+        }
+        let r = simulate_provider(
+            &[(warm_h, hourly.clone()), (warm_d, daily.clone())],
+            start,
+            start + 14.0 * DAY,
+            3.0,
+            1.0,
+            120.0,
+        );
+        assert_eq!(r.feeds.len(), 2);
+        assert_eq!(r.feeds[0].changes, hourly.len());
+        assert_eq!(r.feeds[1].changes, daily.len());
+        assert_eq!(r.feeds.iter().map(|f| f.changes).sum::<usize>(), r.changes);
+        assert_eq!(
+            r.feeds.iter().map(|f| f.caught_2min).sum::<usize>(),
+            r.caught_2min
+        );
+        for f in &r.feeds {
+            assert!((f.share_2min - f.caught_2min as f64 / f.changes as f64).abs() < 1e-12);
+        }
     }
 
     /// feed-scheduling.md §5 "`k`": each feed's replay starts at its own checks: a feed with
