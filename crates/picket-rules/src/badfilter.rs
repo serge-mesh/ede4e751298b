@@ -452,6 +452,27 @@ fn scan<F: PartialEq>(
     keyed_pattern_cancellations(rules, &eff, feeds, limits, c, budget)
 }
 
+/// True when the cross-feed scan takes `r` as an exception pattern: an exception no key stands
+/// for ([`keyed_equivalent_key`]), which cancels a keyed block of another feed by matching the
+/// block's name or some name below it. It meets a keyed block only when the block is among the
+/// rules scanned, so a caller scanning part of a bundle must give it every keyed block (or say
+/// that it couldn't).
+pub fn is_pattern_exception(r: &Rule) -> bool {
+    r.is_exception()
+        && !r.is_badfilter()
+        && !r.is_rewrite()
+        && !r.kind.is_browser()
+        && matches!(r.kind, Kind::Pattern | Kind::Regex)
+        && keyed_equivalent(r).is_none()
+}
+
+/// The reversed key a pattern rule stands for on ordinary names, with its forms (see
+/// [`keyed_equivalent`]): the scan decides such a pattern as that key, so it meets the rules at
+/// the key, above it and (with a `_SUBS` form) below it.
+pub fn keyed_equivalent_key(r: &Rule) -> Option<(String, Flags)> {
+    keyed_equivalent(r).map(|(n, f)| (n.reversed(), f))
+}
+
 /// The key a pattern rule stands for on ordinary names, with its forms: `||name^` and
 /// `||name^|` match the name and its subdomains, `|name^` and `|name^|` the name alone (a
 /// separator can't be an ordinary name byte). The scan takes such a pattern as that key (AdGuard
@@ -1063,6 +1084,24 @@ mod tests {
             has(11, 1),
             "ads.same-feed.example is below the key and matches /^ads\\./"
         );
+    }
+
+    #[test]
+    fn pattern_exceptions_are_those_no_key_stands_for() {
+        let r = rules(&[
+            "@@/^ads\\./",              // 0 an exception pattern
+            "@@||ads*.example^",        // 1 a wildcard: no key
+            "@@||ads.example^|",        // 2 stands for its key
+            "/^ads\\./",                // 3 a block pattern
+            "@@||ads.example^",         // 4 a keyed exception
+            "@@||x.example^$badfilter", // 5 a $badfilter
+        ]);
+        let got: Vec<bool> = r.iter().map(is_pattern_exception).collect();
+        assert_eq!(got, [true, true, false, false, false, false], "{r:#?}");
+        let (key, flags) = keyed_equivalent_key(&r[2]).expect("||name^ stands for its key");
+        assert_eq!(key, "example.ads");
+        assert!(flags.intersects(Flags::ALL_SUBS));
+        assert!(keyed_equivalent_key(&r[0]).is_none());
     }
 
     #[test]
