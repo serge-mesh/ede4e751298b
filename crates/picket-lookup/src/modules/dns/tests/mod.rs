@@ -125,6 +125,34 @@ async fn run_fixtures(file: &str, text: &str, cfg: Value) -> usize {
         assert_eq!(rule, c.rule, "{file} {}", c.case);
         let d = a.detail.unwrap();
         assert!(serde_json::to_string(&d).unwrap().len() < crate::DETAIL_MAX);
+        // A Clean verdict alone doesn't establish that a recording exercises NXDOMAIN or
+        // EDE 29: a NOERROR/NODATA answer also falls through to Clean.
+        match c.case.as_str() {
+            "nonexistent" => {
+                assert_eq!(d["rcode"], "NXDOMAIN", "{file} {}", c.case);
+                assert_eq!(d["soa"], true, "{file} {}", c.case);
+            }
+            "synthesized" => {
+                assert_eq!(d["rcode"], "NXDOMAIN", "{file} {}", c.case);
+                assert!(
+                    d["ede"].as_array().unwrap().iter().any(|e| e["code"] == 29),
+                    "{file} {}: missing EDE 29: {d}",
+                    c.case
+                );
+            }
+            "servfail" => assert_eq!(d["rcode"], "SERVFAIL", "{file} {}", c.case),
+            "blocked" if file.starts_with("nextdns-") => {
+                assert_eq!(d["rcode"], "NOERROR", "{file} {}", c.case);
+                assert_eq!(d["answers"], json!(["0.0.0.0"]), "{file} {}", c.case);
+                assert_eq!(
+                    d["ede"],
+                    json!([{"code": 17, "text": "Blocked by NextDNS: blacklist"}]),
+                    "{file} {}",
+                    c.case
+                );
+            }
+            _ => {}
+        }
         if let Verdict::Block { reason, .. } = &a.verdict {
             assert_eq!(Some(reason), c.rule.as_ref(), "a Block's reason is the rule id");
         }
@@ -142,7 +170,7 @@ async fn quad9_answers_per_transport() {
     ] {
         assert_eq!(run_fixtures(file, text, quad9_config(t)).await, 8);
     }
-    // Plain UDP to a Quad9-like resolver: the same rules over `udp`.
+    // Live Quad9 replies over plain UDP: the same rules over `udp`.
     let mut cfg = quad9_config(Encrypted::Dot);
     cfg["transport"] = json!("udp");
     assert_eq!(
@@ -151,8 +179,8 @@ async fn quad9_answers_per_transport() {
     );
 }
 
-/// build-and-test.md §5 "DNS lookups": NextDNS for a denylisted name and `0.0.0.0` without EDE,
-/// plus live recordings of a normal and a nonexistent name, per transport.
+/// Live NextDNS replies for a denylisted name, a normal name and NXDOMAIN, plus a synthetic
+/// `0.0.0.0` answer without EDE, per transport.
 #[tokio::test]
 async fn nextdns_answers_per_transport() {
     for (file, text, t) in [
