@@ -8702,6 +8702,78 @@
         ],
         "type": "object"
       },
+      "PublicSuffixRule": {
+        "description": "One rule behind a public-suffix block: its text and source line, as the feed lists it now.",
+        "properties": {
+          "line": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rule": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "PublicSuffixView": {
+        "description": "One public suffix a bundle blocks below the top level, from one feed.",
+        "properties": {
+          "feed": {
+            "type": "string"
+          },
+          "rules": {
+            "description": "The feed's rules blocking it (more than one when several rules name it).",
+            "items": {
+              "$ref": "#/components/schemas/PublicSuffixRule"
+            },
+            "type": "array"
+          },
+          "suffix": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "feed",
+          "suffix",
+          "rules"
+        ],
+        "type": "object"
+      },
+      "PublicSuffixes": {
+        "description": "The public suffixes a bundle blocks below the top level, ordered by feed then suffix, with\nthe exact totals behind the grouped warnings.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PublicSuffixView"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "description": "Pass as `cursor` for the next page; null on the last page.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "total": {
+            "description": "Distinct (feed, suffix) pairs in all, over every page.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "items"
+        ],
+        "type": "object"
+      },
       "Recheck": {
         "properties": {
           "after": {
@@ -12916,6 +12988,76 @@
           }
         },
         "summary": "How the bundle's current rules decide a name or an address (picket-rules' reference matcher)",
+        "tags": [
+          "bundles"
+        ]
+      }
+    },
+    "/api/ui/v1/bundles/{id}/public-suffixes": {
+      "get": {
+        "operationId": "listBundlePublicSuffixes",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only this feed's suffixes.",
+            "in": "query",
+            "name": "feed",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The `next_cursor` of the previous page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Items per page (default 100, 1 to 500; else 400).",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicSuffixes"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "The public suffixes the bundle blocks, by feed, with the rules that name each (the full list behind its grouped public_suffix alerts)",
         "tags": [
           "bundles"
         ]

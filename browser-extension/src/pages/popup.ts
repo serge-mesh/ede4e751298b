@@ -205,19 +205,25 @@ export async function startPopup(env: PopupEnv = defaultEnv()): Promise<void> {
       setText(blocksHint, 'Turn on blocked sub-resource detection in Options to list the blocked requests of this tab.');
       return;
     }
-    if (state.detectionAfterRestart) {
-      // Brave reports no requests to the extension until it restarts: an empty list would mislead.
+    // Until Brave has passed a request (or restarted), an empty list may only mean it doesn't
+    // report requests yet: say so rather than list nothing. What it did report is listed.
+    const waiting = (): void => {
       blocksHint.hidden = false;
       blocksActions.hidden = true;
       setText(blocksHint, DETECTION_ON_AFTER_RESTART);
-      return;
-    }
+    };
     if (tabId === null) {
-      renderBlocks([]);
+      if (state.detectionAfterRestart) {
+        waiting();
+      } else {
+        renderBlocks([]);
+      }
       return;
     }
     const r = await send({ type: 'tabBlocks', tabId });
-    if (r.ok) {
+    if (r.ok && r.value.length === 0 && state.detectionAfterRestart) {
+      waiting();
+    } else if (r.ok) {
       renderBlocks(r.value);
     } else {
       showStatus(blocksStatus, describeError(r.error), 'error');

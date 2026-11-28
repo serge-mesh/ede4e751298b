@@ -332,6 +332,32 @@ describe('background', () => {
     });
   });
 
+  it("drops the restart note at Brave's first request, which shows no restart is needed (issue #61)", async () => {
+    const webRequest = { onErrorOccurred: new FakeEvent() };
+    const { fake } = await start(blocked, (f) => {
+      configure(f);
+      (f as unknown as { webRequest: unknown }).webRequest = webRequest;
+    });
+    grantDetection(fake);
+    fake.permissions.onAdded.emit({ permissions: ['webRequest'], origins: ['<all_urls>'] } as never);
+    await vi.waitFor(() => {
+      expect(fake.storage.session.data.get('detectionAfterRestart')).toBe(true);
+      expect(webRequest.onErrorOccurred.listeners).toHaveLength(1);
+    });
+    webRequest.onErrorOccurred.emit({ tabId: 9, url: 'https://ads.example/ad.js', error: 'net::ERR_NAME_NOT_RESOLVED', type: 'script' } as never);
+    await vi.waitFor(async () => {
+      expect(await fake.runtime.sendMessage({ type: 'getState' })).toMatchObject({ value: { detection: true, detectionAfterRestart: false } });
+    });
+    // A later grant notes it again until the next request.
+    fake.granted.permissions.delete('webRequest');
+    fake.permissions.onRemoved.emit({ permissions: ['webRequest'], origins: ['<all_urls>'] } as never);
+    grantDetection(fake);
+    fake.permissions.onAdded.emit({ permissions: ['webRequest'], origins: ['<all_urls>'] } as never);
+    await vi.waitFor(() => {
+      expect(fake.storage.session.data.get('detectionAfterRestart')).toBe(true);
+    });
+  });
+
   it('withdraws a listener added at start when the permission turns out not to be granted', async () => {
     const webRequest = { onErrorOccurred: new FakeEvent() };
     await start(blocked, (f) => {

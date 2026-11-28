@@ -802,6 +802,39 @@ impl Alerts {
         Ok(true)
     }
 
+    /// Replaces an alert's title and details without raising it again (its count, state,
+    /// `last_seen` and history stay), for a summary that follows a changing set (a grouped
+    /// public-suffix warning's count and preview, #49); announced like a raise. Details past
+    /// the size bound are left as they are. Returns false when no alert has `dedupe_key`.
+    pub fn update_summary_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        dedupe_key: &str,
+        title: &str,
+        details: &Value,
+        ch: &mut Changes,
+    ) -> rusqlite::Result<bool> {
+        let d = serde_json::to_string(details).unwrap_or_else(|_| "null".into());
+        if d.len() > MAX_DETAILS {
+            return Ok(false);
+        }
+        let title = crate::util::sanitize_for_message(title, MAX_TITLE);
+        let n = tx.execute(
+            "UPDATE alerts SET title = ?2, details_json = ?3 WHERE dedupe_key = ?1",
+            params![dedupe_key, title, d],
+        )?;
+        if n == 0 {
+            return Ok(false);
+        }
+        let a = tx.query_row(
+            &format!("SELECT {ALERT_COLUMNS} FROM alerts WHERE dedupe_key = ?1"),
+            [dedupe_key],
+            row_to_alert,
+        )?;
+        ch.changed.push(a);
+        Ok(true)
+    }
+
     /// [`Alerts::note`] inside the caller's transaction `tx`.
     pub fn note_in(
         &self,

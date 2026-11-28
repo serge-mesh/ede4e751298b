@@ -140,6 +140,9 @@ pub struct IfFinding {
     pub iface: String,
     pub mode: FwMode,
     pub catch_all: CatchAll,
+    /// UniFi, `enforce` with a place for the jump: the `…local_zoned_subnets` set whose members
+    /// never reach the jump ([`layout::unifi_local_set`]), or why none can be proven.
+    pub local_set: Option<Result<String, String>>,
 }
 
 impl IfFinding {
@@ -325,10 +328,17 @@ pub fn plan(t: &Table, w: &Want<'_>) -> Plan {
                 }
             }
         }
+        let local_set = match (&ca, w.platform, *mode) {
+            (CatchAll::At { chain, .. }, Platform::Unifi, FwMode::Enforce) => {
+                Some(layout::unifi_local_set(t, iface, chain))
+            }
+            _ => None,
+        };
         p.findings.push(IfFinding {
             iface: iface.clone(),
             mode: *mode,
             catch_all: ca,
+            local_set,
         });
     }
     if !w.disabled && w.family == Family::V6 {

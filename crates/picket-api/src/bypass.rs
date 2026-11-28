@@ -55,7 +55,7 @@ pub struct BypassError {
 pub struct BypassErrorDetail {
     /// The error's code, e.g. `forbidden`, `rate_limited`, `max_active`, `no_block`. `too_short`
     /// (403): a DNS allow would end while browsers may still use its block's cached answer (its
-    /// hold, max(60 s, block TTL + 5 s), plus 5 s for the reload), whether the request or the
+    /// hold, max(65 s, block TTL + 5 s), plus 5 s for the reload), whether the request or the
     /// governing profiles' `bypass.max_duration` is what is short; the message says how long it
     /// needs or when to ask again, and nothing is recorded or counted against limits (#50).
     pub code: String,

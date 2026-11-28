@@ -40,8 +40,27 @@ pub const LEAF_VALIDITY: Duration = Duration::from_secs(397 * 86_400);
 pub const MAX_LEAF_VALIDITY: Duration = Duration::from_secs(398 * 86_400);
 /// The shortest leaf the CA signs.
 pub const MIN_LEAF_VALIDITY: Duration = Duration::from_secs(86_400);
-/// The root lasts 20 years; other `lanca.zones` mean a new root ([`rotation`], core.md §11).
+/// A rotated root lasts 20 years from the synchronised clock that dates it ([`rotation`], core.md
+/// §11: other `lanca.zones` mean a new root).
 const ROOT_VALIDITY_DAYS: u64 = 20 * 365;
+
+/// The initial root's validity starts here (#46): `init` creates it before the clock may be
+/// synchronised, so its dates are constants rather than the bootstrap clock. The start predates
+/// every release, so no client sees the root as not yet valid once its own clock is right.
+pub const BOOTSTRAP_ROOT_NOT_BEFORE: (i32, u8, u8) = (2026, 1, 1);
+
+/// How a root's validity is chosen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RootDates {
+    /// The initial root, created by `init` whatever the clock says (README "Clocks"): valid
+    /// from [`BOOTSTRAP_ROOT_NOT_BEFORE`] with RFC 5280's "no well-defined expiration"
+    /// (`notAfter` 9999-12-31T23:59:59Z, §4.1.2.5). It never ends by date: it is replaced only
+    /// by a rotation. Synchronising the clock never regenerates it.
+    Bootstrap,
+    /// A rotated root, dated by the synchronised clock (callers check it): from a day before
+    /// now, for [`ROOT_VALIDITY_DAYS`].
+    Clock,
+}
 pub fn lanca_dir(data_dir: &Path) -> PathBuf {
     data_dir.join(LANCA_DIR)
 }
@@ -123,10 +142,12 @@ impl std::fmt::Debug for LanCa {
 
 impl LanCa {
     /// Creates a new root for `zones` in `dir` (both files 0600).
+    /// Used by `init` before the clock may be synchronised: its dates are [`RootDates::Bootstrap`].
     pub fn create(dir: &Path, zones: &[String], instance_id: &str) -> Result<Self> {
-        let ca = Self::generate(
+        let ca = Self::generate_with(
             zones,
             &format!("Picket LAN CA {}", picket_api::ids::short_id(instance_id)),
+            RootDates::Bootstrap,
         )?;
         crate::util::ensure_dir(dir)?;
         crate::util::write_atomic(&dir.join(CA_KEY), ca.key_pem().as_bytes(), 0o600)?;
@@ -134,9 +155,14 @@ impl LanCa {
         Ok(ca)
     }
 
-    /// A new root for `zones` named `common_name`, in memory only (a rotation writes it itself,
-    /// [`rotation`]).
+    /// A new root for `zones` named `common_name`, dated by the clock (the caller checked it is
+    /// synchronised), in memory only (a rotation writes it itself, [`rotation`]).
     pub fn generate(zones: &[String], common_name: &str) -> Result<Self> {
+        Self::generate_with(zones, common_name, RootDates::Clock)
+    }
+
+    /// A new root for `zones` named `common_name` with `dates`, in memory only.
+    pub fn generate_with(zones: &[String], common_name: &str, dates: RootDates) -> Result<Self> {
         let zones = normalize_zones(zones)?;
         let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).context("generate CA key")?;
         let mut params = CertificateParams::new(Vec::<String>::new())?;
@@ -150,9 +176,18 @@ impl LanCa {
             KeyUsagePurpose::CrlSign,
             KeyUsagePurpose::DigitalSignature,
         ];
-        let now = rcgen::date_time_ymd(1970, 1, 1) + since_epoch();
-        params.not_before = now - Duration::from_secs(86_400);
-        params.not_after = now + Duration::from_secs(ROOT_VALIDITY_DAYS * 86_400);
+        match dates {
+            RootDates::Bootstrap => {
+                let (y, m, d) = BOOTSTRAP_ROOT_NOT_BEFORE;
+                params.not_before = rcgen::date_time_ymd(y, m, d);
+                params.not_after = rcgen::date_time_ymd(9999, 12, 31) + Duration::from_secs(86_400 - 1);
+            }
+            RootDates::Clock => {
+                let now = rcgen::date_time_ymd(1970, 1, 1) + since_epoch();
+                params.not_before = now - Duration::from_secs(86_400);
+                params.not_after = now + Duration::from_secs(ROOT_VALIDITY_DAYS * 86_400);
+            }
+        }
         params.serial_number = Some(random_serial());
         let mut permitted: Vec<GeneralSubtree> =
             zones.iter().map(|z| GeneralSubtree::DnsName(z.clone())).collect();
@@ -506,6 +541,47 @@ mod tests {
         let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
         let params = CertificateParams::new(names.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap();
         params.serialize_request(&key).unwrap().pem().unwrap()
+    }
+
+    /// #46: the initial root's dates are constants, whatever the clock says at `init`; a
+    /// rotated root is dated by the (synchronised) clock.
+    #[test]
+    fn the_bootstrap_root_is_dated_independently_of_the_clock() {
+        let (_d, ca) = ca();
+        let (_, cert) = x509_parser::parse_x509_certificate(&ca.cert_der).unwrap();
+        let v = cert.validity();
+        assert_eq!(v.not_before.timestamp(), 1_767_225_600, "2026-01-01T00:00:00Z");
+        assert_eq!(v.not_after.timestamp(), 253_402_300_799, "9999-12-31T23:59:59Z");
+        // Another init (any clock) gets the same dates: only the key and serial differ.
+        let other = LanCa::generate_with(&["home.arpa".into()], "x", RootDates::Bootstrap).unwrap();
+        let (_, c2) = x509_parser::parse_x509_certificate(&other.cert_der).unwrap();
+        assert_eq!(c2.validity().not_before, v.not_before);
+        assert_eq!(c2.validity().not_after, v.not_after);
+        assert_ne!(other.fingerprint(), ca.fingerprint());
+        // A rotated root: a day back from now, 20 years on.
+        let rotated = LanCa::generate(&["home.arpa".into()], "r").unwrap();
+        let (_, c3) = x509_parser::parse_x509_certificate(&rotated.cert_der).unwrap();
+        let now = Timestamp::now().as_second();
+        assert!((now - 86_400 - 5..=now - 86_400 + 5).contains(&c3.validity().not_before.timestamp()));
+        let span = c3.validity().not_after.timestamp() - c3.validity().not_before.timestamp();
+        assert_eq!(span, i64::try_from((ROOT_VALIDITY_DAYS + 1) * 86_400).unwrap());
+    }
+
+    /// Leaves from the bootstrap root still carry the dates of the clock that signs them (callers
+    /// sign only on a synchronised clock, except the bootstrap web certificate, which the web
+    /// port re-issues once the clock is synchronised); the root's own dates take no part.
+    #[test]
+    fn a_bootstrap_roots_leaves_are_dated_by_the_signing_clock() {
+        let (_d, ca) = ca();
+        let (issued, _) = ca
+            .issue_with_new_key(&["core.home.arpa".into()], &[], LEAF_VALIDITY)
+            .unwrap();
+        let der = crate::identity::pem_to_der(&issued.cert_pem, "CERTIFICATE").unwrap();
+        let (_, cert) = x509_parser::parse_x509_certificate(&der).unwrap();
+        let now = Timestamp::now().as_second();
+        assert!(cert.validity().not_before.timestamp() <= now);
+        assert!(cert.validity().not_after.timestamp() > now + 390 * 86_400);
+        assert!(ca.signed(&der));
     }
 
     #[test]

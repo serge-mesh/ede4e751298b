@@ -984,3 +984,194 @@ async fn intelligent_tiering_ranks_and_moves_keys() {
         "the same head"
     );
 }
+
+/// The grouped public-suffix warning's dedupe key (#49).
+fn psl_key(bundle: &str, feed: &str) -> String {
+    format!("bundle_warning:{bundle}:public_suffix:{feed}")
+}
+
+/// The alert under `key`.
+async fn alert_of(c: &Core, key: &str) -> picket_core::alerts::Alert {
+    c.state.alerts.get_by_key(key).await.unwrap().unwrap_or_else(|| panic!("no alert {key}"))
+}
+
+fn is_open(a: &picket_core::alerts::Alert) -> bool {
+    a.state == picket_core::alerts::AlertState::Open
+}
+
+/// Resolves the alert under `key` by hand, through the UI API.
+async fn resolve_by_hand(c: &Core, key: &str) {
+    let id = alert_of(c, key).await.id;
+    let r = ui(c, Method::POST, &format!("/alerts/{id}/resolve"))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success(), "{}", r.status());
+}
+
+/// Twenty public suffixes below the top level, sorted.
+const SUFFIXES: [&str; 20] = [
+    "ac.uk", "co.jp", "co.nz", "co.uk", "com.au", "com.br", "edu.au", "gov.uk", "ltd.uk", "me.uk",
+    "ne.jp", "net.au", "net.br", "net.nz", "or.jp", "org.au", "org.nz", "org.uk", "plc.uk", "police.uk",
+];
+
+fn psl_rules(suffixes: &[&str], extra: &str) -> String {
+    let mut s: String = suffixes.iter().map(|x| format!("||{x}^\n")).collect();
+    s.push_str(extra);
+    s
+}
+
+/// Public-suffix guardrail (#49): one warning per (bundle, feed) pair with the exact counts and
+/// a preview, the full list behind it paginated; its summary follows the set without new
+/// occurrences while open; a hand resolve holds until a suffix it hasn't shown enters, which
+/// reopens it (also when the count stays the same); a feed leaving the bundle and the bundle's
+/// deletion resolve theirs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn public_suffix_warnings_are_grouped_per_bundle_and_feed() {
+    let c = core().await;
+    manual_feed(&c, "pa", json!({})).await;
+    manual_feed(&c, "pb", json!({})).await;
+    put_entity(
+        &c,
+        "bundles",
+        "p1",
+        json!({"id": "p1", "name": "p1", "feeds": [{"feed": "pa"}, {"feed": "pb"}]}),
+    )
+    .await;
+    put_entity(&c, "bundles", "p2", json!({"id": "p2", "name": "p2", "feeds": [{"feed": "pa"}]})).await;
+    // co.uk twice: two rules, one suffix.
+    save(&c, "pa", &psl_rules(&SUFFIXES, "||co.uk^$important\n||fine.example^\n")).await;
+    save(&c, "pb", "||com.au^\n").await;
+    build(&c, "p1").await.unwrap();
+    build(&c, "p2").await.unwrap();
+
+    let a = alert_of(&c, &psl_key("p1", "pa")).await;
+    assert!(is_open(&a));
+    assert_eq!(a.details["warning"], "public_suffix");
+    assert_eq!(a.details["suffixes"], 20);
+    assert_eq!(a.details["rules"], 21);
+    assert_eq!(a.details["preview"], json!(SUFFIXES[..10]));
+    assert_eq!(a.details["more"], 10);
+    assert_eq!(a.title, "Bundle p1 blocks 20 public suffixes (feed pa)");
+    let count = a.count;
+    let b = alert_of(&c, &psl_key("p1", "pb")).await;
+    assert!(is_open(&b));
+    assert_eq!(b.details["suffixes"], 1);
+    assert_eq!(b.title, "Bundle p1 blocks 1 public suffix (feed pb)");
+    assert_eq!(alert_of(&c, &psl_key("p2", "pa")).await.details["suffixes"], 20);
+    // One warning per pair, none per rule.
+    let open: Vec<String> = open_alerts(&c, "bundle_warning", "p1")
+        .await
+        .iter()
+        .filter(|a| a.details["warning"] == "public_suffix")
+        .map(|a| a.dedupe_key.clone())
+        .collect();
+    assert_eq!(open.len(), 2, "{open:?}");
+
+    // The full list, paginated past the preview.
+    let (st, page) = get(&c, "/bundles/p1/public-suffixes?feed=pa&limit=15").await;
+    assert_eq!(st, 200, "{page}");
+    assert_eq!(page["total"], 20);
+    let items = page["items"].as_array().unwrap();
+    assert_eq!(items.len(), 15);
+    let co = items.iter().find(|i| i["suffix"] == "co.uk").unwrap();
+    let mut rules: Vec<&str> = co["rules"].as_array().unwrap().iter().map(|r| r["rule"].as_str().unwrap()).collect();
+    rules.sort_unstable();
+    assert_eq!(rules, ["||co.uk^", "||co.uk^$important"]);
+    assert!(co["rules"][0]["line"].as_i64().unwrap() > 0);
+    let cursor = page["next_cursor"].as_str().unwrap();
+    let (_, page2) = get(&c, &format!("/bundles/p1/public-suffixes?feed=pa&limit=15&cursor={cursor}")).await;
+    assert_eq!(page2["items"].as_array().unwrap().len(), 5);
+    assert!(page2["next_cursor"].is_null());
+    let (_, all) = get(&c, "/bundles/p1/public-suffixes").await;
+    assert_eq!(all["total"], 21, "both feeds");
+    assert_eq!(get(&c, "/bundles/nope/public-suffixes").await.0, 404);
+
+    // A suffix leaves: the summary follows, no new occurrence.
+    let fewer: Vec<&str> = SUFFIXES.iter().copied().filter(|s| *s != "police.uk").collect();
+    save(&c, "pa", &psl_rules(&fewer, "||co.uk^$important\n||fine.example^\n")).await;
+    build(&c, "p1").await.unwrap();
+    let a = alert_of(&c, &psl_key("p1", "pa")).await;
+    assert!(is_open(&a));
+    assert_eq!(a.details["suffixes"], 19);
+    assert_eq!(a.count, count, "a summary update isn't an occurrence");
+
+    // Resolved by hand: a rebuild with the same suffixes leaves it resolved.
+    resolve_by_hand(&c, &psl_key("p1", "pa")).await;
+    save(&c, "pa", &psl_rules(&fewer, "||co.uk^$important\n||fine.example^\n||other.example^\n")).await;
+    build(&c, "p1").await.unwrap();
+    assert!(!is_open(&alert_of(&c, &psl_key("p1", "pa")).await), "nothing new: stays resolved");
+
+    // The same count with one suffix replaced reopens it, naming the new one.
+    let replaced: Vec<&str> = fewer.iter().map(|s| if *s == "me.uk" { "com.mx" } else { s }).collect();
+    save(&c, "pa", &psl_rules(&replaced, "||co.uk^$important\n||fine.example^\n")).await;
+    build(&c, "p1").await.unwrap();
+    let a = alert_of(&c, &psl_key("p1", "pa")).await;
+    assert!(is_open(&a), "a suffix it hadn't shown reopens it");
+    assert_eq!(a.details["suffixes"], 19);
+    assert_eq!(a.details["added"], json!(["com.mx"]));
+
+    // Feed pb leaves p1: its warning resolves. p2 is deleted: its warning resolves.
+    put_entity(&c, "bundles", "p1", json!({"id": "p1", "name": "p1", "feeds": [{"feed": "pa"}]})).await;
+    build(&c, "p1").await.unwrap();
+    assert!(!is_open(&alert_of(&c, &psl_key("p1", "pb")).await));
+    assert!(is_open(&alert_of(&c, &psl_key("p1", "pa")).await));
+    let r = ui(&c, Method::DELETE, "/bundles/p2")
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    wait("p2's warning to resolve", || async {
+        !is_open(&alert_of(&c, &psl_key("p2", "pa")).await)
+    })
+    .await;
+}
+
+/// A hand-resolved public-suffix warning stays resolved across a restart and a rebuild with
+/// the same suffixes (#49).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hand_resolved_public_suffix_warning_survives_a_restart() {
+    let c = core().await;
+    manual_feed(&c, "pr", json!({})).await;
+    put_entity(&c, "bundles", "pr1", json!({"id": "pr1", "name": "pr1", "feeds": [{"feed": "pr"}]})).await;
+    save(&c, "pr", "||co.uk^\n||org.uk^\n").await;
+    build(&c, "pr1").await.unwrap();
+    resolve_by_hand(&c, &psl_key("pr1", "pr")).await;
+    let c = restarted(c).await;
+    assert!(!is_open(&alert_of(&c, &psl_key("pr1", "pr")).await));
+    save(&c, "pr", "||co.uk^\n||org.uk^\n||fine.example^\n").await;
+    build(&c, "pr1").await.unwrap();
+    assert!(!is_open(&alert_of(&c, &psl_key("pr1", "pr")).await), "same suffixes: stays resolved");
+    save(&c, "pr", "||co.uk^\n||org.uk^\n||me.uk^\n").await;
+    build(&c, "pr1").await.unwrap();
+    let a = alert_of(&c, &psl_key("pr1", "pr")).await;
+    assert!(is_open(&a));
+    assert_eq!(a.details["added"], json!(["me.uk"]));
+}
+
+/// Stops `c` and starts a core on a copy of its data directory.
+async fn restarted(c: Core) -> Core {
+    c.stop.cancel();
+    let dir = tempfile::tempdir().unwrap();
+    common::snapshot_dir(c.dir.path(), dir.path());
+    let init = c.init.clone();
+    drop(c);
+    let stop = tokio_util::sync::CancellationToken::new();
+    let opts = picket_core::run::StartOptions {
+        release_dir: std::path::PathBuf::from("/nonexistent/picket-core/edge"),
+        any_port: true,
+        clock_synced: Some(true),
+        disk_watch: false,
+        ..Default::default()
+    };
+    let (state, info) = picket_core::run::start_with(dir.path(), stop.clone(), opts).await.unwrap();
+    Core {
+        dir,
+        init,
+        state,
+        info,
+        stop,
+    }
+}

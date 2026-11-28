@@ -1589,3 +1589,65 @@ async fn csr_refuses_declared_core_address_even_if_conflicting_listener_is_store
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
     assert_eq!(r.json::<Value>().await.unwrap()["error"]["code"], "conflict");
 }
+
+/// A web certificate signed by the instance's LAN CA as a wrong clock would date it: from
+/// `not_before` to `not_after` (Unix seconds), for the current web SANs. Written to
+/// `lanca/web.{crt,key}`.
+fn write_badly_dated_web_pair(c: &common::Core, not_before: i64, not_after: i64) {
+    let dir = c.dir.path().join("lanca");
+    let ca_key = rcgen::KeyPair::from_pem(&std::fs::read_to_string(dir.join("ca.key")).unwrap()).unwrap();
+    let ca_pem = std::fs::read_to_string(dir.join("ca.crt")).unwrap();
+    let ca_der = rustls_pki_types::CertificateDer::from(
+        picket_core::identity::pem_to_der(&ca_pem, "CERTIFICATE").unwrap(),
+    );
+    let issuer = rcgen::Issuer::from_ca_cert_der(&ca_der, &ca_key).unwrap();
+    let (names, ips) = picket_core::web::web_cert_sans(&c.state);
+    let mut params = rcgen::CertificateParams::new(names).unwrap();
+    for ip in ips {
+        params.subject_alt_names.push(rcgen::SanType::IpAddress(ip));
+    }
+    params.not_before = rcgen::date_time_ymd(1970, 1, 1) + std::time::Duration::from_secs(not_before as u64);
+    params.not_after = rcgen::date_time_ymd(1970, 1, 1) + std::time::Duration::from_secs(not_after as u64);
+    let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+    let cert = params.signed_by(&key, &issuer).unwrap();
+    std::fs::write(dir.join("web.crt"), format!("{}{ca_pem}", cert.pem())).unwrap();
+    std::fs::write(dir.join("web.key"), key.serialize_pem()).unwrap();
+}
+
+/// #46 (README "Clocks"): `init` dates the initial root with constants, so its validity doesn't
+/// follow the bootstrap clock, and synchronising the clock never replaces it. The bootstrap web
+/// certificate is the other exception: issued (or kept) before the clock is synchronised whatever
+/// its dates, and re-issued once it is when a wrong clock dated it, ahead or behind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_badly_dated_bootstrap_web_certificate_is_reissued_once_the_clock_is_synchronised() {
+    let now = jiff::Timestamp::now().as_second();
+    let year = 365 * 86_400;
+    // Ahead: starts in a year. Behind: ended a year ago (issued with a clock two years back).
+    for (what, nb, na) in [("ahead", now + year, now + 2 * year), ("behind", now - 2 * year, now - year)] {
+        let c = common::start_core(None).await; // managed web TLS
+        let served = |st: &SharedState| st.web_cert.get().expect("managed web certificate").0.load_full();
+        // The root's dates are the bootstrap policy's, whatever the clock.
+        let root = c.state.lanca.load_full();
+        let (_, rc) = x509_parser::parse_x509_certificate(&root.cert_der).unwrap();
+        assert_eq!(rc.validity().not_before.timestamp(), 1_767_225_600, "2026-01-01");
+        assert_eq!(rc.validity().not_after.timestamp(), 253_402_300_799, "9999-12-31T23:59:59Z");
+        let fp = root.fingerprint();
+        write_badly_dated_web_pair(&c, nb, na);
+        let bad = std::fs::read_to_string(c.dir.path().join("lanca/web.crt")).unwrap();
+        let bad_der = picket_core::identity::pem_to_der(&bad, "CERTIFICATE").unwrap();
+        // Not synchronised: only the names decide, so the pair stays (at start too).
+        let (_dir, state, stop) = restart_with(c, false).await;
+        assert_eq!(served(&state).cert[0].as_ref(), bad_der.as_slice(), "{what}: kept unsynchronised");
+        assert!(!picket_core::web::refresh_web_cert(&state).unwrap(), "{what}");
+        // Synchronised: re-issued, dated by the clock, from the same root.
+        state.clock.pin(true);
+        assert!(picket_core::web::refresh_web_cert(&state).unwrap(), "{what}: re-issued");
+        let fresh = served(&state);
+        let (_, cert) = x509_parser::parse_x509_certificate(fresh.cert[0].as_ref()).unwrap();
+        assert!(cert.validity().not_before.timestamp() <= jiff::Timestamp::now().as_second(), "{what}");
+        assert!(cert.validity().not_after.timestamp() > now + 390 * 86_400, "{what}");
+        assert_eq!(state.lanca.load().fingerprint(), fp, "{what}: synchronising keeps the root");
+        assert!(!picket_core::web::refresh_web_cert(&state).unwrap(), "{what}: once");
+        stop.cancel();
+    }
+}

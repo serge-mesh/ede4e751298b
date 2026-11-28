@@ -60,7 +60,7 @@ pub struct Entry {
 /// Seconds past the block TTL that `hold` adds ([`picket_api::edge_config::BLOCK_HOLD_SLACK_S`]).
 pub const HOLD_SLACK_S: u64 = picket_api::edge_config::BLOCK_HOLD_SLACK_S;
 
-/// `hold` for a block TTL: max(60 s, TTL + [`HOLD_SLACK_S`])
+/// `hold` for a block TTL: max(65 s, TTL + [`HOLD_SLACK_S`])
 /// ([`picket_api::edge_config::block_hold_s`]).
 pub fn hold_s(ttl: u32) -> u64 {
     picket_api::edge_config::block_hold_s(ttl)
@@ -76,7 +76,7 @@ impl Entry {
         std::str::from_utf8(&self.block_id).unwrap_or("")
     }
 
-    /// `hold` = max(60 s, block TTL + [`HOLD_SLACK_S`]) (edge.md §12 `retry_after_s`).
+    /// `hold` = max(65 s, block TTL + [`HOLD_SLACK_S`]) (edge.md §12 `retry_after_s`).
     pub fn hold_s(&self) -> u64 {
         hold_s(self.response.ttl)
     }

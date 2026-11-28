@@ -261,10 +261,12 @@ impl NetlinkIpset {
     pub fn list(&mut self, name: &str, sink: &mut dyn FnMut(Member)) -> Result<SetHeader, IpsetError> {
         let mut h = SetHeader::default();
         let req = proto::req_list(self.protocol, name, false);
+        let mut bad = 0usize;
         self.dump(&req, &mut |a| {
-            proto::decode_list(a, &mut h, sink)?;
+            bad += proto::decode_list(a, &mut h, sink)?;
             Ok(())
         })?;
+        h.undecoded = u32::try_from(bad).unwrap_or(u32::MAX);
         Ok(h)
     }
 }

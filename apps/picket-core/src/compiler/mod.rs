@@ -401,10 +401,13 @@ pub async fn fail(state: &SharedState, bundle: &str, error: &str) {
 /// still run them).
 pub async fn retire(state: &SharedState, bundle: &str) -> anyhow::Result<()> {
     let b = bundle.to_string();
-    state
+    let alerts = state.alerts.clone();
+    let ch = state
         .db
         .write(move |c| {
             let tx = c.transaction()?;
+            let mut ch = Changes::default();
+            guard::retire_public_suffix(&tx, &alerts, &b, &mut ch)?;
             for t in [
                 "bundle_keys",
                 "bundle_ip_ranges",
@@ -416,9 +419,11 @@ pub async fn retire(state: &SharedState, bundle: &str) -> anyhow::Result<()> {
             }
             store::clear_work(&tx, &b)?;
             tx.commit()?;
-            Ok::<_, anyhow::Error>(())
+            alerts.committed(&ch);
+            Ok::<_, anyhow::Error>(ch)
         })
         .await?;
+    state.alerts.announce(ch);
     tracing::info!(bundle = %bundle, "a deleted bundle's compiled state was retired");
     state.edges.publisher.trigger(None);
     // Its warnings resolve (bundles.md §3: no block bundle holds the feed any more).

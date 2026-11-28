@@ -14,6 +14,7 @@
 // A temporary allow lifts the block (and the firewall check for an IP) until it expires. Every
 // request is logged for the tests to check.
 
+import { createSocket, type Socket } from 'node:dgram';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createServer, type Server } from 'node:https';
 import type { AddressInfo } from 'node:net';
@@ -153,7 +154,7 @@ export class FakeEdge {
   /** The `retry_after_s` of DNS allows a PATCH creates or re-times (IP allows get 0, as on the edge). */
   retryAfterS = 1;
   /**
-   * DNS allows get the edge's `retry_after_s` instead: block time + max(60 s, block TTL + 5 s) − now, at most expires_at − 5 s − now
+   * DNS allows get the edge's `retry_after_s` instead: block time + max(65 s, block TTL + 5 s) − now, at most expires_at − 5 s − now
    * (edge.md §12; apps/picket-edge bypass `retry_after`).
    */
   edgeRetry = false;
@@ -168,6 +169,7 @@ export class FakeEdge {
   private allows: StoredAllow[] = [];
   private server!: Server;
   private port = 0;
+  private native: Socket | null = null;
 
   constructor(private readonly cert: KeyPair) {}
 
@@ -191,7 +193,44 @@ export class FakeEdge {
     return this;
   }
 
+  /**
+   * Also answers plain DNS over UDP on `host`:53, as a LAN resolver would, for a browser that
+   * resolves natively (the system resolver, `/etc/resolv.conf`) instead of over DoH. Its queries
+   * count as the browser's lookups (`method` `UDP`). Needs the right to bind port 53.
+   */
+  async startNative(host: string): Promise<void> {
+    const sock = createSocket('udp4');
+    sock.on('message', (msg, from) => {
+      const hit: Hit = { at: Date.now(), method: 'UDP', path: '/dns-query', client: undefined, origin: undefined, cookie: undefined };
+      let q: Query;
+      try {
+        q = parseQuery(msg);
+      } catch {
+        return;
+      }
+      hit.name = q.name;
+      hit.qtype = q.qtype;
+      const { answer, blocked } = this.resolve(q, false);
+      hit.rcode = answer.rcode;
+      hit.blocked = blocked;
+      this.hits.push(hit);
+      sock.send(buildReply(q, answer), from.port, from.address);
+    });
+    await new Promise<void>((resolve, reject) => {
+      sock.once('error', reject);
+      sock.bind(53, host, () => {
+        sock.off('error', reject);
+        resolve();
+      });
+    });
+    this.native = sock;
+  }
+
   async close(): Promise<void> {
+    const native = this.native;
+    if (native !== null) {
+      await new Promise<void>((resolve) => native.close(() => { resolve(); }));
+    }
     this.server.closeAllConnections();
     await new Promise<void>((resolve) => this.server.close(() => { resolve(); }));
   }
@@ -478,7 +517,7 @@ export class FakeEdge {
       return this.retryAfterS;
     }
     // As the edge: never later than 5 s before the allow ends (expires_at is Unix seconds).
-    const end = Math.min(a.blockAt + Math.max(60, this.blockTtl + 5) * 1000, (a.expires_at - 5) * 1000);
+    const end = Math.min(a.blockAt + Math.max(65, this.blockTtl + 5) * 1000, (a.expires_at - 5) * 1000);
     return Math.max(0, Math.trunc((end - Date.now()) / 1000));
   }
 

@@ -441,15 +441,19 @@ pub const MAX_BLOCK_TTL_S: u32 = 890;
 /// second attempt too, while refreshing it (#15). With the slack the reload finds it expired.
 pub const BLOCK_HOLD_SLACK_S: u64 = 5;
 
-/// The shortest hold: browsers keep an answer for at least about a minute whatever its TTL.
-pub const BLOCK_HOLD_MIN_S: u64 = 60;
+/// The shortest hold: browsers that resolve through the system resolver keep an answer for a
+/// fixed minute whatever its TTL (Firefox's `network.dnsCacheExpiration`), and Firefox then
+/// serves the expired entry once more while refreshing it. A reload right at 60 s can find the
+/// entry unexpired, leaving the extension's second attempt to meet that stale copy (#51); 5 s
+/// past the minute, the reload itself starts the refresh and the second attempt gets the answer.
+pub const BLOCK_HOLD_MIN_S: u64 = 65;
 
 /// How long before an allow ends its reload must happen at the latest: room for the reload and
 /// the extension's second attempt 2 s later while the allow still holds.
 pub const RELOAD_BEFORE_EXPIRY_S: u64 = 5;
 
 /// A block's hold: how long after a block answer served with `ttl` a browser may still use its
-/// cached copy, `max(60 s, TTL + 5 s)` (the `retry_after_s` the bypass API reports for a fresh
+/// cached copy, `max(65 s, TTL + 5 s)` (the `retry_after_s` the bypass API reports for a fresh
 /// block).
 pub fn block_hold_s(ttl: u32) -> u64 {
     BLOCK_HOLD_MIN_S.max(u64::from(ttl) + BLOCK_HOLD_SLACK_S)

@@ -5,6 +5,9 @@
 [Unit]
 Description=Create the picket-core instance on first start
 Before=picket-core.service
+# Roughly right local time where the platform provides it; init never waits for network time
+# (docs/clocks-and-lan-ca.md), so no time-sync.target here.
+After=time-set.target
 ConditionPathExists=!/var/lib/picket-core/.picket-core-instance
 
 [Service]

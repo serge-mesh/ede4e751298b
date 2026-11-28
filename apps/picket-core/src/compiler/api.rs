@@ -7,6 +7,7 @@
 //! | `GET bundles/{id}/status` | one bundle: status, head, feed runs, stats, shards, the heads edges are named |
 //! | `GET bundles/{id}/versions` | its versions, newest first (cursor pagination) |
 //! | `GET bundles/{id}/warnings` | its open guardrail alerts and compile-time warnings |
+//! | `GET bundles/{id}/public-suffixes?feed=…` | every public suffix the bundle blocks below the top level, per feed, with its rules and lines (the full list behind each grouped warning, #49; cursor pagination) |
 //! | `POST bundles/{id}/build` | build now (heavy lane, P0) |
 //! | `GET bundles/{id}/explain?name=…&qtype=…&client_ip=…&client=…&tags=…` | how the bundle's current rules decide a name or address, with picket-rules' reference matcher |
 //!
@@ -106,6 +107,42 @@ pub struct WarningView {
 pub struct BundleWarnings {
     pub alerts: Vec<crate::alerts::Alert>,
     pub warnings: Page<WarningView>,
+}
+
+/// `?feed=…&cursor=…&limit=…`
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+pub struct PublicSuffixQuery {
+    /// One feed's suffixes (default every feed's).
+    pub feed: Option<String>,
+    pub cursor: Option<String>,
+    pub limit: Option<usize>,
+}
+
+/// One public suffix a bundle blocks below the top level, from one feed.
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct PublicSuffixView {
+    pub feed: String,
+    pub suffix: String,
+    /// The feed's rules blocking it (more than one when several rules name it).
+    pub rules: Vec<PublicSuffixRule>,
+}
+
+/// One rule behind a public-suffix block: its text and source line, as the feed lists it now.
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct PublicSuffixRule {
+    pub rule: Option<String>,
+    pub line: Option<i64>,
+}
+
+/// The public suffixes a bundle blocks below the top level, ordered by feed then suffix, with
+/// the exact totals behind the grouped warnings.
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct PublicSuffixes {
+    /// Distinct (feed, suffix) pairs in all, over every page.
+    pub total: u64,
+    pub items: Vec<PublicSuffixView>,
+    /// Pass as `cursor` for the next page; null on the last page.
+    pub next_cursor: Option<String>,
 }
 
 /// `?name=…&qtype=…&client_ip=…&client=…&tags=…`
@@ -363,6 +400,96 @@ async fn warnings(
     }))
 }
 
+async fn public_suffixes(
+    State(s): State<SharedState>,
+    ApiPath(id): ApiPath<String>,
+    ApiQuery(q): ApiQuery<PublicSuffixQuery>,
+) -> ApiResult<Json<PublicSuffixes>> {
+    let model = s.config.model().await?;
+    if !model.bundles.contains_key(&id) {
+        return Err(ApiError::not_found("no such bundle"));
+    }
+    let limit = crate::web::api::limit_param(
+        q.limit,
+        crate::web::api::DEFAULT_LIMIT,
+        crate::web::api::MAX_LIMIT,
+    )?;
+    let (after_feed, after_suffix) = match &q.cursor {
+        Some(c) if !c.is_empty() => decode_cursor(c)
+            .and_then(|s| s.split_once('\n').map(|(f, x)| (f.to_string(), x.to_string())))
+            .ok_or_else(|| ApiError::bad_request("bad cursor"))?,
+        _ => (String::new(), String::new()),
+    };
+    let feed = q.feed.clone();
+    let (total, page) = s
+        .db
+        .read(move |c| {
+            let total: i64 = c.query_row(
+                "SELECT count(*) FROM (SELECT DISTINCT feed_id, suffix FROM bundle_psl_hits
+                   WHERE bundle_id = ?1 AND (?2 IS NULL OR feed_id = ?2))",
+                rusqlite::params![id, feed],
+                |r| r.get(0),
+            )?;
+            let mut st = c.prepare(
+                "SELECT DISTINCT feed_id, suffix FROM bundle_psl_hits
+                  WHERE bundle_id = ?1 AND (?2 IS NULL OR feed_id = ?2) AND (feed_id, suffix) > (?3, ?4)
+                  ORDER BY feed_id, suffix LIMIT ?5",
+            )?;
+            let pairs: Vec<(String, String)> = st
+                .query_map(
+                    rusqlite::params![id, feed, after_feed, after_suffix, limit + 1],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?
+                .collect::<rusqlite::Result<_>>()?;
+            let mut rules_st = c.prepare(
+                "SELECT identity_json FROM bundle_psl_hits WHERE bundle_id = ?1 AND feed_id = ?2 AND suffix = ?3
+                  ORDER BY rule_hash",
+            )?;
+            let mut page = Vec::new();
+            for (f, suffix) in pairs {
+                let ids: Vec<String> = rules_st
+                    .query_map(rusqlite::params![id, f, suffix], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?;
+                let mut rules = Vec::new();
+                for ij in ids {
+                    let Ok(i) = serde_json::from_str::<super::guard::Identity>(&ij) else {
+                        continue;
+                    };
+                    let (rule, line): (Option<String>, Option<i64>) = c
+                        .query_row(
+                            "SELECT raw, line_no FROM feed_entries WHERE feed_id = ?1 AND rule_type = ?2 AND key = ?3
+                               AND kind = ?4 AND flags = ?5 AND value_json = ?6 AND removed_run IS NULL LIMIT 1",
+                            rusqlite::params![i.feed, i.rule_type, i.key, i.kind, i64::from(i.flags), i.value_json],
+                            |r| Ok((r.get(0)?, r.get(1)?)),
+                        )
+                        .unwrap_or_default();
+                    rules.push(PublicSuffixRule { rule, line });
+                }
+                page.push(PublicSuffixView {
+                    feed: f,
+                    suffix,
+                    rules,
+                });
+            }
+            Ok::<_, anyhow::Error>((total, page))
+        })
+        .await?;
+    let more = page.len() > limit;
+    let items: Vec<PublicSuffixView> = page.into_iter().take(limit).collect();
+    let next_cursor = more
+        .then(|| {
+            items
+                .last()
+                .map(|v| encode_cursor(&format!("{}\n{}", v.feed, v.suffix)))
+        })
+        .flatten();
+    Ok(Json(PublicSuffixes {
+        total: u64::try_from(total).unwrap_or(0),
+        items,
+        next_cursor,
+    }))
+}
+
 async fn build_now(
     State(s): State<SharedState>,
     ApiPath(id): ApiPath<String>,
@@ -505,6 +632,7 @@ pub fn item_routes() -> Router<SharedState> {
         .route("/{id}/status", get(bundle_status))
         .route("/{id}/versions", get(versions))
         .route("/{id}/warnings", get(warnings))
+        .route("/{id}/public-suffixes", get(public_suffixes))
         .route("/{id}/build", post(build_now))
         .route("/{id}/explain", get(explain))
 }

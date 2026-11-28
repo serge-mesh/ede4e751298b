@@ -10,7 +10,7 @@
 //! order. `metrics.db` keeps `ts` as INTEGER Unix milliseconds for cheap binning.
 
 /// `core.db` migration steps; version = index + 1.
-pub const CORE: &[&str] = &[CORE_V1, CORE_V2, CORE_V3, CORE_V4];
+pub const CORE: &[&str] = &[CORE_V1, CORE_V2, CORE_V3, CORE_V4, CORE_V5];
 
 /// `metrics.db` migration steps; version = index + 1.
 pub const METRICS: &[&str] = &[METRICS_V1, METRICS_V2];
@@ -1413,6 +1413,29 @@ CREATE TABLE cold_share_state (
 ) STRICT, WITHOUT ROWID;
 "#;
 
+/// Grouped public-suffix warnings (#49).
+const CORE_V5: &str = r#"
+-- bundle_psl_hits (compiler::guard, #49): the rules of each (bundle, feed) that block a public
+-- suffix below the top level, the durable affected set behind that pair's one grouped
+-- `bundle_warning` (`bundle_warning:{bundle}:public_suffix:{feed}`). A row goes when its rule
+-- leaves the bundle (or the feed, or the bundle, goes). alerted: the alert has shown this rule's
+-- suffix; a suffix no row of which is alerted is newly affected and reopens a resolved alert.
+CREATE TABLE bundle_psl_hits (
+    bundle_id TEXT NOT NULL,
+    feed_id TEXT NOT NULL,
+    rule_hash TEXT NOT NULL,
+    suffix TEXT NOT NULL,
+    identity_json TEXT NOT NULL,
+    alerted INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (bundle_id, feed_id, rule_hash)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX bundle_psl_hits_suffix ON bundle_psl_hits(bundle_id, feed_id, suffix);
+
+-- Every bundle builds in full once, so its grouped warnings cover the rules already present and
+-- its per-rule public-suffix alerts are superseded.
+UPDATE bundle_builds SET definition_hash = '';
+"#;
+
 /// Heartbeat samples by boot (chart baselines, core.md §10).
 const METRICS_V2: &str = r#"
 CREATE INDEX samples_edge_boot ON samples(edge_id, boot, ts);
@@ -1466,6 +1489,7 @@ CREATE INDEX samples_ts ON samples(ts);
 
 /// Every table `core.db` must hold after migrating (checked by tests).
 pub const CORE_TABLES: &[&str] = &[
+    "bundle_psl_hits",
     "settings",
     "ui_account",
     "edges",
