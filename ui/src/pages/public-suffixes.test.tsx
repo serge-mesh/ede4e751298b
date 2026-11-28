@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { mockApi } from "@/test/mock-api";
+import { mockApi, type Call } from "@/test/mock-api";
 import { W5 } from "@/test/core-w5";
 import { renderApp } from "@/test/render";
 
@@ -45,7 +45,7 @@ describe("public_suffix warnings", () => {
       {
         method: "GET",
         path: "/bundles/b1/public-suffixes",
-        body: (c) =>
+        body: (c: Call) =>
           c.query.get("cursor") === "next"
             ? { total: 12, items: SUFFIXES.slice(10).map(item), next_cursor: null }
             : { total: 12, items: SUFFIXES.slice(0, 10).map(item), next_cursor: "next" },
