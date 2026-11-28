@@ -1677,6 +1677,8 @@ fn feed_provider_rules(m: &Model, o: &mut Out) {
     let e = "feed_provider";
     let reg = crate::modules::download::builtin();
     let mut queues: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    // Every provider's location once, for the overlap warnings below.
+    let overlaps = crate::feeds::select::Overlaps::new(m);
     for (id, p) in &m.feed_providers {
         check_id(o, e, id);
         check_name(o, e, id, &p.name);
@@ -1903,7 +1905,7 @@ fn feed_provider_rules(m: &Model, o: &mut Out) {
             }
         }
         // providers.md §2: overlapping providers save with a warning naming the other.
-        let others = crate::feeds::select::overlapping(m, p);
+        let others = overlaps.of(p);
         if !others.is_empty() {
             let what = if module.as_ref().is_some_and(|md| md.fixed_file().is_some()) {
                 "has the same URL"
