@@ -7982,6 +7982,24 @@
               "null"
             ]
           },
+          "notice_samples": {
+            "default": [],
+            "description": "The first few of those rules: line, reason, text (cut).",
+            "items": {
+              "$ref": "#/components/schemas/ErrorSample"
+            },
+            "type": "array"
+          },
+          "notices": {
+            "additionalProperties": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "default": {},
+            "description": "Rules kept that are worth a look, by reason (`BroadBrowser`: a browser rule with no\nrestriction whose pattern matches most requests). They are entries like any other.",
+            "type": "object"
+          },
           "rule_lines": {
             "default": 0,
             "format": "uint64",

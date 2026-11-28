@@ -1055,6 +1055,11 @@ impl IngestJob {
                 let run = self.run.as_mut().context("no run")?;
                 if !held {
                     run.parse = ParseSummary::from_stats(&stats);
+                    // Notices are about browser rules kept: none are while the mode drops them.
+                    if run.params.mode(picket_rules::RuleType::Browser) == Mode::Drop {
+                        run.parse.notices.clear();
+                        run.parse.notice_samples.clear();
+                    }
                     run.parse.errors = run.parse.errors.saturating_add(bad_dates);
                     run.parse.misp_type = misp_type;
                     run.policy_counts = counts;

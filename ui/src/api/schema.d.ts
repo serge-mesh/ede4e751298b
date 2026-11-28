@@ -4790,6 +4790,19 @@ export interface components {
              */
             misp_type?: string | null;
             /**
+             * @description The first few of those rules: line, reason, text (cut).
+             * @default []
+             */
+            notice_samples?: components["schemas"]["ErrorSample"][];
+            /**
+             * @description Rules kept that are worth a look, by reason (`BroadBrowser`: a browser rule with no
+             *     restriction whose pattern matches most requests). They are entries like any other.
+             * @default {}
+             */
+            notices?: {
+                [key: string]: number;
+            };
+            /**
              * Format: uint64
              * @default 0
              */
