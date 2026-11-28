@@ -553,6 +553,47 @@ fn readiness_timeout_rolls_back() {
     w.assert_own_service_untouched();
 }
 
+/// #69: a new edge whose helper speaks another protocol refuses to run on every start (it never
+/// binds its listeners or writes `ready_version`, systemd restarting it meanwhile). The updater's
+/// readiness wait never sees the new version ready, and the rollback runs as for any other
+/// readiness failure.
+#[test]
+fn an_edge_refusing_an_incompatible_helper_never_reads_ready_and_rolls_back() {
+    let w = installed();
+    w.sys.st.borrow_mut().ready = Ready::Incompatible(vec!["1.5.0".into()]);
+    w.release("1.5.0", None);
+    w.pending("1.5.0", Some("req"), false);
+    let start = w.sys.st.borrow().clock;
+    let r = failed(&w, stage::READINESS);
+    assert_eq!(r.version, "1.5.0");
+    assert!(w.sys.st.borrow().clock - start >= crate::update::READY_WAIT);
+    assert!(
+        w.sys.st.borrow().refused_starts >= 10,
+        "systemd kept restarting the refusing edge during the wait"
+    );
+    assert_eq!(w.current().as_deref(), Some("1.4.0"));
+    assert_eq!(w.version_dirs(), ["1.4.0"]);
+    let calls = mutating(&w.sys.calls());
+    assert_eq!(
+        calls[calls.len() - 8..],
+        [
+            "systemctl daemon-reload",
+            "systemctl reenable picket-edge-helper.service",
+            "systemctl reenable picket-edge-update.path",
+            "systemctl reenable picket-edge.service",
+            "systemctl restart picket-edge-helper.service",
+            "systemctl restart picket-edge.service",
+            "systemctl restart picket-accounts.service",
+            "systemctl restart picket-edge-update.path",
+        ],
+        "the rollback path"
+    );
+    // The rolled-back edge says ready again.
+    let state = std::fs::read_to_string(w.real("/data/picket/var/state.json")).unwrap();
+    assert!(state.contains("\"ready_version\": \"1.4.0\""), "{state}");
+    w.assert_own_service_untouched();
+}
+
 #[test]
 fn state_json_link_is_not_followed() {
     let w = installed();

@@ -51,6 +51,12 @@ pub struct ProviderPart {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listing: Option<Value>,
     pub k: Option<f64>,
+    /// Its selected files left without a feed at the feed limit (`capacity_skipped_json`,
+    /// bounded): restored with it, so the `feed_limit_reached` warning a restore brings back
+    /// holds, and a provider that never lists (one fixed file) still gets its feed once there is
+    /// room. Absent from older documents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capacity_skipped: Option<super::select::CapacitySkipped>,
 }
 
 /// A provider check with its feeds' checks and their changes.
@@ -127,7 +133,7 @@ pub fn export(c: &Connection) -> Result<FeedSide> {
     {
         // Without the listing (module docs).
         let mut st = c.prepare(
-            "SELECT s.provider_id, s.k FROM feed_provider_state s
+            "SELECT s.provider_id, s.k, s.capacity_skipped_json FROM feed_provider_state s
              JOIN feed_providers p ON p.id = s.provider_id ORDER BY s.provider_id",
         )?;
         let rows = st.query_map([], |r| {
@@ -135,6 +141,9 @@ pub fn export(c: &Connection) -> Result<FeedSide> {
                 provider: r.get(0)?,
                 listing: None,
                 k: r.get(1)?,
+                capacity_skipped: r
+                    .get::<_, Option<String>>(2)?
+                    .and_then(|s| serde_json::from_str(&s).ok()),
             })
         })?;
         for r in rows {
@@ -291,11 +300,16 @@ pub fn restore_in(
             );
         }
         tx.execute(
-            "UPDATE feed_provider_state SET listing_json = ?2, k = ?3 WHERE provider_id = ?1",
+            "UPDATE feed_provider_state SET listing_json = ?2, k = ?3, capacity_skipped_json = ?4 WHERE provider_id = ?1",
             params![
                 p.provider,
                 p.listing.as_ref().map(Value::to_string),
-                p.k.filter(|k| (0.1..=50.0).contains(k))
+                p.k.filter(|k| (0.1..=50.0).contains(k)),
+                p.capacity_skipped
+                    .as_ref()
+                    .filter(|c| c.count > 0)
+                    .map(super::select::CapacitySkipped::bounded)
+                    .and_then(|c| serde_json::to_string(&c).ok())
             ],
         )?;
     }

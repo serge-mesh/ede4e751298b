@@ -605,7 +605,9 @@ pub async fn reconcile(edge: &Arc<Edge>) -> bool {
         if !edge.watchdog.in_pipeline_mode() {
             edge.watchdog.use_pipeline();
         }
-        if !mgr.ready_marked.swap(true, Relaxed)
+        // Never ready with a helper speaking another protocol (#69): the edge is stopping.
+        if edge.fw.incompatible().is_none()
+            && !mgr.ready_marked.swap(true, Relaxed)
             && let Err(e) = edge
                 .state
                 .update_async(|s| s.ready_version = Some(picket_api::VERSION.to_owned()))

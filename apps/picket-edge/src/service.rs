@@ -348,22 +348,6 @@ pub async fn start(opts: Options, tuning: Tuning, install: impl FnOnce(&Hooks)) 
     // `releases/<version>/` once applied (edge.md §2).
     crate::release::cleanup(&layout.releases_dir());
 
-    // Step 2: seed the firewall from the helper if the newest stored config needs it.
-    let stored = convergence::load_stored(&layout, &state.get());
-    if let Some((_, cfg, _)) = stored.first()
-        && cfg.needs_helper()
-        && let Err(e) = edge.hooks.helper_seed().seed(&edge, cfg).await
-    {
-        tracing::warn!(
-            "seeding the firewall from the helper: {}",
-            crate::diag::cap_chain(&e)
-        );
-    }
-    drop(stored);
-
-    // Step 3.
-    systemd::notify_ready("started; waiting for a config, core or the SSD");
-
     // Logging: the shipper drains the buffer; core when set up.
     let client = if core_ready {
         let url = local.core_url.clone().context("core_url")?;
@@ -473,6 +457,40 @@ pub async fn start(opts: Options, tuning: Tuning, install: impl FnOnce(&Hooks)) 
             });
         }
     }
+
+    // Step 2: seed the firewall from the helper if the newest stored config needs it. After the
+    // firewall tasks above start (they say `hello` and seed), so a healthy helper answers at once
+    // instead of the wait running out (#69). A helper speaking another protocol stops the start
+    // here, before the admin socket, any listener or `ready_version`: the shipper flushes the
+    // `helper_protocol_mismatch` event to the spool and the process exits unsuccessfully.
+    let stored = convergence::load_stored(&layout, &state.get());
+    let seeded = match stored.first() {
+        Some((_, cfg, _)) if cfg.needs_helper() => edge.hooks.helper_seed().seed(&edge, cfg).await,
+        _ => Ok(()),
+    };
+    drop(stored);
+    if let Err(e) = seeded {
+        if e.downcast_ref::<crate::firewall::HelperIncompatible>().is_some() {
+            // As `Running::shutdown`, short of the admin socket (not bound yet: the path may be
+            // another instance's).
+            systemd::notify_stopping();
+            let _ = shutdown_tx.send(true);
+            if tokio::time::timeout(Duration::from_secs(20), shipper_handle)
+                .await
+                .is_err()
+            {
+                tracing::warn!("log shipper didn't stop in time; some buffered records may be lost");
+            }
+            return Err(e.context("the firewall helper is incompatible"));
+        }
+        tracing::warn!(
+            "seeding the firewall from the helper: {}",
+            crate::diag::cap_chain(&e)
+        );
+    }
+
+    // Step 3.
+    systemd::notify_ready("started; waiting for a config, core or the SSD");
 
     // The admin socket. A failure here doesn't stop DNS: the task retries with backoff.
     let service = tuning.service.unwrap_or_else(users::is_service);
