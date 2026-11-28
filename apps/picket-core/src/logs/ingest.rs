@@ -252,6 +252,9 @@ impl Ingest {
         body: Bytes,
         gzip: bool,
     ) -> Result<IngestReport, IngestError> {
+        // The restore generation, before the slot wait and the settings the decode reads: a
+        // restore committing meanwhile then refuses every write of this batch (module docs).
+        let generation = state.restore.generation();
         let _shared = tokio::time::timeout(self.admit_wait(), self.slots.clone().acquire_owned())
             .await
             .map_err(|_| IngestError::Busy)?
@@ -267,7 +270,7 @@ impl Ingest {
             tokio::task::spawn_blocking(move || decode::decode_body(&body, gzip, &ctx, &decode::LIMITS))
                 .await
                 .map_err(|e| IngestError::Unavailable(format!("decode task: {e}")))??;
-        self.store_batch(state, edge, key, batch).await
+        self.store_batch_under(state, edge, key, batch, generation).await
     }
 
     /// Stores a decoded batch (steps 3–6 of the module docs) from `edge`, sent with the key
@@ -279,7 +282,20 @@ impl Ingest {
         state: &AppState,
         edge: &str,
         key: &str,
+        batch: Batch,
+    ) -> Result<IngestReport, IngestError> {
+        let generation = state.restore.generation();
+        self.store_batch_under(state, edge, key, batch, generation).await
+    }
+
+    /// [`Self::store_batch`] for a batch that began under restore generation `generation`.
+    async fn store_batch_under(
+        &self,
+        state: &AppState,
+        edge: &str,
+        key: &str,
         mut batch: Batch,
+        generation: u64,
     ) -> Result<IngestReport, IngestError> {
         let ack = batch.ack();
         let mut report = IngestReport {
@@ -287,20 +303,24 @@ impl Ingest {
             ..Default::default()
         };
         // The restore generation the batch works under, checked again in each step's writer
-        // (module docs).
+        // together with `logs_pending` (module docs): `stale` is true once a restore committed
+        // since, or while one empties the logs.
         let gate = state.restore.clone();
-        let generation = gate.generation();
+        let stale: crate::lookups::ingest::Stale = {
+            let g = gate.clone();
+            Arc::new(move || g.logs_pending() || !g.is_current(generation))
+        };
         let overtook = || IngestError::Unavailable(RestoreOvertook.to_string());
 
         // 3. Boots: register those core never heard a hello from, up to the edge's share. Past
         // it, records are stored anyway (release `unknown` either way).
         let boots: BTreeSet<String> = batch.records.iter().map(|r| r.header().boot.clone()).collect();
         let (edge_s, key_s) = (edge.to_string(), key.to_string());
-        let g = gate.clone();
+        let st = Arc::clone(&stale);
         let unregistered = state
             .db
             .write(move |c| {
-                if !g.is_current(generation) {
+                if st() {
                     return Ok(Err(RestoreOvertook));
                 }
                 register_boots(c, &edge_s, &key_s, &boots).map(Ok)
@@ -321,7 +341,7 @@ impl Ingest {
 
         // 4a. Records clamped from a later hour keep their first attempt's hour (core.md §6:
         // dedupe on (edge, boot, seq), whatever the clamp).
-        pin_clamped_hours(state, edge, &mut batch).await?;
+        pin_clamped_hours(state, edge, &mut batch, Arc::clone(&stale)).await?;
 
         // 4. Query records into their partitions, with their answers.
         let mut answers: HashMap<String, Vec<u8>> = HashMap::new();
@@ -368,8 +388,8 @@ impl Ingest {
         // committed after the batch started, the log writer refuses each write (`503`, the edge
         // retries): checked on the writer thread, so it is ordered with the restore's deletions
         // (core.md §2; `config::export::RestoreGate`).
-        let g = gate.clone();
-        let refuse: super::writer::Refuse = Arc::new(move || g.logs_pending() || !g.is_current(generation));
+        let st = Arc::clone(&stale);
+        let refuse: super::writer::Refuse = Arc::new(move || st());
         for (hour, rows) in by_hour {
             let n = rows.len();
             let out = self
@@ -416,11 +436,11 @@ impl Ingest {
 
         // 5. Events, conditions and allows into core.db, with their alert effects.
         let ctx = OthersCtx::new(state, edge, key, &others).await;
-        let g = gate.clone();
+        let st = Arc::clone(&stale);
         let mut effects = state
             .db
             .write(move |c| {
-                if !g.is_current(generation) {
+                if st() {
                     return Ok(Err(RestoreOvertook));
                 }
                 store_others(c, &ctx, others).map(Ok)
@@ -451,7 +471,7 @@ impl Ingest {
             edge,
             lookup_q.into_values().flatten().collect(),
             lookup_records,
-            Some(generation),
+            Some(Arc::clone(&stale)),
         )
         .await
         .map_err(|e| match e.downcast_ref::<RestoreOvertook>() {
@@ -521,8 +541,8 @@ impl Ingest {
                 effects.tls_unlogged as f64,
             ));
         }
-        let g = gate.clone();
-        let current: crate::metrics::store::WriteGuard = Arc::new(move || g.is_current(generation));
+        let st = Arc::clone(&stale);
+        let current: crate::metrics::store::WriteGuard = Arc::new(move || !st());
         if !state
             .metrics
             .count_if(&state.metrics_db, items, Some(current))
@@ -773,7 +793,12 @@ fn seq_i64(seq: u64) -> i64 {
 /// whose `ts` is in a later hour than the run's back to it, `ts` at the end of that hour: a
 /// retry after the hour turns lands in the same partition, where (edge, boot, seq) dedupes it
 /// (core.md §6). Only the batch's own seqs are looked up.
-async fn pin_clamped_hours(state: &AppState, edge: &str, batch: &mut Batch) -> Result<(), IngestError> {
+async fn pin_clamped_hours(
+    state: &AppState,
+    edge: &str,
+    batch: &mut Batch,
+    stale: crate::lookups::ingest::Stale,
+) -> Result<(), IngestError> {
     let mut wanted: BTreeMap<String, BTreeSet<i64>> = BTreeMap::new();
     let mut fresh: BTreeMap<(String, String), BTreeSet<i64>> = BTreeMap::new();
     for r in &batch.records {
@@ -812,6 +837,10 @@ async fn pin_clamped_hours(state: &AppState, edge: &str, batch: &mut Batch) -> R
         state
             .db
             .write(move |c| {
+                // A restore since the batch began clears `log_clamped`: pin nothing into it.
+                if stale() {
+                    return Err(RestoreOvertook.into());
+                }
                 let tx = c.transaction()?;
                 let mut pinned = pinned_hours(&tx, &edge_s, &wanted)?;
                 let unpinned = pin_fresh(&tx, &edge_s, &fresh, &mut pinned)?;
@@ -820,7 +849,13 @@ async fn pin_clamped_hours(state: &AppState, edge: &str, batch: &mut Batch) -> R
             })
             .await
     }
-    .map_err(|e| unavailable(&e))?;
+    .map_err(|e| {
+        if e.downcast_ref::<RestoreOvertook>().is_some() {
+            IngestError::Unavailable(RestoreOvertook.to_string())
+        } else {
+            unavailable(&e)
+        }
+    })?;
     if unpinned > 0 {
         tracing::warn!(
             edge,

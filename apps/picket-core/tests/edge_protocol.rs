@@ -2658,7 +2658,7 @@ async fn hourly_tls_refusals_never_crowd_other_events_off_the_edge_page() {
 // #71: log batches across a config restore ----------------------------------------------------
 
 /// Decodes JSON lines into a batch as the ingest would.
-fn batch_of(lines: &[Value]) -> picket_core::logs::decode::Batch {
+pub(crate) fn batch_of(lines: &[Value]) -> picket_core::logs::decode::Batch {
     let now = Timestamp::now();
     let ctx = picket_core::logs::decode::Context {
         now,
@@ -2683,7 +2683,7 @@ async fn restore_same(c: &common::Core) {
 
 /// Stores `lines` in a task, holds it at `point`, restores the configuration meanwhile, then
 /// lets it go on: the batch's result.
-async fn store_across_a_restore(
+pub(crate) async fn store_across_a_restore(
     c: &common::Core,
     a: &FakeEdge,
     lines: &[Value],
@@ -2733,7 +2733,7 @@ async fn log_records_points(c: &common::Core, edge: &str) -> i64 {
     .await
 }
 
-fn is_retryable(r: &Result<picket_core::logs::ingest::IngestReport, picket_core::logs::ingest::IngestError>) -> bool {
+pub(crate) fn is_retryable(r: &Result<picket_core::logs::ingest::IngestReport, picket_core::logs::ingest::IngestError>) -> bool {
     matches!(r, Err(picket_core::logs::ingest::IngestError::Unavailable(m)) if m.contains("config restore"))
 }
 

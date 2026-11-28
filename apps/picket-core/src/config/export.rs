@@ -2345,6 +2345,7 @@ pub async fn restore_file(
                 provider: new.clone(),
                 listing: None,
                 k,
+                capacity_skipped: None,
             });
         }
     }

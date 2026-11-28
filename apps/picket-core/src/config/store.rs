@@ -1813,8 +1813,12 @@ fn persist_provider(tx: &Transaction<'_>, before: &Model, after: &Model, id: &st
             params![id, if created { "first" } else { "edit" }],
         )?;
         if elsewhere {
+            // What the old source's listing selected and skipped goes with it: the new source's
+            // first listing (or, for a provider that never lists, the selection right after)
+            // decides them again, so no warning keeps the old source's files.
             tx.execute(
-                "UPDATE feed_provider_state SET listing_json = NULL WHERE provider_id = ?1",
+                "UPDATE feed_provider_state SET listing_json = NULL, skipped_json = NULL, capacity_skipped_json = NULL
+                 WHERE provider_id = ?1",
                 [id],
             )?;
         }

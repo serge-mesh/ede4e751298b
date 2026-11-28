@@ -561,11 +561,10 @@ pub fn apply(
 ) -> rusqlite::Result<()> {
     for f in &findings.items {
         if let Some(open) = open_severity(tx, &f.dedupe_key)? {
-            // Already open: no new occurrence; only a severity the policy now puts elsewhere
-            // changes, in place.
-            if open != f.severity {
-                let detail = broad_text(f.kind, f.severity, bundle, &f.identity.feed).1;
-                alerts.reclassify_in(tx, &f.dedupe_key, f.severity, &f.title, &detail, ch)?;
+            // Already open: no new occurrence; only a broad block's severity the policy now puts
+            // elsewhere changes, in place (its finding's detail carries the scope wording).
+            if f.kind == "broad_block" && open != f.severity {
+                alerts.reclassify_in(tx, &f.dedupe_key, f.severity, &f.title, &f.detail, ch)?;
             }
             continue;
         }

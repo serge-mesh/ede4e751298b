@@ -359,6 +359,14 @@ pub struct CapacitySkipped {
 }
 
 impl CapacitySkipped {
+    /// The same within [`CAPACITY_SAMPLE`] (a restored document's).
+    pub fn bounded(&self) -> Self {
+        Self {
+            count: self.count,
+            sample: self.sample.iter().take(CAPACITY_SAMPLE).cloned().collect(),
+        }
+    }
+
     fn of(files: &[String]) -> Self {
         Self {
             count: files.len(),
@@ -651,6 +659,10 @@ fn capacity_alerts(
         };
         let key = capacity_key(&p);
         skipping.insert(key.clone());
+        let title = format!(
+            "Feed provider {p}: {} selected files got no feed, the configuration's feed limit ({limit}) is reached",
+            s.count
+        );
         let detail = json!({
             "provider": p,
             "limit": limit,
@@ -669,20 +681,12 @@ fn capacity_alerts(
         match open {
             Some(d) if serde_json::from_str::<Value>(&d).ok().as_ref() == Some(&detail) => {}
             Some(_) => {
-                alerts.update_details_in(tx, &key, &detail, &[], ch)?;
+                // The title carries the count: both follow it, without a new occurrence.
+                alerts.update_summary_in(tx, &key, &title, &detail, ch)?;
             }
             None => {
-                let spec = RaiseSpec::new(
-                    "feed_limit_reached",
-                    Severity::Warning,
-                    key,
-                    format!(
-                        "Feed provider {p}: {} selected files got no feed, the configuration's feed limit ({limit}) is reached",
-                        s.count
-                    ),
-                    detail,
-                )
-                .feed_provider(p.clone());
+                let spec = RaiseSpec::new("feed_limit_reached", Severity::Warning, key, title, detail)
+                    .feed_provider(p.clone());
                 alerts.raise_in(tx, &spec, ch)?;
             }
         }

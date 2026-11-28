@@ -1583,6 +1583,8 @@ async fn auto_created_feeds_stay_within_the_feed_limit() {
     })
     .await;
     assert_eq!(alert_state(&c, "feed_limit_reached:hz").await.as_deref(), Some("open"));
+    let a = c.state.alerts.get_by_key("feed_limit_reached:hz").await.unwrap().unwrap();
+    assert!(a.title.contains(": 1 selected files"), "the title follows: {}", a.title);
     // A manual feed at the limit is refused as before.
     let (st, v) = post(
         &c,
@@ -1591,13 +1593,36 @@ async fn auto_created_feeds_stay_within_the_feed_limit() {
     )
     .await;
     assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
-    // The configuration these paths produced exports and restores.
+    // A fixed-file provider (it never lists) saved at the limit.
+    let (st, v) = post(&c, "/feed-providers", http("d")).await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    wait_until("d's warning", || async {
+        alert_state(&c, "feed_limit_reached:d").await.as_deref() == Some("open")
+    })
+    .await;
+    // The configuration these paths produced exports and restores, with what was skipped for
+    // lack of room: the warnings stay open, and room freed after the restore still goes to d.
     let r = ui(&c, Method::GET, "/config/export").send().await.unwrap();
     assert_eq!(r.status(), StatusCode::OK);
     let doc: Value = r.json().await.unwrap();
     assert_eq!(doc["configuration"]["feeds"].as_array().unwrap().len() as i64, LIMIT);
     let r = ui(&c, Method::PUT, "/config/export").json(&doc).send().await.unwrap();
     assert_eq!(r.status(), StatusCode::OK, "{}", r.text().await.unwrap());
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    for p in ["d", "hz"] {
+        assert_eq!(
+            alert_state(&c, &format!("feed_limit_reached:{p}")).await.as_deref(),
+            Some("open"),
+            "{p}'s warning holds after the restore"
+        );
+    }
+    let r = ui(&c, Method::DELETE, "/feeds/filler-3").json(&json!({})).send().await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK, "{}", r.text().await.unwrap());
+    assert_eq!(
+        q_i64(&c, "SELECT count(*) FROM feeds WHERE provider_id = ?1", "d").await,
+        1,
+        "freed room goes to d after the restore"
+    );
 }
 
 /// #72: the per-provider cap still applies on its own, under the feed limit: a provider past
