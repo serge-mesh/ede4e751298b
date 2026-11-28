@@ -252,7 +252,7 @@ fn too_short(earliest: Timestamp, max_end: Timestamp, ttl: u32, now: Timestamp, 
 const RELOAD_BEFORE_EXPIRY_S_U: u64 = picket_api::edge_config::RELOAD_BEFORE_EXPIRY_S;
 
 /// `retry_after_s` (edge.md §12): `max(0, block_time + hold − now)` for a DNS allow,
-/// `hold = max(60 s, block TTL + 5 s)` ([`ring::hold_s`]), but never later than
+/// `hold = max(65 s, block TTL + 5 s)` ([`ring::hold_s`]), but never later than
 /// [`RETRY_BEFORE_EXPIRY_S`] before the allow expires; 0 for an IP allow. The API creates or
 /// re-times a DNS allow only when it outlasts the hold by that margin ([`earliest_end`], #50),
 /// so the bound applies only to an allow a config re-check shortened, which reports no
@@ -1723,7 +1723,7 @@ mod tests {
         let mut a = crate::allows::tests::allow("a", AllowKind::Dns, 3600);
         a.block_time = Some(now - jiff::SignedDuration::from_secs(10));
         a.block_ttl = Some(10);
-        assert_eq!(retry_after(&a, now), 50, "hold = max(60, ttl + 5)");
+        assert_eq!(retry_after(&a, now), 55, "hold = max(65, ttl + 5)");
         a.block_ttl = Some(300);
         assert_eq!(retry_after(&a, now), 295);
         a.block_time = Some(now - jiff::SignedDuration::from_secs(400));
@@ -1752,8 +1752,8 @@ mod tests {
         assert!(earliest_end(ago(0), Some(600), now) > at(300));
         // The same block 400 s later: 210 s left, so a 5 min allow fits.
         assert_eq!(earliest_end(ago(400), Some(600), now), at(210));
-        // Short TTLs hold 60 s.
-        assert_eq!(earliest_end(ago(10), Some(10), now), at(55));
+        // Short TTLs hold 65 s.
+        assert_eq!(earliest_end(ago(10), Some(10), now), at(60));
         // Hold over: no constraint. No recorded block: none either.
         assert_eq!(earliest_end(ago(605), Some(600), now), None);
         assert_eq!(earliest_end(None, Some(600), now), None);
@@ -1766,7 +1766,7 @@ mod tests {
             900,
             "core's profile check agrees"
         );
-        assert_eq!(picket_api::edge_config::min_allow_for_block_s(10), 65);
+        assert_eq!(picket_api::edge_config::min_allow_for_block_s(10), 70);
         assert_eq!(
             picket_api::edge_config::min_allow_for_block_s(86_400),
             900,

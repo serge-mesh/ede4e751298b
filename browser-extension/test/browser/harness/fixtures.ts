@@ -1,7 +1,7 @@
 // Playwright fixtures for the browser tests: per test, a fake edge, the local targets and a
 // fresh browser profile with the built extension; per worker, the test certificates.
 
-import { rmSync } from 'node:fs';
+import { rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -34,6 +34,11 @@ interface TestFixtures {
   firefoxPrefs: Record<string, string | number | boolean>;
   /** The unpacked extension to load (default: the build for the browser). */
   extensionDir: string | null;
+  /**
+   * Firefox resolves natively (TRR off) through the fake edge's plain DNS on 127.0.53.<worker>:53,
+   * in a private mount namespace (`test.use`; root on Linux only).
+   */
+  nativeDns: boolean;
 }
 
 interface WorkerFixtures {
@@ -53,11 +58,15 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
   ],
   firefoxPrefs: [{}, { option: true }],
   extensionDir: [null, { option: true }],
+  nativeDns: [false, { option: true }],
   kind: async ({ browserName }, use) => {
     await use(browserName === 'chromium' ? 'chromium' : 'firefox');
   },
-  edge: async ({ certs }, use) => {
+  edge: async ({ certs, nativeDns }, use, testInfo) => {
     const edge = await new FakeEdge(certs.edge).start();
+    if (nativeDns) {
+      await edge.startNative(nativeDnsHost(testInfo.workerIndex));
+    }
     await use(edge);
     await edge.close();
   },
@@ -69,8 +78,14 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
     await use(targets);
     await targets.close();
   },
-  ext: async ({ kind, certs, edge, targets, firefoxPrefs, extensionDir }, use, testInfo) => {
+  ext: async ({ kind, certs, edge, targets, firefoxPrefs, extensionDir, nativeDns }, use, testInfo) => {
+    let nativeResolvConf: string | undefined;
+    if (nativeDns) {
+      nativeResolvConf = path.join(certs.dir, `resolv-${String(testInfo.workerIndex)}.conf`);
+      writeFileSync(nativeResolvConf, `nameserver ${nativeDnsHost(testInfo.workerIndex)}\noptions timeout:1 attempts:2\n`);
+    }
     const session = await launch({
+      ...(nativeResolvConf === undefined ? {} : { nativeResolvConf }),
       kind,
       extensionDir: extensionDir ?? distOf(kind),
       certs,
@@ -83,6 +98,11 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
     await session.close();
   },
 });
+
+/** The fake edge's plain-DNS address for a worker (`nativeDns`). */
+function nativeDnsHost(worker: number): string {
+  return `127.0.53.${String((worker % 250) + 1)}`;
+}
 
 /**
  * Sets the extension up as a user does: options → edge URL → Save and test; with `detection`,

@@ -152,6 +152,11 @@ export interface LaunchOptions {
   markerUrl: string;
   /** Extra Firefox prefs (set before any page loads). */
   firefoxPrefs?: Record<string, string | number | boolean>;
+  /**
+   * Firefox only: resolve natively, TRR off, through the system resolver of a private mount
+   * namespace whose `/etc/resolv.conf` is this file (`unshare -m`, so root on Linux).
+   */
+  nativeResolvConf?: string;
 }
 
 const HEADLESS = process.env.PICKET_HEADED !== '1';
@@ -676,6 +681,7 @@ class FirefoxSession implements Session {
   private static start(profile: string, port: number, opts: LaunchOptions): Promise<BrowserContext> {
     return firefox.launchPersistentContext(profile, {
       headless: HEADLESS,
+      ...(opts.nativeResolvConf === undefined ? {} : { executablePath: nativeDnsWrapper(profile, opts.nativeResolvConf) }),
       args: [`--remote-debugging-port=${String(port)}`],
       // BiDi may evaluate script in extension pages only with this set.
       env: { ...process.env, MOZ_REMOTE_ALLOW_SYSTEM_ACCESS: '1' },
@@ -705,7 +711,7 @@ class FirefoxSession implements Session {
         p.setCharPref('network.trr.custom_uri', ${JSON.stringify(opts.dohUrl)});
         p.setBoolPref('network.trr.allow-rfc1918', true);
         p.setCharPref('network.trr.confirmationNS', 'skip');
-        p.setIntPref('network.trr.mode', 3);
+        p.setIntPref('network.trr.mode', ${opts.nativeResolvConf === undefined ? '3' : '5'});
         return JSON.stringify(Services.appinfo.version);
       })()`,
     );
@@ -812,6 +818,22 @@ class FirefoxSession implements Session {
     // Firefox writes its profile until it has quit: removed after the close, or retried.
     await removeProfile(this.profile, this.ctx.close());
   }
+}
+
+/**
+ * A script that starts Playwright's Firefox in a private mount namespace with `resolvConf` bound
+ * over `/etc/resolv.conf`: the browser's native resolver then asks the fake edge's plain DNS,
+ * and nothing else on the machine changes.
+ */
+function nativeDnsWrapper(profile: string, resolvConf: string): string {
+  const script = path.join(profile, 'native-dns.sh');
+  const q = (v: string): string => `'${v.replaceAll("'", "'\\''")}'`;
+  writeFileSync(
+    script,
+    `#!/bin/sh\nexec unshare -m -- sh -c 'mount --bind "$1" /etc/resolv.conf && shift && exec "$@"' sh ${q(resolvConf)} ${q(firefox.executablePath())} "$@"\n`,
+    { mode: 0o755 },
+  );
+  return script;
 }
 
 export async function launch(opts: LaunchOptions): Promise<Session> {

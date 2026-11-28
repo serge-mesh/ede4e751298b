@@ -346,7 +346,7 @@ async fn the_ring_answers_probes_and_dns_allows_follow_every_limit() {
         "max_duration 1h"
     );
     let ra = a["retry_after_s"].as_u64().unwrap();
-    assert!((50..=60).contains(&ra), "hold = max(60 s, block TTL 10): {ra}");
+    assert!((55..=65).contains(&ra), "hold = max(65 s, block TTL 10): {ra}");
     let allow_id = a["allow_id"].as_str().unwrap().to_owned();
     // It applies at ladder step 1.
     let m = udp_q(e.dns(), &Q::new("blocked.example", 1)).await;
@@ -440,7 +440,7 @@ async fn with_block_ttl_600(e: &Env, bypass: Value) {
     assert!(wait_until(T, || edge.active().object_id.as_deref() == Some(id.as_str())).await);
 }
 
-/// #50: a DNS allow must outlast its block's cached answer (hold max(60 s, TTL + 5 s), then 5 s
+/// #50: a DNS allow must outlast its block's cached answer (hold max(65 s, TTL + 5 s), then 5 s
 /// for the reload). One that would end sooner is refused with `403 too_short`, whether the
 /// profile's `max_duration` or the request is short, with nothing recorded and no limit used; a
 /// compatible one reports the full hold as its countdown.
