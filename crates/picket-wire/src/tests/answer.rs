@@ -842,12 +842,18 @@ fn svcb_forbidden_params() {
                 *expect,
                 "{what} at {place:?}"
             );
-            // In AliasMode the SvcParams are ignored (RFC 9460 §2.4.2): only what hickory's own
-            // decoder refuses still makes the record malformed.
+            // In AliasMode the SvcParams are ignored (RFC 9460 §2.4.2): only their framing is
+            // checked (keys strictly increasing), never a value, even one hickory's decoder
+            // would refuse.
             let alias = placed(place, &svcb(0, "pool.example", params));
-            match expect {
-                Invalid::BadSvcb => assert!(alias.is_ok(), "AliasMode {what} at {place:?}: {alias:?}"),
-                e => assert_eq!(alias.unwrap_err(), *e, "AliasMode {what} at {place:?}"),
+            if params.windows(2).all(|w| w[0].0 < w[1].0) {
+                assert!(alias.is_ok(), "AliasMode {what} at {place:?}: {alias:?}");
+            } else {
+                assert_eq!(
+                    alias.unwrap_err(),
+                    Invalid::Undecodable,
+                    "AliasMode {what} at {place:?}"
+                );
             }
         }
     }
