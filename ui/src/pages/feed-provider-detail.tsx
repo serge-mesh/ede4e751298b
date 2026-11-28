@@ -320,11 +320,12 @@ function ProviderFilesView({ provider }: { provider: FeedProviderDef }) {
   const view = searching ? found : folder;
   const pages = view.data?.pages ?? [];
   const listing = pages[0]?.listing;
-  // Sorting by name is the browser's, over the current folder's loaded entries (it goes back to
-  // ascending in another): folders and files each by the name shown, so `hosts/` comes before
-  // `hosts-extra/` and `hosts.d/` though core's key order (`/` after `-` and `.`) has it last.
-  const [sort, setSort] = React.useState({ prefix: "", desc: false });
-  const desc = !searching && sort.prefix === prefix && sort.desc;
+  // Sorting by name is the browser's, over the current folder's loaded entries: folders and files
+  // each by the name shown, so `hosts/` comes before `hosts-extra/` and `hosts.d/` though core's
+  // key order (`/` after `-` and `.`) has it last. The direction chosen holds from folder to
+  // folder (Back included) until it's chosen again.
+  const [sortDesc, setSortDesc] = React.useState(false);
+  const desc = !searching && sortDesc;
   const byName = <T,>(xs: T[], key: (x: T) => string): T[] => {
     if (searching) return xs;
     const named = xs.map((x) => [nameIn(prefix, key(x)), x] as const);
@@ -490,10 +491,12 @@ function ProviderFilesView({ provider }: { provider: FeedProviderDef }) {
                   <>
                     No file's path holds <SafeText mono>{applied}</SafeText>.
                   </>
+                ) : listing === null || listing === undefined ? (
+                  // Before the first listing, a folder's link (one typed or shared) has nothing
+                  // under it either: no listing is what to say.
+                  "No listing yet: it arrives with the provider's next check."
                 ) : prefix ? (
                   "Nothing under this folder in the latest listing."
-                ) : listing === null || listing === undefined ? (
-                  "No listing yet: it arrives with the provider's next check."
                 ) : (
                   "The latest listing holds no files."
                 )}
@@ -528,7 +531,7 @@ function ProviderFilesView({ provider }: { provider: FeedProviderDef }) {
                 <TableHeader>
                   <TableRow>
                     <TableHead aria-sort={desc ? "descending" : "ascending"}>
-                      <button type="button" className="inline-flex items-center gap-1 hover:text-foreground" onClick={() => setSort({ prefix, desc: !desc })}>
+                      <button type="button" className="inline-flex items-center gap-1 hover:text-foreground" onClick={() => setSortDesc(!desc)}>
                         Name
                         {desc ? <ArrowDownIcon className="size-3" /> : <ArrowUpIcon className="size-3" />}
                       </button>
