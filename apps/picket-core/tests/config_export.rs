@@ -2133,3 +2133,27 @@ async fn a_previous_releases_export_restores_in_the_new_shapes() {
         "no second feed for any URL"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn declared_web_addresses_survive_export_and_restore() {
+    let a = common::start_core(Some(
+        json!({"web": {"tls": "off", "addresses": ["192.168.88.8", "fd00::8"]}}),
+    ))
+    .await;
+    let (_, mut doc) = export(&a).await;
+    assert_eq!(
+        doc["configuration"]["settings"]["web.addresses"],
+        json!(["192.168.88.8", "fd00::8"])
+    );
+    doc["configuration"]["settings"]["web.addresses"] =
+        json!(["::ffff:192.168.88.8", "192.168.88.8", "fd00::8"]);
+    let b = common::start_core(Some(json!({"web": {"tls": "off"}}))).await;
+    let r = restore(&b, &doc).await;
+    assert_eq!(r.status(), StatusCode::OK, "{}", r.text().await.unwrap());
+    assert_eq!(b.state.settings().web.addresses, ["192.168.88.8", "fd00::8"]);
+    let (_, restored) = export(&b).await;
+    assert_eq!(
+        restored["configuration"]["settings"]["web.addresses"],
+        json!(["192.168.88.8", "fd00::8"])
+    );
+}

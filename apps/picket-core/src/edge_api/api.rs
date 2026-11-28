@@ -312,8 +312,13 @@ pub async fn csr(
         return forbidden();
     };
     let settings = state.settings();
-    if let Some(why) = crate::lanca::edge_leaf_conflict(&names, &ips, &settings.web.names, &state.core_ips())
-    {
+    let core_ips: Vec<_> = state
+        .core_ips()
+        .iter()
+        .copied()
+        .chain(settings.web.addresses.iter().filter_map(|a| a.parse().ok()))
+        .collect();
+    if let Some(why) = crate::lanca::edge_leaf_conflict(&names, &ips, &settings.web.names, &core_ips) {
         tracing::warn!(edge = %peer.edge_id, listener = %req.listener, "CSR refused: {why}");
         return error(StatusCode::FORBIDDEN, "conflict", why);
     }

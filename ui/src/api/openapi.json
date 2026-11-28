@@ -9771,6 +9771,7 @@
           "web": {
             "$ref": "#/components/schemas/WebSettings",
             "default": {
+              "addresses": [],
               "allow_cidrs": [
                 "0.0.0.0/0",
                 "::/0"
@@ -10349,6 +10350,22 @@
           },
           "web": {
             "properties": {
+              "addresses": {
+                "anyOf": [
+                  {
+                    "default": [],
+                    "description": "Additional reachable IP literals for the Host allowlist. RFC1918/ULA addresses also enter\nthe managed certificate; other addresses need a file certificate or a configured DNS name\nfor verified HTTPS. This does not change binding or client access.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Additional reachable IP literals for the Host allowlist. RFC1918/ULA addresses also enter\nthe managed certificate; other addresses need a file certificate or a configured DNS name\nfor verified HTTPS. This does not change binding or client access."
+              },
               "allow_cidrs": {
                 "anyOf": [
                   {
@@ -11867,6 +11884,14 @@
       },
       "WebSettings": {
         "properties": {
+          "addresses": {
+            "default": [],
+            "description": "Additional reachable IP literals for the Host allowlist. RFC1918/ULA addresses also enter\nthe managed certificate; other addresses need a file certificate or a configured DNS name\nfor verified HTTPS. This does not change binding or client access.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "allow_cidrs": {
             "default": [
               "0.0.0.0/0",
@@ -11932,7 +11957,7 @@
         "oneOf": [
           {
             "const": "managed",
-            "description": "A LAN-CA certificate for `web.names` and core's IPs in the LAN ranges.",
+            "description": "A LAN-CA certificate for `web.names` and core's local and declared IPs in the LAN ranges.",
             "type": "string"
           },
           {

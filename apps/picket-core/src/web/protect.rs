@@ -3,7 +3,7 @@
 //! 1. the IP allowlist for the path's class: `lists.allow_cidrs` for `/lists/*`, the LAN CA root
 //!    and the extension downloads, `metrics.allow_cidrs` for `/metrics` (off, `404`, while
 //!    empty), `web.allow_cidrs` for everything else;
-//! 2. the `Host` allowlist (`web.names` and core's IPs; defeats DNS rebinding);
+//! 2. the `Host` allowlist (`web.names`, declared addresses and core's IPs; defeats DNS rebinding);
 //! 3. no CORS: preflights are refused and no CORS header is ever sent;
 //! 4. mutating requests need `X-Picket-UI: 1` and a JSON body, else `403` (forces a preflight
 //!    that core never approves);
@@ -69,7 +69,7 @@ fn plain(status: StatusCode, text: &'static str) -> Response {
         .into_response()
 }
 
-/// True when the `Host` (or HTTP/2 `:authority`) names core: one of `web.names` or core's IPs.
+/// True when the `Host` (or HTTP/2 `:authority`) names core: one of `web.names`, declared addresses or core's IPs.
 pub fn host_allowed(state: &SharedState, req: &Request) -> bool {
     let authority = req.uri().authority().map(|a| a.as_str().to_string()).or_else(|| {
         req.headers()
@@ -92,10 +92,16 @@ pub fn host_allowed(state: &SharedState, req: &Request) -> bool {
     match host.parse::<IpAddr>() {
         Ok(ip) => {
             let ip = crate::net::canonical_ip(ip);
-            state
-                .core_ips()
+            settings
+                .web
+                .addresses
                 .iter()
-                .any(|c| crate::net::canonical_ip(*c) == ip)
+                .filter_map(|s| s.parse::<IpAddr>().ok())
+                .any(|c| crate::net::canonical_ip(c) == ip)
+                || state
+                    .core_ips()
+                    .iter()
+                    .any(|c| crate::net::canonical_ip(*c) == ip)
         }
         Err(_) => false,
     }

@@ -5618,6 +5618,7 @@ export interface components {
             retention?: components["schemas"]["RetentionSettings"];
             /**
              * @default {
+             *       "addresses": [],
              *       "allow_cidrs": [
              *         "0.0.0.0/0",
              *         "::/0"
@@ -5747,6 +5748,12 @@ export interface components {
                 warnings?: components["schemas"]["Duration"] | null;
             };
             web?: {
+                /**
+                 * @description Additional reachable IP literals for the Host allowlist. RFC1918/ULA addresses also enter
+                 *     the managed certificate; other addresses need a file certificate or a configured DNS name
+                 *     for verified HTTPS. This does not change binding or client access.
+                 */
+                addresses?: string[] | null;
                 /** @description Who may reach the UI, the UI API and `/healthz`. */
                 allow_cidrs?: string[] | null;
                 /** @description PEM certificate chain for `web.tls = file`. */
@@ -6299,6 +6306,13 @@ export interface components {
         };
         WarninglistList: components["schemas"]["Warninglist"][];
         WebSettings: {
+            /**
+             * @description Additional reachable IP literals for the Host allowlist. RFC1918/ULA addresses also enter
+             *     the managed certificate; other addresses need a file certificate or a configured DNS name
+             *     for verified HTTPS. This does not change binding or client access.
+             * @default []
+             */
+            addresses?: string[];
             /**
              * @description Who may reach the UI, the UI API and `/healthz`.
              * @default [

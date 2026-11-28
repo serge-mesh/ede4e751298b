@@ -190,6 +190,7 @@ fn init_cut_off_at_each_step_then_restarted() {
             let opts = InitOptions {
                 data_dir: d.path().to_path_buf(),
                 web_port: Some(w),
+                web_addresses: None,
                 edge_port: Some(e),
                 lanca_zones: None,
             };
@@ -554,4 +555,28 @@ async fn start_failures_a_restart_can_fix_are_not_78() {
     stop.cancel();
     assert_eq!(e.code, 1, "{}", e.message);
     assert!(e.message.contains("web port"), "{}", e.message);
+}
+
+#[test]
+fn init_accepts_and_persists_reachable_addresses() {
+    let d = tempfile::tempdir().unwrap();
+    let (w, e) = free_ports();
+    let mut args = init_args(d.path(), w, e);
+    args.extend([
+        "--web-addresses".into(),
+        "192.168.42.5,::ffff:192.168.42.5,fd00::5".into(),
+    ]);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let result = run_bin(&refs);
+    assert!(result.status.success(), "{}", stderr(&result));
+    let conn = rusqlite::Connection::open(d.path().join("core.db")).unwrap();
+    let settings = picket_core::settings::load(&conn).unwrap();
+    assert_eq!(settings.web.addresses, ["192.168.42.5", "fd00::5"]);
+
+    let bad = tempfile::tempdir().unwrap();
+    let mut args = init_args(bad.path(), w, e);
+    args.extend(["--web-addresses".into(), "192.168.42.5/24".into()]);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    assert!(!run_bin(&refs).status.success());
+    assert!(!bad.path().join(MARKER).exists());
 }

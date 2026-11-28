@@ -42,6 +42,9 @@ pub enum Cmd {
         /// `web.port` (default 8443).
         #[arg(long)]
         web_port: Option<u16>,
+        /// Additional reachable IP literals, comma-separated (default none).
+        #[arg(long, value_delimiter = ',')]
+        web_addresses: Option<Vec<String>>,
         /// `edge_api.port` (default 7443).
         #[arg(long)]
         edge_port: Option<u16>,
@@ -108,12 +111,14 @@ pub fn dispatch(cli: Cli) -> Result<(), ExitError> {
         Cmd::Init {
             dir,
             web_port,
+            web_addresses,
             edge_port,
             lanca_zones,
         } => {
             let out = crate::instance::init(&crate::instance::InitOptions {
                 data_dir: dir.data_dir.clone(),
                 web_port,
+                web_addresses,
                 edge_port,
                 lanca_zones,
             })?;

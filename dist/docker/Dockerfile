@@ -5,8 +5,9 @@
 #
 # (Without --build-arg, the .deb is expected as picket-core.deb.)
 #
-# Run with host networking only (a bridge breaks dnssec.source_ips, exempt_sources and the Host
-# allowlist, README §3). The data directory on the host must belong to the image's user (UID and
+# Run with host networking (a bridge breaks dnssec.source_ips and exempt_sources, README §3). Behind
+# a published port, also pass the host address clients use to init as --web-addresses, or the Host
+# allowlist refuses it (README, "Reaching core through NAT or a port forward"). The data directory on the host must belong to the image's user (UID and
 # GID 7443, below) before the first start, or init can't write to it:
 #
 #   install -d -o 7443 -g 7443 -m 0750 <dir>

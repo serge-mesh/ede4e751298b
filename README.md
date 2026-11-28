@@ -24,6 +24,37 @@ app; and **picket-browser-extension**.
 | `fixtures/` | Recorded feeds, upstream answers, golden bundles |
 | `build-support/` | Code the build scripts share (module registry scan, release public keys) |
 
+## Reaching core through NAT or a port forward (containers, WSL)
+
+Core's `Host` allowlist accepts `web.names` and the addresses of core's own interfaces. When
+clients reach core at an address that belongs to another machine — a container port published on
+the host's `192.168.1.50`, or a Windows port forward to core inside WSL — declare that address in
+`web.addresses`, or core answers `403 forbidden: unknown Host`. A fresh instance can declare it
+at init, before the UI is reachable:
+
+```sh
+picket-core init --data-dir /path/to/data --web-addresses 192.168.1.50,fd00::50
+# in the container (dist/docker/Dockerfile):
+docker run --rm -v <dir>:/var/lib/picket-core picket-core:<version> \
+    init --data-dir /var/lib/picket-core --web-addresses 192.168.1.50
+```
+
+On an existing instance, set it under Settings → Web and access. Forward the host port to core's
+`web.port` (8443 by default); the external port may differ. Entries are exact IPv4 or IPv6
+literals: no names, brackets, ports or CIDR prefixes, and no unspecified, multicast or broadcast
+addresses. `::ffff:192.168.1.50` and `192.168.1.50` are the same entry. Unknown DNS names stay
+refused even when they resolve to a declared address. The setting changes nothing else: not what
+core binds, not who may connect (`web.allow_cidrs`), not outbound source addresses, not DNS.
+
+With managed TLS (the default), declared RFC 1918 and ULA addresses join the web certificate's IP
+SANs, re-issued as soon as the setting is saved, so a client that trusts the LAN CA root verifies
+`https://192.168.1.50:<port>/`. Install the root (`/lanca/ca.pem`, or `/lanca/ca.crt`) on each
+client, fetched over a connection you trust and checked against the fingerprint under Settings →
+LAN CA. The LAN CA never signs other addresses: core still accepts them as `Host`, but verified
+HTTPS by such an address needs `web.tls = file` with a certificate that covers it, or access by
+one of `web.names`. Edge listeners with managed certificates can't claim a declared address, and
+core refuses an edge's certificate request that covers one.
+
 ## Building
 
 ```sh

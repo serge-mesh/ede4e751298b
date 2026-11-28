@@ -1009,8 +1009,13 @@ async fn managed_web_certificate_follows_web_names_while_running() {
         .await
         .unwrap();
     assert!(r.status().is_success(), "{}", r.text().await.unwrap());
-    assert!(picket_core::web::refresh_web_cert(&c.state).unwrap(), "re-issued");
-    assert_eq!(served_names(&c), vec!["ui.home.arpa"]);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while served_names(&c) != vec!["ui.home.arpa"] {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("certificate refresh");
     // Nothing changed since: no new certificate.
     assert!(!picket_core::web::refresh_web_cert(&c.state).unwrap());
 }
@@ -1461,4 +1466,138 @@ async fn an_unsupported_method_gets_the_error_shape_and_allow() {
             "{method} {path}: {body}"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn forwarded_addresses_allow_hosts_and_refresh_verified_tls() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let c = start_core(None).await;
+    let patch =
+        json!({"web": {"addresses": ["192.168.42.5", "::ffff:192.168.42.5", "fd00::5", "203.0.113.5"]}});
+    let r = ui(&c, reqwest::Method::PUT, "/api/ui/v1/settings")
+        .json(&patch)
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    assert_eq!(
+        c.state.settings().web.addresses,
+        ["192.168.42.5", "fd00::5", "203.0.113.5"]
+    );
+    let invalid = ui(&c, reqwest::Method::PUT, "/api/ui/v1/settings")
+        .json(&json!({"web": {"addresses": ["192.168.42.5/24"]}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        c.state.settings().web.addresses,
+        ["192.168.42.5", "fd00::5", "203.0.113.5"]
+    );
+    let http1 = reqwest::Client::builder()
+        .no_proxy()
+        .http1_only()
+        .tls_danger_accept_invalid_certs(true)
+        .build()
+        .unwrap();
+    for (host, status) in [
+        ("192.168.42.5:9999", StatusCode::OK),
+        ("[::ffff:192.168.42.5]:9999", StatusCode::OK),
+        ("[fd00::5]:9999", StatusCode::OK),
+        ("203.0.113.5:9999", StatusCode::OK),
+        ("192.168.42.6:9999", StatusCode::FORBIDDEN),
+        ("evil.example:9999", StatusCode::FORBIDDEN),
+    ] {
+        let r = http1
+            .get(format!("{}/healthz", c.base("https")))
+            .header("Host", host)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), status, "{host}");
+    }
+    for (authority, allowed) in [
+        ("[fd00::5]:9999", true),
+        ("[::ffff:192.168.42.5]:9999", true),
+        ("evil.example:9999", false),
+    ] {
+        let request = axum::http::Request::builder()
+            .uri(format!("https://{authority}/healthz"))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            picket_core::web::protect::host_allowed(&c.state, &request),
+            allowed,
+            "{authority}"
+        );
+    }
+    let expected = "192.168.42.5".parse().unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let swap = c.state.web_cert.get().unwrap();
+            let key = swap.0.load_full();
+            let (_, cert) = x509_parser::parse_x509_certificate(key.cert[0].as_ref()).unwrap();
+            let has_ip = cert.subject_alternative_name().unwrap().unwrap().value.general_names.iter().any(|g| matches!(g, x509_parser::extensions::GeneralName::IPAddress(ip) if *ip == [192, 168, 42, 5]));
+            if has_ip { break; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("certificate refresh");
+    let (_, ips) = picket_core::web::web_cert_sans(&c.state);
+    assert!(ips.contains(&expected));
+    assert!(ips.contains(&"fd00::5".parse().unwrap()));
+    assert!(!ips.contains(&"203.0.113.5".parse().unwrap()));
+
+    let mut roots = rustls::RootCertStore::empty();
+    roots
+        .add(rustls_pki_types::CertificateDer::from(
+            c.state.lanca.load().cert_der.clone(),
+        ))
+        .unwrap();
+    let cfg = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(cfg));
+    for (ip, host) in [
+        ("192.168.42.5", "192.168.42.5:9999"),
+        ("fd00::5", "[fd00::5]:9999"),
+    ] {
+        let tcp = tokio::net::TcpStream::connect(c.web()).await.unwrap();
+        let name = rustls_pki_types::ServerName::IpAddress(ip.parse::<std::net::IpAddr>().unwrap().into());
+        let mut tls = connector.connect(name, tcp).await.unwrap();
+        tls.write_all(
+            format!("GET /healthz HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes(),
+        )
+        .await
+        .unwrap();
+        let mut response = Vec::new();
+        let _ = tls.read_to_end(&mut response).await;
+        assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 200"));
+    }
+    let tcp = tokio::net::TcpStream::connect(c.web()).await.unwrap();
+    let public = rustls_pki_types::ServerName::IpAddress(std::net::Ipv4Addr::new(203, 0, 113, 5).into());
+    assert!(connector.connect(public, tcp).await.is_err());
+
+    let r = ui(&c, reqwest::Method::PUT, "/api/ui/v1/settings")
+        .json(&json!({"web": {"addresses": []}}))
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let tcp = tokio::net::TcpStream::connect(c.web()).await.unwrap();
+            let name =
+                rustls_pki_types::ServerName::IpAddress(std::net::Ipv4Addr::new(192, 168, 42, 5).into());
+            if connector.connect(name, tcp).await.is_err() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("certificate refresh after removal");
 }
