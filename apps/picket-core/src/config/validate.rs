@@ -1246,6 +1246,20 @@ fn profile_rules(m: &Model, o: &mut Out) {
                 "range",
                 "block_response.ttl must be ≤ 86400".into(),
             );
+        } else if br.ttl > picket_api::edge_config::MAX_BLOCK_TTL_S {
+            // The edge lowers it so a browser's cached block answer expires inside a 15 min allow.
+            o.warn(
+                e,
+                id,
+                Some("block_response.ttl"),
+                "block_ttl_capped",
+                format!(
+                    "block_response.ttl {} is above {} s: the edge serves blocked answers with {} s, so a temporary allow can reach a browser that cached the block",
+                    br.ttl,
+                    picket_api::edge_config::MAX_BLOCK_TTL_S,
+                    picket_api::edge_config::MAX_BLOCK_TTL_S
+                ),
+            );
         }
         if ep.firewall.grace_s > 86_400 {
             o.err(
