@@ -276,7 +276,8 @@ pub async fn start_with(
 }
 
 /// Core's addresses change (DHCP, interfaces): re-read them every minute, and keep the managed
-/// web certificate in step.
+/// web certificate in step with them and, as soon as a change is saved, with `web.names` and
+/// `web.addresses`.
 fn spawn_ip_refresh(state: SharedState) {
     let mut changes = state.config.subscribe();
     let mut web = state.settings().web.clone();

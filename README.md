@@ -24,35 +24,38 @@ app; and **picket-browser-extension**.
 | `fixtures/` | Recorded feeds, upstream answers, golden bundles |
 | `build-support/` | Code the build scripts share (module registry scan, release public keys) |
 
-<!-- coderabbit-ai-generated:v1 -->
+## Reaching core through NAT or a port forward (containers, WSL)
 
-<!-- coderabbit-ai-generated-section:v1:196d5f5916d57c51f79d036bd79a8134898f9c4b85c6eea566af02bb785ba08a -->
-
-## Reaching Core through a container or WSL port forward
-
-When a container port is published on a host IP, or Windows forwards a port to Core in WSL,
-initialize Core with the IP clients use, for example:
+Core's `Host` allowlist accepts `web.names` and the addresses of core's own interfaces. When
+clients reach core at an address that belongs to another machine — a container port published on
+the host's `192.168.1.50`, or a Windows port forward to core inside WSL — declare that address in
+`web.addresses`, or core answers `403 forbidden: unknown Host`. A fresh instance can declare it
+at init, before the UI is reachable:
 
 ```sh
 picket-core init --data-dir /path/to/data --web-addresses 192.168.1.50,fd00::50
+# in the container (dist/docker/Dockerfile):
+docker run --rm -v <dir>:/var/lib/picket-core picket-core:<version> \
+    init --data-dir /var/lib/picket-core --web-addresses 192.168.1.50
 ```
 
-Publish or forward the host port to Core's configured web port (8443 by default). The external
-port may differ. For an existing instance, set `web.addresses` under Settings → Web and access.
-Use exact IP literals without brackets, ports or CIDR prefixes. Core still accepts its own IPs
-and configured DNS names; this setting does not change binding, client allowlists, outbound source
-IPs or DNS registration.
+On an existing instance, set it under Settings → Web and access. Forward the host port to core's
+`web.port` (8443 by default); the external port may differ. Entries are exact IPv4 or IPv6
+literals: no names, brackets, ports or CIDR prefixes, and no unspecified, multicast or broadcast
+addresses. `::ffff:192.168.1.50` and `192.168.1.50` are the same entry. Unknown DNS names stay
+refused even when they resolve to a declared address. The setting changes nothing else: not what
+core binds, not who may connect (`web.allow_cidrs`), not outbound source addresses, not DNS.
 
-With managed TLS, Core includes declared RFC1918 and ULA addresses in its LAN CA certificate.
-Install and trust the LAN CA root on each client before accessing the forwarded HTTPS address;
-fetch `/lanca/ca.pem` from a trusted connection or the optional plain HTTP lists port and verify
-it through a trusted channel. Other IP addresses are accepted as Host but cannot be included in
-the managed certificate: use a suitable file certificate or a configured DNS name for verified
-HTTPS. `web.names` must remain DNS names under `lanca.zones`.
+With managed TLS (the default), declared RFC 1918 and ULA addresses join the web certificate's IP
+SANs, re-issued as soon as the setting is saved, so a client that trusts the LAN CA root verifies
+`https://192.168.1.50:<port>/`. Install the root (`/lanca/ca.pem`, or `/lanca/ca.crt`) on each
+client, fetched over a connection you trust and checked against the fingerprint under Settings →
+LAN CA. The LAN CA never signs other addresses: core still accepts them as `Host`, but verified
+HTTPS by such an address needs `web.tls = file` with a certificate that covers it, or access by
+one of `web.names`. Edge listeners with managed certificates can't claim a declared address, and
+core refuses an edge's certificate request that covers one.
 
 ## Building
-
-<!-- /coderabbit-ai-generated:v1 -->
 
 ```sh
 cargo build --workspace          # toolchain pinned in rust-toolchain.toml

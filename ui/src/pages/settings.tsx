@@ -94,7 +94,7 @@ export function SettingsPage() {
             <SettingsSection
               keys={["web", "lists", "metrics"]}
               title="Web and access"
-              description="The web port, TLS, names and additional reachable IP addresses, and client IP allowlists. Managed TLS covers RFC1918 and ULA addresses; other addresses need a suitable file certificate or a configured DNS name for verified HTTPS. Port and TLS changes apply at restart."
+              description="The web port, its TLS, core's names (its certificate and the Host allowlist, under the LAN CA's zones), the extra IP addresses clients reach core at through NAT or a port forward, and the IP allowlists. Managed TLS covers RFC 1918 and ULA addresses only: for any other address, verified HTTPS needs a file certificate or one of core's names. Port and TLS changes apply at restart."
               banner={(s) =>
                 s.web?.tls === "off" ? (
                   <Alert variant="warning">

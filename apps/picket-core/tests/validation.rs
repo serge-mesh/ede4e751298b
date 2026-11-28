@@ -1989,6 +1989,18 @@ fn declared_core_addresses_and_managed_listeners_conflict_in_either_order() {
         ),
         "managed_ip_conflict",
     );
+    // The bind only counts while `ips` is empty: the certificate covers `ips` otherwise.
+    // Addresses outside the LAN ranges never enter an edge certificate, so they don't conflict.
+    c.settings(json!({"web": {"addresses": ["::ffff:192.168.5.10", "203.0.113.5"]}}))
+        .unwrap();
+    c.ok(
+        EntityKind::Listener,
+        listener("public", "192.168.5.13:443", json!(["203.0.113.5"])),
+    );
+    c.ok(
+        EntityKind::Listener,
+        listener("listed", "192.168.5.10:443", json!(["192.168.5.12"])),
+    );
     c.ok(
         EntityKind::Listener,
         listener("ok", "192.168.5.11:443", json!([])),

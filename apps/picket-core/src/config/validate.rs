@@ -811,20 +811,19 @@ fn listener_rules(m: &Model, o: &mut Out) {
             ),
             (_, Some(t)) => match (&t.managed, &t.cert_file, &t.key_file) {
                 (Some(name), None, None) => {
-                    // A managed edge must not receive a certificate for a declared core address.
-                    let mut listener_ips = l.ips.clone();
-                    if let Ok(bind) = l.bind.parse::<SocketAddr>() {
-                        listener_ips.push(bind.ip());
-                    }
-                    for ip in listener_ips {
-                        let ip = crate::net::canonical_ip(ip);
+                    // The IP SANs its edge's certificate would carry (`listener_sans`: its `ips`,
+                    // or a specific bind while `ips` is empty, in the LAN ranges) must not cover a
+                    // declared core address; `POST /v1/csr` refuses them too (core.md §2).
+                    let field = if l.ips.is_empty() { "bind" } else { "ips" };
+                    let sans = crate::edge_api::api::listener_sans(l).map(|(_, ips)| ips);
+                    for ip in sans.unwrap_or_default() {
                         if core_addresses.contains(&ip) {
                             o.err(
                                 e,
                                 id,
-                                Some("ips"),
+                                Some(field),
                                 "managed_ip_conflict",
-                                format!("{ip} is declared as a core address (web.addresses)"),
+                                format!("{ip} is one of core's own addresses (web.addresses)"),
                             );
                         }
                     }
