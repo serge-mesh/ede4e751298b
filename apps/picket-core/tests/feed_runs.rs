@@ -1311,6 +1311,76 @@ async fn an_http_cooldown_holds_its_origin_and_spares_other_hosts() {
     }
 }
 
+/// The planning-budget record shows only on a `dynamic` provider, and a move to another source
+/// drops it: it replayed the old source's history.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_k_choice_shows_only_while_it_still_applies() {
+    let srv = TestServer::start(&[HOST], |s: &Seen| {
+        Reply::ok(format!("||{}.example^\n", s.path.trim_start_matches('/').replace('.', "-")))
+    })
+    .await;
+    let c = core_with(Some(&srv), None).await;
+    let cfg = |file: &str| json!({"url": format!("https://{HOST}/{file}")});
+    create_feed(
+        &c,
+        json!({"id": "p", "name": "p", "provider": "http", "provider_config": cfg("a.txt"), "format": "adblock"}),
+    )
+    .await;
+    first_run(&c, "p").await;
+    let record = json!({
+        "chosen_at": "2026-11-28T00:00:00Z", "window_start": "2026-11-21T00:00:00Z",
+        "window_end": "2026-11-28T00:00:00Z", "voting_feeds": ["p"], "budget_per_day": 400.0,
+        "choice": {"k": 3.0, "preferred": 2.0, "budget": "slowed",
+                   "preferred_checks_per_day": 450.0, "checks_per_day": 380.0},
+        "feeds": []
+    });
+    let store = |c: &Core| {
+        let j = record.to_string();
+        let db = c.state.db.clone();
+        async move {
+            db.write(move |db| {
+                db.execute("UPDATE feed_provider_state SET k_choice_json = ?1 WHERE provider_id = 'p'", [j])?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .await
+            .unwrap();
+        }
+    };
+    store(&c).await;
+    let v = get_json(&c, "/feed-providers/p/status").await;
+    assert_eq!(v["k_choice"]["choice"]["budget"], "slowed", "{v}");
+
+    // Moved to `cron`: the record is kept but no longer shown.
+    let cron = json!({"kind": "cron", "cron": "* * * * *", "jitter": "0s"});
+    update_feed(
+        &c,
+        "p",
+        json!({"name": "p", "provider": "http", "provider_config": cfg("a.txt"), "schedule": cron}),
+    )
+    .await;
+    let v = get_json(&c, "/feed-providers/p/status").await;
+    assert!(v["k_choice"].is_null(), "{v}");
+
+    // Back to `dynamic` on another URL: a new model epoch, so the old record is gone.
+    let dynamic = json!({"kind": "dynamic"});
+    update_feed(
+        &c,
+        "p",
+        json!({"name": "p", "provider": "http", "provider_config": cfg("a.txt"), "schedule": dynamic}),
+    )
+    .await;
+    let v = get_json(&c, "/feed-providers/p/status").await;
+    assert_eq!(v["k_choice"]["choice"]["budget"], "slowed", "same source: {v}");
+    update_feed(
+        &c,
+        "p",
+        json!({"name": "p", "provider": "http", "provider_config": cfg("b.txt"), "schedule": dynamic}),
+    )
+    .await;
+    let v = get_json(&c, "/feed-providers/p/status").await;
+    assert!(v["k_choice"].is_null(), "another source: {v}");
+}
+
 /// F10: a client that stops sending its upload holds neither the feed's save lock nor a
 /// blocking thread: another save to the same feed goes through meanwhile.
 #[tokio::test(flavor = "multi_thread")]

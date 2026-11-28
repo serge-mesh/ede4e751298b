@@ -1795,7 +1795,8 @@ fn persist_provider(tx: &Transaction<'_>, before: &Model, after: &Model, id: &st
         )?;
         if elsewhere {
             tx.execute(
-                "UPDATE feed_provider_state SET listing_json = NULL WHERE provider_id = ?1",
+                // The last `k` choice replayed the old source's history.
+                "UPDATE feed_provider_state SET listing_json = NULL, k_choice_json = NULL WHERE provider_id = ?1",
                 [id],
             )?;
         }

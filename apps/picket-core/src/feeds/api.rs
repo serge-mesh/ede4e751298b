@@ -1146,11 +1146,14 @@ pub struct ProviderStatus {
 async fn provider_status_of(s: &SharedState, p: &FeedProviderDef) -> ApiResult<ProviderStatus> {
     let id = p.id.clone();
     let day = crate::util::ts(&(Timestamp::now() - jiff::SignedDuration::from_hours(24)));
+    // Only a `dynamic` provider chooses `k`; a choice kept from before a move to `cron` or `sqs`
+    // no longer says anything.
+    let dynamic = matches!(p.trigger, crate::config::model::Trigger::Dynamic { .. });
     let (st, counts, incomplete, k_choice) = {
         let id = id.clone();
         s.db.read(move |c| {
             let st = store::load_provider_state(c, &id)?;
-            let k_choice = store::load_k_choice(c, &id)?;
+            let k_choice = if dynamic { store::load_k_choice(c, &id)? } else { None };
             let counts: (i64, i64) = c.query_row(
                 "SELECT (SELECT count(*) FROM feed_provider_checks WHERE provider_id = ?1 AND t >= ?2),
                         (SELECT count(*) FROM feed_provider_checks WHERE provider_id = ?1 AND t >= ?2 AND ok = 0)",
