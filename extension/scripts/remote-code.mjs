@@ -10,7 +10,9 @@
  * @returns {string | undefined}
  */
 export function scriptSrc(attrs) {
-  for (const m of attrs.matchAll(/([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g)) {
+  // HTML's whitespace is ASCII only (tab, LF, FF, CR, space): any other, such as U+00A0, is part
+  // of the name or value, so `\s` would read a different attribute than the browser does.
+  for (const m of attrs.matchAll(/([^\t\n\f\r "'>/=]+)(?:[\t\n\f\r ]*=[\t\n\f\r ]*(?:"([^"]*)"|'([^']*)'|([^\t\n\f\r >]+)))?/g)) {
     if ((m[1] ?? '').toLowerCase() === 'src') {
       return m[2] ?? m[3] ?? m[4] ?? '';
     }

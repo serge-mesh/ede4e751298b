@@ -12,6 +12,8 @@ describe('the build check on pages', () => {
     expect(scriptSrc(' src=main.js defer')).toBe('main.js');
     expect(scriptSrc(' SRC = "main.js"')).toBe('main.js');
     expect(scriptSrc(' type="module"')).toBeUndefined();
+    expect(scriptSrc(' src\u00a0="main.js"')).toBeUndefined();
+    expect(scriptSrc('\fsrc\f=\f"main.js"')).toBe('main.js');
   });
 
   it('accepts local scripts whatever their quoting', () => {
@@ -48,6 +50,9 @@ describe('the build check on pages', () => {
       '<script data-src="main.js" src="https://example.com/x.js"></script>',
       '<script title=" src=main.js" src=\'//example.com/x.js\'></script>',
       '<script src="https://example.com/x.js" src="main.js"></script>',
+      // U+00A0 isn't HTML whitespace: the first attribute is named `src\u00a0`.
+      '<script src\u00a0="main.js" src="https://example.com/x.js"></script>',
+      '<script x\u00a0src="main.js" src="https://example.com/x.js"></script>',
     ]) {
       expect(badScript(page(tag)), tag).toBe(tag);
     }
