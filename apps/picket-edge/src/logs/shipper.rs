@@ -597,6 +597,13 @@ impl Shipper {
             return DrainResult::Stop;
         }
         self.note_success();
+        // Every planned record was acked or rejected: a retry after a failed cleanup below
+        // resumes past them (no resend, no rejection counted twice).
+        for (h, end) in heads.iter().zip(&plan.ends) {
+            if let Some(p) = self.progress.get_mut(&h.key) {
+                p.next = *end;
+            }
+        }
         let env = Arc::clone(&self.env);
         for (hi, ((h, v), end)) in heads.iter().zip(&views).zip(&plan.ends).enumerate() {
             if evicted.contains(&h.key) {

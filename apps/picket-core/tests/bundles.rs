@@ -641,12 +641,15 @@ async fn exception_patterns_meet_every_key_of_other_feeds() {
     assert_eq!(w["sample"], json!(["||k0007.example^ (pa)"]));
     assert_eq!(found["@@||k0011.example^|"].details["cancelled"], 1);
 
-    // The same inputs moved to another chunk: the warnings stand, raised once.
-    save(&c, "pb", &format!("{pats}{keyed}")).await;
+    // The same inputs moved to another chunk, with an exception pattern added so the scan runs
+    // again: the standing warnings stay, raised once, and the new one is found.
+    save(&c, "pb", &format!("{pats}@@/^k0013\\.example$/\n{keyed}")).await;
     build(&c, "pk1").await.unwrap();
     let found = cancellations(&c, "pk1").await;
-    assert_eq!(found.len(), 3, "{:?}", found.keys());
+    assert_eq!(found.len(), 4, "{:?}", found.keys());
     assert!(found.values().all(|a| a.count == 1), "{found:?}");
+    let w = &found["@@/^k0013\\.example$/"].details;
+    assert_eq!((w["exhaustive"].clone(), w["cancelled"].clone()), (json!(true), json!(1)), "{w}");
     assert!(alert(&c, "bundle_warning:pk1:cancel_scan_incomplete").await.is_none());
 }
 
