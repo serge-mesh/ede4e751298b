@@ -957,6 +957,169 @@ async fn a_moved_address_never_gets_the_old_devices_ip_allow_back() {
     e.r.shutdown().await;
 }
 
+/// The real helper behind a socket of its own that holds back `ensure` acks while `hold` is set
+/// (the requests go through at once, so the entries reach the helper; only the edge's wait for
+/// the ack is stretched). `held` counts the acks it held back.
+struct AckGate {
+    path: PathBuf,
+    hold: tokio::sync::watch::Sender<bool>,
+    held: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+fn ack_gate(upstream: PathBuf, path: PathBuf) -> AckGate {
+    use futures_util::{SinkExt, StreamExt};
+    use picket_api::helper::{Frame, kind};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio_util::codec::{Framed, LengthDelimitedCodec};
+    let l = tokio::net::UnixListener::bind(&path).unwrap();
+    let (hold, _) = tokio::sync::watch::channel(false);
+    let held = Arc::new(AtomicUsize::new(0));
+    let (hold2, held2) = (hold.clone(), Arc::clone(&held));
+    tokio::spawn(async move {
+        while let Ok((sock, _)) = l.accept().await {
+            let up = tokio::net::UnixStream::connect(&upstream).await.unwrap();
+            let (mut csink, mut cstream) = Framed::new(sock, LengthDelimitedCodec::new()).split();
+            let (mut usink, mut ustream) = Framed::new(up, LengthDelimitedCodec::new()).split();
+            tokio::spawn(async move {
+                while let Some(Ok(b)) = cstream.next().await {
+                    if usink.send(b.freeze()).await.is_err() {
+                        return;
+                    }
+                }
+            });
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
+            tokio::spawn(async move {
+                while let Some(b) = rx.recv().await {
+                    if csink.send(b).await.is_err() {
+                        return;
+                    }
+                }
+            });
+            let (hold, held) = (hold2.clone(), Arc::clone(&held2));
+            tokio::spawn(async move {
+                while let Some(Ok(b)) = ustream.next().await {
+                    let b = b.freeze();
+                    let ensure = serde_json::from_slice::<Frame>(&b).is_ok_and(|f| f.kind == kind::ENSURE);
+                    if ensure && *hold.borrow() {
+                        held.fetch_add(1, Ordering::SeqCst);
+                        let (tx, mut rx) = (tx.clone(), hold.subscribe());
+                        tokio::spawn(async move {
+                            let _ = rx.wait_for(|h| !*h).await;
+                            let _ = tx.send(b);
+                        });
+                    } else if tx.send(b).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    AckGate { path, hold, held }
+}
+
+/// An address that moves to another device while a new or extended IP allow waits for the
+/// helper's ack isn't listed by the allow the request stores, and its new owner gets no entry
+/// from it (edge.md §12; edge-firewall.md §1). The device's other address stays covered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_address_that_moves_during_the_ack_wait_is_not_stored_with_the_allow() {
+    use picket_edge::neighbours::Change;
+    use std::sync::atomic::Ordering;
+    let h = helperkit::start();
+    let d = dirs();
+    std::fs::create_dir_all(&d.run).unwrap();
+    let gate = ack_gate(h.path.clone(), d.run.join("gate.sock"));
+    let e = env(
+        json!({"mode": "self", "max_duration": "1h", "ips": true}),
+        enforce_lo(),
+        Some(gate.path.clone()),
+    )
+    .await;
+    let edge = Arc::clone(&e.r.edge);
+    assert!(wait_until(T, || edge.fw.state.load().connected).await);
+    let (a, b) = ([0x02, 0, 0, 0, 0, 0x0a], [0x02, 0, 0, 0, 0, 0x0b]);
+    let (x, y): (IpAddr, IpAddr) = ("127.0.0.1".parse().unwrap(), "127.0.0.2".parse().unwrap());
+    let (xs, ys) = ("127.0.0.1".to_owned(), "127.0.0.2".to_owned());
+    // One request while `x` moves from a to b, its acks held back until the move is through.
+    let moving = |entry: Value| {
+        let (edge, gate, h) = (Arc::clone(&edge), &gate, &h);
+        let e = &e;
+        async move {
+            edge.neighbours.apply(&[Change::Upsert { ip: x, mac: a }]);
+            gate.held.store(0, Ordering::SeqCst);
+            gate.hold.send_replace(true);
+            let req = e.ext("PATCH", Some(json!([entry])));
+            let mover = async {
+                assert!(wait_until(T, || gate.held.load(Ordering::SeqCst) > 0).await);
+                edge.neighbours.apply(&[Change::Upsert { ip: x, mac: b }]);
+                // The firewall has handled the move once the old device's allow no longer
+                // covers the address in its own view (the kernel follows after the ack).
+                assert!(
+                    wait_until(Duration::from_secs(1), || edge
+                        .fw
+                        .ip_blocked(x, "1.2.3.4".parse().unwrap()))
+                    .await,
+                    "the move went through before the ack"
+                );
+                gate.hold.send_replace(false);
+            };
+            let ((st, v), ()) = tokio::join!(req, mover);
+            assert_eq!(st, 200, "{v}");
+            assert!(
+                wait_until(T, || !h.has("picket4", Some("127.0.0.1"), "1.2.3.4")).await,
+                "b got a's allow: {:?}",
+                h.members("picket4")
+            );
+            v
+        }
+    };
+    edge.neighbours
+        .apply(&[Change::Upsert { ip: x, mac: a }, Change::Upsert { ip: y, mac: a }]);
+    // A new allow: made for both of a's addresses, stored with only the one a still holds.
+    let v = moving(json!({"ip": "1.2.3.4", "expires_at": now() + 600})).await;
+    let id = v[0]["allow_id"].as_str().unwrap().to_owned();
+    let stored = || edge.allows.list().into_iter().find(|s| s.allow_id == id).unwrap();
+    assert_eq!(stored().addresses, vec![ys.clone()]);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !h.has("picket4", Some("127.0.0.1"), "1.2.3.4"),
+        "b got a's allow: {:?}",
+        h.members("picket4")
+    );
+    assert!(h.has("picket4", Some("127.0.0.2"), "1.2.3.4"));
+    // Device a gets x back (it gains it again): a re-check lists it again.
+    edge.neighbours.apply(&[Change::Upsert { ip: x, mac: a }]);
+    assert!(
+        wait_until(T, || stored().addresses.contains(&xs)
+            && h.has("picket4", Some("127.0.0.1"), "1.2.3.4"))
+        .await,
+        "{:?} {:?}",
+        stored().addresses,
+        h.members("picket4")
+    );
+    // An extension while x moves again: the stored allow drops it and keeps y, at the new expiry.
+    let until = now() + 1200;
+    moving(json!({"allow_id": id, "expires_at": until})).await;
+    assert_eq!(stored().addresses, vec![ys.clone()]);
+    assert_eq!(stored().expires_at.as_second(), until);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !h.has("picket4", Some("127.0.0.1"), "1.2.3.4"),
+        "b got a's allow: {:?}",
+        h.members("picket4")
+    );
+    assert!(h.has("picket4", Some("127.0.0.2"), "1.2.3.4"));
+    // allows.json holds the same.
+    let file: Value = serde_json::from_slice(&std::fs::read(e._d.data.join("allows.json")).unwrap()).unwrap();
+    let rec = file["allows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["allow_id"] == id.as_str())
+        .unwrap();
+    assert_eq!(rec["addresses"], json!([ys]));
+    e.r.shutdown().await;
+}
+
 /// A DNS allow from a profile with `bypass: self` (1 h), on an edge whose config the tests then
 /// change; returns the allow's id.
 async fn one_dns_allow(e: &Env) -> String {

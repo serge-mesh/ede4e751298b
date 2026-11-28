@@ -952,6 +952,33 @@ impl Bypass {
                 }
             }
         }
+        // An address that moved to another device while the grants were awaited isn't listed
+        // again (the firewall took it off the stored allow as it moved, and an extension's copy
+        // was made before that), and a key just granted to it goes again, so its new owner
+        // doesn't get this device's allow (edge-firewall.md §1). As the re-check does.
+        if let Some(m) = crate::neighbours::parse_mac(&text) {
+            for p in &mut plans {
+                if let Plan::Create(a) | Plan::Retime { new: a, .. } = p
+                    && a.kind == AllowKind::Ip
+                {
+                    a.addresses.retain(|x| owned_by_or_unknown(edge, x, &m));
+                }
+            }
+            let listed: std::collections::HashSet<FwKey> = plans
+                .iter()
+                .filter_map(|p| match p {
+                    Plan::Create(a) | Plan::Retime { new: a, .. } => Some(allow_keys(a)),
+                    Plan::Revoke(_) => None,
+                })
+                .flatten()
+                .collect();
+            for (keys, _) in &mut granted {
+                let (kept, moved): (Vec<FwKey>, Vec<FwKey>) =
+                    keys.drain(..).partition(|k| listed.contains(k));
+                edge.fw.set_allow(&moved, None);
+                *keys = kept;
+            }
+        }
         // One write for every change, then the records.
         let mut upserts: Vec<(StoredAllow, AllowAction)> = Vec::new();
         let mut ends: Vec<StoredAllow> = Vec::new();
