@@ -796,7 +796,9 @@ ALTER TABLE feed_state ADD COLUMN added_pending INTEGER NOT NULL DEFAULT 0;
 -- feeds; last_check_at (min_interval), last_ok_at; failing_since: the current streak of checks
 -- that failed as a whole or in every file (feed_provider_down); check_started_at: the running
 -- check's start (a nudge after it makes the provider due again); skipped_json: selected files
--- left without a feed past feeds.max_per_provider (feeds.md §1); list_gen: the selection
+-- left without a feed past feeds.max_per_provider (feeds.md §1); capacity_skipped_json: how many
+-- selected files were left without a feed because the configuration holds as many feeds as it
+-- may, and a sample of them (`feeds::select::CapacitySkipped`); list_gen: the selection
 -- generation, a new id each time `module`, `config`, `files` or `exclude` changes, so a check
 -- that listed for an older selection stores no provider state or listing and adds no feeds.
 CREATE TABLE feed_provider_state (
@@ -814,6 +816,7 @@ CREATE TABLE feed_provider_state (
     failing_since TEXT,
     check_started_at TEXT,
     skipped_json TEXT,
+    capacity_skipped_json TEXT,
     list_gen INTEGER
 ) STRICT;
 

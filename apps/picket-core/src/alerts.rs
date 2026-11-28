@@ -25,8 +25,9 @@
 //!
 //! The edge kinds' raise and resolve rules live with what feeds them (`edges::status`,
 //! `logs::ingest`, `edges::releases`); the feed kinds (`feed_down`, `feed_provider_down`,
-//! `feed_stale`, `feed_added`, `feed_provider_trigger_down`, `feed_provider_listing_incomplete`,
-//! `feed_held`, `feed_rules_dropped`, `feed_redirect_added`) with `feeds::check`, `feeds::sqs`,
+//! `feed_stale`, `feed_added`, `feed_limit_reached`, `feed_provider_trigger_down`,
+//! `feed_provider_listing_incomplete`, `feed_held`, `feed_rules_dropped`, `feed_redirect_added`)
+//! with `feeds::check`, `feeds::sqs`,
 //! `feeds::select`, `feeds::stale` and `feeds::ingest`.
 //! Evidence capture, the evidence budget and `alert_evidence_full` live in
 //! `logs::evidence` (`logs::evidence::start` starts a security alert's capture); the
@@ -97,6 +98,7 @@ pub const KINDS: &[(&str, AlertType)] = &[
     ("feed_added", AlertType::Operational),
     ("feed_provider_trigger_down", AlertType::Operational),
     ("feed_provider_listing_incomplete", AlertType::Operational),
+    ("feed_limit_reached", AlertType::Operational),
     ("config_upgraded", AlertType::Operational),
     ("feed_held", AlertType::Operational),
     ("bundle_build_failed", AlertType::Operational),
