@@ -33,6 +33,7 @@ pub const KEYS: &[&str] = &[
     "web.cert_file",
     "web.key_file",
     "web.names",
+    "web.addresses",
     "web.http_port",
     "web.allow_cidrs",
     "lists.allow_cidrs",
@@ -102,7 +103,7 @@ pub struct Settings {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum WebTls {
-    /// A LAN-CA certificate for `web.names` and core's IPs in the LAN ranges.
+    /// A LAN-CA certificate for `web.names` and core's local and declared IPs in the LAN ranges.
     #[default]
     Managed,
     /// `web.cert_file` and `web.key_file`.
@@ -123,6 +124,10 @@ pub struct WebSettings {
     pub key_file: Option<String>,
     /// Core's own names, under `lanca.zones`: the web certificate and the `Host` allowlist.
     pub names: Vec<String>,
+    /// Additional reachable IP literals for the Host allowlist. RFC1918/ULA addresses also enter
+    /// the managed certificate; other addresses need a file certificate or a configured DNS name
+    /// for verified HTTPS. This does not change binding or client access.
+    pub addresses: Vec<String>,
     /// Optional plain-HTTP port for `/lists/*` and the LAN CA root.
     pub http_port: Option<u16>,
     /// Who may reach the UI, the UI API and `/healthz`.
@@ -137,6 +142,7 @@ impl Default for WebSettings {
             cert_file: None,
             key_file: None,
             names: vec![],
+            addresses: vec![],
             http_port: None,
             allow_cidrs: everyone(),
         }
@@ -583,7 +589,14 @@ pub fn apply_patch(
     collect_changes(patch, "", &mut changes)?;
     let mut tree = serde_json::to_value(current)?;
     let defaults = serde_json::to_value(Settings::default())?;
-    for (key, v) in &changes {
+    for (key, v) in &mut changes {
+        if key == "web.addresses"
+            && let Some(value) = v.as_mut()
+        {
+            let addresses: Vec<String> =
+                serde_json::from_value(value.clone()).context("invalid web.addresses")?;
+            *value = serde_json::to_value(normalize_web_addresses(&addresses)?)?;
+        }
         if !allow_read_only && READ_ONLY_KEYS.contains(&key.as_str()) {
             bail!("{key} can't be changed here: it is fixed at init and stays with the LAN CA");
         }
@@ -676,6 +689,29 @@ fn get_path<'a>(tree: &'a Value, key: &str) -> Option<&'a Value> {
 // ---------------------------------------------------------------------------------------------
 // Validation of settings on their own
 
+/// Parse exact reachable address literals and normalize IPv4-mapped IPv6 to IPv4.
+pub fn normalize_web_addresses(addresses: &[String]) -> Result<Vec<String>> {
+    if addresses.len() > crate::config::validate::MAX_LIST {
+        bail!("web.addresses has too many entries");
+    }
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for address in addresses {
+        let ip = address
+            .parse::<IpAddr>()
+            .map(crate::net::canonical_ip)
+            .map_err(|_| anyhow!("{address:?} is not an IP address literal"))?;
+        if ip.is_unspecified() || ip.is_multicast() || matches!(ip, IpAddr::V4(v4) if v4.is_broadcast()) {
+            bail!("{address:?} is not a unicast address");
+        }
+        let canonical = ip.to_string();
+        if seen.insert(ip) {
+            out.push(canonical);
+        }
+    }
+    Ok(out)
+}
+
 /// A settings problem: the key and a message.
 pub type SettingIssue = (String, String);
 
@@ -714,6 +750,9 @@ pub fn validate(s: &Settings) -> Vec<SettingIssue> {
                 _ => err(k, format!("{k} must be an absolute path when web.tls is file")),
             }
         }
+    }
+    if let Err(e) = normalize_web_addresses(&s.web.addresses) {
+        err("web.addresses", e.to_string());
     }
     for (k, list) in [
         ("web.allow_cidrs", &s.web.allow_cidrs),
@@ -947,6 +986,38 @@ pub fn get_row(conn: &Connection, key: &str) -> Result<Option<Value>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn web_address_patch_canonicalizes_each_written_row() {
+        let patch = serde_json::json!({"web": {"addresses": ["192.168.1.1"]}, "web.addresses": ["::ffff:192.168.1.2", "192.168.1.2"]});
+        let (s, rows) = apply_patch(&Settings::default(), &patch, false).unwrap();
+        assert_eq!(s.web.addresses, ["192.168.1.2"]);
+        assert_eq!(rows.last().unwrap().1, Some(serde_json::json!(["192.168.1.2"])));
+    }
+
+    #[test]
+    fn web_address_literals_are_validated_and_canonicalized() {
+        let values = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            normalize_web_addresses(&values(&["192.168.1.5", "::ffff:192.168.1.5", "FD00:0:0::1"])).unwrap(),
+            values(&["192.168.1.5", "fd00::1"])
+        );
+        for bad in [
+            "example.com",
+            "https://10.0.0.1",
+            "10.0.0.1:443",
+            "10.0.0.0/8",
+            "0.0.0.0",
+            "::",
+            "::ffff:0.0.0.0",
+            "224.0.0.1",
+            "ff02::1",
+            "255.255.255.255",
+            " 10.0.0.1",
+        ] {
+            assert!(normalize_web_addresses(&values(&[bad])).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn defaults_roundtrip_and_are_valid() {

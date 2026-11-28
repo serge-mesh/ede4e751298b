@@ -54,6 +54,7 @@ pub fn init_dir() -> (tempfile::TempDir, InitOutcome, u16, u16) {
     let out = picket_core::instance::init(&InitOptions {
         data_dir: d.path().to_path_buf(),
         web_port: Some(web),
+        web_addresses: None,
         edge_port: Some(edge),
         lanca_zones: None,
     })

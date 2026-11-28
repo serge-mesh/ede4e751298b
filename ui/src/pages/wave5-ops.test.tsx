@@ -257,6 +257,18 @@ describe("the Web and access form leaves the LAN CA's zones to Settings → LAN 
     expect(screen.queryByText("Zones")).toBeNull();
   });
 
+  it("edits reachable addresses", async () => {
+    const user = userEvent.setup();
+    const { calls, fixtures } = mockApi([{ method: "PUT", path: "/settings", body: () => fixtures["/settings"] }]);
+    renderApp("/settings?tab=web");
+    const addresses = await screen.findByLabelText("Addresses", undefined, T);
+    await user.type(addresses, "192.168.42.5{Enter}");
+    await user.click(screen.getByRole("button", { name: /Save/ }));
+    await waitFor(() => expect(mutations(calls).some((c) => c.path === "/settings")).toBe(true), T);
+    const sent = mutations(calls).find((c) => c.path === "/settings")!.body as { web: Rec };
+    expect(sent.web.addresses).toEqual(["192.168.42.5"]);
+  });
+
   it("saves other web settings without sending the zones", async () => {
     const user = userEvent.setup();
     const { calls, fixtures } = mockApi([{ method: "PUT", path: "/settings", body: (c: Call) => (fixtures["/settings"] as object) ?? c.body }]);

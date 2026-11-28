@@ -1932,3 +1932,38 @@ fn single_file_provider_ids_and_template_names() {
     let m = store::load_model(&c.conn).unwrap();
     assert_eq!(m.feeds["n"].name, "Readable");
 }
+
+#[test]
+fn declared_core_addresses_and_managed_listeners_conflict_in_either_order() {
+    let mut c = Cfg::new();
+    let listener = |id: &str, bind: &str, ips: Value| {
+        json!({
+            "id": id, "name": id, "proto": "doh", "bind": bind,
+            "tls": {"managed": "dns.home.arpa"}, "ips": ips
+        })
+    };
+    c.settings(json!({"web": {"addresses": ["::ffff:192.168.5.10"]}}))
+        .unwrap();
+    refused(
+        c.create(
+            EntityKind::Listener,
+            listener("explicit", "192.168.5.11:443", json!(["192.168.5.10"])),
+        ),
+        "managed_ip_conflict",
+    );
+    refused(
+        c.create(
+            EntityKind::Listener,
+            listener("bind", "192.168.5.10:443", json!([])),
+        ),
+        "managed_ip_conflict",
+    );
+    c.ok(
+        EntityKind::Listener,
+        listener("ok", "192.168.5.11:443", json!([])),
+    );
+    refused(
+        c.settings(json!({"web": {"addresses": ["::ffff:192.168.5.11"]}})),
+        "managed_ip_conflict",
+    );
+}

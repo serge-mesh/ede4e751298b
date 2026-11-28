@@ -1549,3 +1549,43 @@ async fn csrs_refused_for_the_clock_spend_none_of_the_budget() {
     let r = post().await.unwrap();
     assert_eq!(r.status(), StatusCode::OK, "{}", r.text().await.unwrap());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn csr_refuses_declared_core_address_even_if_conflicting_listener_is_stored() {
+    let c = common::start_core(Some(
+        json!({"web": {"tls": "off", "addresses": ["192.168.55.8"]}}),
+    ))
+    .await;
+    let edge = FakeEdge::registered(&c, "e1").await;
+    put_entity(&c, "listeners", json!({"id": "lan-dot", "name": "lan-dot", "proto": "dot", "bind": "192.168.55.9:853", "tls": {"managed": "dns.home.arpa"}, "edges": [edge.id]})).await;
+    // Simulate stale or externally altered stored configuration; the CSR boundary must still refuse it.
+    c.state
+        .config
+        .change(|tx| {
+            let mut l = picket_core::config::store::load_model(tx)?
+                .listeners
+                .remove("lan-dot")
+                .unwrap();
+            l.ips = vec!["::ffff:192.168.55.8".parse().unwrap()];
+            picket_core::config::store::write_listener(tx, &l)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+    let csr = rcgen::CertificateParams::new(Vec::<String>::new())
+        .unwrap()
+        .serialize_request(&key)
+        .unwrap()
+        .pem()
+        .unwrap();
+    let r = edge
+        .http
+        .post(edge.url("/v1/csr"))
+        .json(&json!({"csr_pem": csr, "listener": "lan-dot"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    assert_eq!(r.json::<Value>().await.unwrap()["error"]["code"], "conflict");
+}

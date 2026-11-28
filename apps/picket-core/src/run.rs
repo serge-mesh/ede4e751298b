@@ -276,6 +276,8 @@ pub async fn start_with(
 /// Core's addresses change (DHCP, interfaces): re-read them every minute, and keep the managed
 /// web certificate in step.
 fn spawn_ip_refresh(state: SharedState) {
+    let mut changes = state.config.subscribe();
+    let mut web = state.settings().web.clone();
     tokio::spawn(async move {
         let mut t = tokio::time::interval(Duration::from_secs(60));
         t.tick().await;
@@ -287,16 +289,23 @@ fn spawn_ip_refresh(state: SharedState) {
                     if !ips.is_empty() {
                         state.core_ips.store(Arc::new(ips));
                     }
-                    // The managed web certificate follows web.names and core's LAN IPs, and is
-                    // renewed before it runs out (core.md §11).
-                    let st = state.clone();
-                    match tokio::task::spawn_blocking(move || crate::web::refresh_web_cert(&st)).await {
-                        Ok(Ok(true)) => tracing::info!("the web certificate was re-issued"),
-                        Ok(Ok(false)) => {}
-                        Ok(Err(e)) => tracing::warn!(error = %format!("{e:#}"), "cannot re-issue the web certificate"),
-                        Err(e) => tracing::warn!(error = %e, "web certificate refresh task failed"),
-                    }
                 }
+                changed = changes.changed() => {
+                    if changed.is_err() { return; }
+                    let current = state.settings().web.clone();
+                    if current.names == web.names && current.addresses == web.addresses { continue; }
+                    web = current;
+                }
+            }
+            // Also retry failed refreshes and renew on the periodic tick.
+            let st = state.clone();
+            match tokio::task::spawn_blocking(move || crate::web::refresh_web_cert(&st)).await {
+                Ok(Ok(true)) => tracing::info!("the web certificate was re-issued"),
+                Ok(Ok(false)) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %format!("{e:#}"), "cannot re-issue the web certificate")
+                }
+                Err(e) => tracing::warn!(error = %e, "web certificate refresh task failed"),
             }
         }
     });

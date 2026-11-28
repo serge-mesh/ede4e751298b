@@ -1,7 +1,7 @@
 //! The web port (core.md §1, §12): UI assets, `/api/ui/v1`, the UI WebSocket, `/lists/*`, the
 //! LAN CA root, `/healthz`, `/metrics`, behind the mandatory protections ([`protect`]).
 //!
-//! `web.tls`: `managed` serves a LAN-CA certificate for `web.names` and core's LAN IPs
+//! `web.tls`: `managed` serves a LAN-CA certificate for `web.names`, declared addresses and core's LAN IPs
 //! (`lanca/web.{crt,key}`, re-issued when its names change, or, on a synchronised clock, when its
 //! root changes, it nears expiry or starts in the future), `file` serves
 //! `web.cert_file`/`web.key_file`, `off` serves plain HTTP. `web.http_port`, when set, serves only
@@ -164,7 +164,7 @@ impl ResolvesServerCert for SwapCert {
 }
 
 /// The names and IPs the managed web certificate covers: `web.names` and core's IPs in the LAN
-/// ranges. With neither, `core.<first zone>` so TLS still works (set `web.names`).
+/// ranges, including declared reachable IPs. With neither, `core.<first zone>` so TLS still works (set `web.names`).
 pub fn web_cert_sans(state: &SharedState) -> (Vec<String>, Vec<IpAddr>) {
     let s = state.settings();
     let mut names: Vec<String> = s
@@ -173,7 +173,16 @@ pub fn web_cert_sans(state: &SharedState) -> (Vec<String>, Vec<IpAddr>) {
         .iter()
         .map(|n| n.trim_end_matches('.').to_ascii_lowercase())
         .collect();
-    let ips = crate::net::local_lan_ips(&state.core_ips());
+    let mut ips: Vec<IpAddr> = state
+        .core_ips()
+        .iter()
+        .copied()
+        .chain(s.web.addresses.iter().filter_map(|a| a.parse::<IpAddr>().ok()))
+        .map(crate::net::canonical_ip)
+        .filter(crate::net::is_lan_ip)
+        .collect();
+    ips.sort();
+    ips.dedup();
     if names.is_empty() && ips.is_empty() {
         let zone = state
             .lanca

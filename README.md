@@ -24,7 +24,35 @@ app; and **picket-browser-extension**.
 | `fixtures/` | Recorded feeds, upstream answers, golden bundles |
 | `build-support/` | Code the build scripts share (module registry scan, release public keys) |
 
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:196d5f5916d57c51f79d036bd79a8134898f9c4b85c6eea566af02bb785ba08a -->
+
+## Reaching Core through a container or WSL port forward
+
+When a container port is published on a host IP, or Windows forwards a port to Core in WSL,
+initialize Core with the IP clients use, for example:
+
+```sh
+picket-core init --data-dir /path/to/data --web-addresses 192.168.1.50,fd00::50
+```
+
+Publish or forward the host port to Core's configured web port (8443 by default). The external
+port may differ. For an existing instance, set `web.addresses` under Settings → Web and access.
+Use exact IP literals without brackets, ports or CIDR prefixes. Core still accepts its own IPs
+and configured DNS names; this setting does not change binding, client allowlists, outbound source
+IPs or DNS registration.
+
+With managed TLS, Core includes declared RFC1918 and ULA addresses in its LAN CA certificate.
+Install and trust the LAN CA root on each client before accessing the forwarded HTTPS address;
+fetch `/lanca/ca.pem` from a trusted connection or the optional plain HTTP lists port and verify
+it through a trusted channel. Other IP addresses are accepted as Host but cannot be included in
+the managed certificate: use a suitable file certificate or a configured DNS name for verified
+HTTPS. `web.names` must remain DNS names under `lanca.zones`.
+
 ## Building
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 ```sh
 cargo build --workspace          # toolchain pinned in rust-toolchain.toml

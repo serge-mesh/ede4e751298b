@@ -1730,7 +1730,14 @@ pub fn restore_in(
         if defaults.contains(&k.as_str()) {
             tx.execute(
                 "INSERT INTO settings(key, value_json) VALUES (?1, ?2)",
-                params![k, serde_json::to_string(v)?],
+                params![
+                    k,
+                    if k == "web.addresses" {
+                        serde_json::to_string(&m.settings.web.addresses)?
+                    } else {
+                        serde_json::to_string(v)?
+                    }
+                ],
             )?;
         }
     }

@@ -79,6 +79,7 @@ struct InitState {
 pub struct InitOptions {
     pub data_dir: PathBuf,
     pub web_port: Option<u16>,
+    pub web_addresses: Option<Vec<String>>,
     pub edge_port: Option<u16>,
     pub lanca_zones: Option<Vec<String>>,
 }
@@ -139,6 +140,10 @@ pub fn init_with_hook(
     let mut settings = crate::settings::Settings::default();
     if let Some(p) = opts.web_port {
         settings.web.port = p;
+    }
+    if let Some(addresses) = &opts.web_addresses {
+        settings.web.addresses = crate::settings::normalize_web_addresses(addresses)
+            .map_err(|e| fail(format!("--web-addresses: {e}")))?;
     }
     if let Some(p) = opts.edge_port {
         settings.edge_api.port = p;
@@ -348,6 +353,10 @@ fn create_databases(dir: &Path, settings: &crate::settings::Settings, hash: &str
     let tx = conn.transaction()?;
     let rows: Vec<crate::settings::RowChange> = vec![
         ("web.port".into(), Some(serde_json::json!(settings.web.port))),
+        (
+            "web.addresses".into(),
+            Some(serde_json::json!(settings.web.addresses)),
+        ),
         (
             "edge_api.port".into(),
             Some(serde_json::json!(settings.edge_api.port)),

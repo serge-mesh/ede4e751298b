@@ -730,6 +730,14 @@ fn sync_providers(m: &Model) -> BTreeSet<&str> {
 fn listener_rules(m: &Model, o: &mut Out) {
     let e = "listener";
     let zones = &m.settings.lanca.zones;
+    let core_addresses: HashSet<IpAddr> = m
+        .settings
+        .web
+        .addresses
+        .iter()
+        .filter_map(|a| a.parse().ok())
+        .map(crate::net::canonical_ip)
+        .collect();
     let mut binds: BTreeMap<(&str, &str), &str> = BTreeMap::new();
     for (id, l) in &m.listeners {
         check_id(o, e, id);
@@ -803,6 +811,23 @@ fn listener_rules(m: &Model, o: &mut Out) {
             ),
             (_, Some(t)) => match (&t.managed, &t.cert_file, &t.key_file) {
                 (Some(name), None, None) => {
+                    // A managed edge must not receive a certificate for a declared core address.
+                    let mut listener_ips = l.ips.clone();
+                    if let Ok(bind) = l.bind.parse::<SocketAddr>() {
+                        listener_ips.push(bind.ip());
+                    }
+                    for ip in listener_ips {
+                        let ip = crate::net::canonical_ip(ip);
+                        if core_addresses.contains(&ip) {
+                            o.err(
+                                e,
+                                id,
+                                Some("ips"),
+                                "managed_ip_conflict",
+                                format!("{ip} is declared as a core address (web.addresses)"),
+                            );
+                        }
+                    }
                     // core.md §2: managed listener names must be under lanca.zones.
                     let n = name.to_ascii_lowercase();
                     if n.starts_with("*.") || !is_dns_name(&n) {
