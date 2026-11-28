@@ -169,6 +169,9 @@ async fn core_samples_its_resources_and_job_durations() {
 #[tokio::test(flavor = "multi_thread")]
 async fn prometheus_exports_job_ms_by_kind() {
     let c = common::start_core(Some(json!({"web": {"tls": "off"}}))).await;
+    // Core's startup jobs (feed ingests, bundle builds, ...) record their kinds too. Waiting
+    // for them makes every run scrape the same family instead of racing them.
+    common::settled(&c).await;
     c.state.metrics.jobs.record("compile", 1500);
     c.state
         .metrics
@@ -189,13 +192,32 @@ async fn prometheus_exports_job_ms_by_kind() {
     assert_eq!((compile.count, compile.sum), (1, 1500.0));
     let lookup = scrape.histogram("picket_job_ms", &[("kind", "lookup")]).unwrap();
     assert_eq!((lookup.count, lookup.sum), (2, 50.0));
-    let kinds: Vec<_> = scrape
+    // The startup jobs' kinds are in the family as well, so it holds more than these two:
+    // what must hold is one series per kind, labelled by kind alone, and no provider in it.
+    let labels: Vec<_> = scrape
         .family("picket_job_ms")
         .metric
         .iter()
         .map(common::prom::labels)
         .collect();
-    assert_eq!(kinds.len(), 2, "a kind, not a provider: {kinds:?}");
+    let kinds: Vec<&str> = labels
+        .iter()
+        .map(|l| {
+            assert_eq!(l.len(), 1, "labelled by kind alone: {labels:?}");
+            l["kind"].as_str()
+        })
+        .collect();
+    assert!(
+        kinds.iter().all(|k| !k.contains(':') && !k.contains("quad9") && !k.contains("spamhaus")),
+        "a kind, not a provider: {kinds:?}"
+    );
+    assert_eq!(
+        kinds.iter().filter(|k| **k == "lookup").count(),
+        1,
+        "both providers in one kind: {kinds:?}"
+    );
+    let unique: std::collections::BTreeSet<_> = kinds.iter().collect();
+    assert_eq!(unique.len(), kinds.len(), "one series per kind: {kinds:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
