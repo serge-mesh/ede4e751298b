@@ -3,16 +3,7 @@
 //! raises `edge_key_mismatch`; a registered key is served (an unknown path answers `404` from the
 //! edge API's fallback, which only a pinned connection reaches).
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "integration test code: a failed unwrap or expect is the test's report, and it may cast freely"
-)]
-
-mod common;
+use crate::common;
 
 use std::sync::Arc;
 use std::time::Duration;

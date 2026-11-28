@@ -3,16 +3,7 @@
 //! doesn't allow, and the DNSSEC queue across a restart. (A `lanca.zones` change, a LAN CA
 //! rotation: `lanca_rotation.rs`.)
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "integration test code: a failed unwrap or expect is the test's report, and it may cast freely"
-)]
-
-mod common;
+use crate::common;
 
 use std::sync::Arc;
 

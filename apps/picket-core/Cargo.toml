@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+# The integration tests build as one binary: tests/main.rs declares each file as a module.
+autotests = false
 
 [lints]
 workspace = true
@@ -21,6 +23,10 @@ testkit = []
 [[bin]]
 name = "picket-core"
 path = "src/main.rs"
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"
 
 [dependencies]
 picket-api.workspace = true

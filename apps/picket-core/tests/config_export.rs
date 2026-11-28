@@ -5,16 +5,7 @@
 //! feed, secrets, an alert and journal rows is exported through `GET config/export` and restored
 //! with `PUT config/export` into an empty core and into a populated one.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "integration test code: a failed unwrap or expect is the test's report, and it may cast freely"
-)]
-
-mod common;
+use crate::common;
 
 use std::sync::{Arc, Mutex};
 

@@ -3,16 +3,7 @@
 //! side), Edge conditions, Metrics, LAN CA (a CSR for another edge's listener), Independence (a
 //! batch with a record core parses but can't store), and log ingest (api.md §2, §5; core.md §6)).
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "integration test code: a failed unwrap or expect is the test's report, and it may cast freely"
-)]
-
-mod common;
+use crate::common;
 
 use std::time::Duration;
 

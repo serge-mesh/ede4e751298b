@@ -6,16 +6,7 @@
 //! generated in the test (`common::zones`), trusted through the test root's key; the end-to-end
 //! test fetches them over DoH from a local server whose certificate core's LAN CA signed.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "integration test code: a failed unwrap or expect is the test's report, and it may cast freely"
-)]
-
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 use std::net::Ipv4Addr;

@@ -2,16 +2,7 @@
 //! "Feed providers and their feeds"): a running core with the `github` and `http` modules
 //! pointed at local fakes.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "integration test code: a failed unwrap or expect is the test's report, and it may cast freely"
-)]
-
-mod common;
+use crate::common;
 
 use common::feeds::{check_provider, ui, wait_until};
 use common::github::{self, commit};

@@ -2,7 +2,7 @@
 
 #![allow(
     dead_code,
-    reason = "shared test helpers: each test binary that includes them uses only part"
+    reason = "shared test helpers: not every helper is used by a test yet"
 )]
 
 pub mod bundles;

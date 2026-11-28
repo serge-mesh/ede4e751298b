@@ -5,16 +5,7 @@
 //! and blocks another rotation (`409`) until then; a stop at any step is recovered at start; a
 //! refused request changes nothing; a restore with other zones points to rotating first.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "integration test code: a failed unwrap or expect is the test's report, and it may cast freely"
-)]
-
-mod common;
+use crate::common;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

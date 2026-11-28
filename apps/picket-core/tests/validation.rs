@@ -3,16 +3,7 @@
 //! entities are involved; one bad reference rejects a save; system objects can't be deleted;
 //! the journal never holds a secret.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "integration test code: a failed unwrap or expect is the test's report, and it may cast freely"
-)]
-
-mod common;
+use crate::common;
 
 use picket_core::config::model::EntityKind;
 use picket_core::config::{Actor, Op, store};
