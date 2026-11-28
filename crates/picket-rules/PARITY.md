@@ -18,13 +18,14 @@ ignored), then the basic network rule (`block` / `allow`), then hosts rules with
 It also has a response mode (§5) and a Go-regex mode (§6). The protocol is documented at the top of
 `main.go`.
 
-**Go versions.** `go.mod`'s `go 1.26.4` is the minimum the module (and its dependencies) needs:
-any Go from 1.26.4 builds it, and an older `go` command with `GOTOOLCHAIN=auto` (Go's default)
-fetches 1.26.4 itself. The recommended toolchain is the one the recorded tables and the results
-below were produced with, Go 1.27.4: the oracle's Go-regex mode (§6) reports what the building
-Go's `regexp` accepts, so a different Go release can disagree on that mode's edge cases. The two
-are allowed to differ; raise the `go` line only when a dependency needs it, and record the Go
-release in the results when the tables are regenerated with a new one.
+**Go versions.** `go.mod`'s `go 1.27.4` is the minimum the module (and its dependencies) needs
+(golibs v0.35.20 declares `go 1.27.4`): any Go from 1.27.4 builds it, and an older `go` command with
+`GOTOOLCHAIN=auto` (Go's default) fetches 1.27.4 itself. The recommended toolchain is the one the
+recorded tables and the results below were produced with, currently also Go 1.27.4: the oracle's
+Go-regex mode (§6) reports what the building Go's `regexp` accepts, so a different Go release can
+disagree on that mode's edge cases. The two are allowed to differ; raise the `go` line only when a
+dependency needs it, and record the Go release in the results when the tables are regenerated with
+a new one.
 
 **Maintenance.** Dependabot proposes updates to the oracle's Go modules (`gomod`,
 `/tools/urlfilter-oracle`, weekly, grouped). `github.com/AdguardTeam/urlfilter` and `golibs` are
@@ -34,7 +35,7 @@ the new oracle (and regenerated tables, §3), never on its own.
 Build and run:
 
 ```sh
-# Go 1.27.4 (recommended; 1.26.4 is the minimum), user-locally (no root): the official tarball, checked against go.dev's SHA-256
+# Go 1.27.4 (the minimum and the recommended toolchain), user-locally (no root): the official tarball, checked against go.dev's SHA-256
 curl -sSLO https://go.dev/dl/go1.27.4.linux-amd64.tar.gz
 tar -C ~/.local/opt -xzf go1.27.4.linux-amd64.tar.gz
 export PATH=$HOME/.local/opt/go/bin:$PATH
@@ -161,6 +162,11 @@ expansion = full list on every rule of the bundled list, the shared `rich.json` 
 names, aggregated per canceller, within its work cap), `matcher.rs` (the regex resident set).
 
 ## Results (2026-11-21, urlfilter v0.23.4, Go 1.27.4; review round 2)
+
+Re-run on 2026-11-28 with golibs v0.35.20 and miekg/dns v1.1.73 (Dependabot #101): every group
+below unchanged, the regenerated tables identical, and the top lists (fetched that day) all at
+100.0000 % (AdGuard DNS filter 15,320 · EasyList 13,322 · HaGeZi Pro 12,270 · HaGeZi TIF 12,182 ·
+FireHOL level 1 2,465 queries).
 
 | Group | Agreement |
 |---|---|
