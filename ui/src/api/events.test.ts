@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
-import { applyEvent, eventsUrl, parseEvent } from "./events";
+import { applyEvent, eventsUrl, keptByEvents, parseEvent } from "./events";
 import { feedRunFrame } from "@/test/events";
 
 describe("UI WebSocket events (api.md §7)", () => {
@@ -31,7 +31,9 @@ describe("UI WebSocket events (api.md §7)", () => {
     expect(keys()).toEqual(expect.arrayContaining(['["alerts"]', '["bundlePublicSuffixes"]']));
     spy.mockClear();
     applyEvent(qc, { type: "bundle_version", data: { bundle: "b" } });
-    expect(keys()).toEqual(expect.arrayContaining(['["bundles"]', '["browser-lists"]']));
+    expect(keys()).toEqual(expect.arrayContaining(['["bundles"]', '["bundlePublicSuffixes"]', '["browser-lists"]']));
+    // Events keep it fresh, so the socket's first open reads it once more.
+    expect(keptByEvents(["bundlePublicSuffixes", "b", "f"])).toBe(true);
     spy.mockClear();
     applyEvent(qc, { type: "lagged", data: { missed: 3 } });
     // Everything, and (round 3, W7) closed editors' manual files marked stale.

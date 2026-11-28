@@ -1331,6 +1331,27 @@ fn a_failed_read_back_after_a_write_drops_that_familys_local_networks() {
     assert_eq!(c.len(), 2, "back once a read succeeds: {c:#?}");
 }
 
+/// A restore that fails (here killed at its deadline) may still have committed, so the table is
+/// unknown too: that family's local networks go until a later pass reads the table.
+#[test]
+fn a_failed_restore_drops_that_familys_local_networks() {
+    let mut g = unifi("filter-block-all-reject.rules");
+    local_sets(&g.b);
+    g.apply(&lan());
+    assert_eq!(g.e.pass(Mode::Reassert).conditions.local_dst.len(), 2);
+    g.b.set_table(
+        Family::V4,
+        TableName::Filter,
+        &fx("filter-block-all-reject.rules"),
+    );
+    g.b.push_restore_error(ExecError::Timeout);
+    let c = g.e.pass(Mode::Reassert).conditions.local_dst;
+    assert_eq!(c.len(), 1, "{c:#?}");
+    assert_eq!(c[0].family, "ipv6");
+    let c = g.e.pass(Mode::Reassert).conditions.local_dst;
+    assert_eq!(c.len(), 2, "back once a write is verified: {c:#?}");
+}
+
 #[test]
 fn debian_reports_no_local_networks() {
     let mut g = env(
