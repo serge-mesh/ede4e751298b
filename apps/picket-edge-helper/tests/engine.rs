@@ -1120,3 +1120,201 @@ fn gateway_addresses_are_cached_between_redirect_checks() {
     }
     assert_eq!(g.b.st().addr_reads, reads + 2);
 }
+
+// ---- UniFi's local networks (issue #47) ------------------------------------------------------
+
+use picket_api::helper::{LocalDst, MAX_LOCAL_DST_NETS};
+use picket_edge_helper::ipset::{SetFamily, SetType};
+
+const LOCAL4: &str = "UBIOS_local_zoned_subnets";
+const LOCAL6: &str = "UBIOS6_local_zoned_subnets";
+
+fn net(s: &str) -> Elem {
+    let (a, l) = s.split_once('/').unwrap();
+    Elem::net(ip(a), l.parse().unwrap())
+}
+
+fn put(b: &FakeBackend, name: &str, t: SetType, fam: SetFamily, members: &[(&str, bool)]) {
+    let m: Vec<(Elem, bool)> = members.iter().map(|(s, n)| (net(s), *n)).collect();
+    b.put_set(name, t, fam, &m);
+}
+
+/// UniFi's two sets: the NAS VLAN, a routed network no gateway interface is on, IPv6.
+fn local_sets(b: &FakeBackend) {
+    put(
+        b,
+        LOCAL4,
+        SetType::HashNet,
+        SetFamily::Inet,
+        &[
+            ("192.168.20.0/24", false),
+            ("10.99.0.0/16", false),
+            ("192.168.1.0/24", false),
+        ],
+    );
+    put(
+        b,
+        LOCAL6,
+        SetType::HashNet,
+        SetFamily::Inet6,
+        &[("fd00:20::/64", false)],
+    );
+}
+
+fn local_of<'a>(c: &'a [LocalDst], iface: &str, family: &str) -> &'a LocalDst {
+    c.iter()
+        .find(|l| l.interface == iface && l.family == family)
+        .unwrap_or_else(|| panic!("no {iface} {family} in {c:#?}"))
+}
+
+#[test]
+fn unifi_local_networks_are_reported_per_enforce_interface_and_family() {
+    let mut g = unifi("filter-block-all-reject.rules");
+    local_sets(&g.b);
+    let r = g.apply(&lan());
+    assert!(r.rules_ok, "{r:?}");
+    let c = g.e.pass(Mode::Reassert).conditions.local_dst;
+    let v4 = local_of(&c, "br0", "ipv4");
+    assert_eq!(v4.set, LOCAL4);
+    assert_eq!(v4.unavailable, None);
+    assert_eq!(v4.nets, vec!["10.99.0.0/16", "192.168.1.0/24", "192.168.20.0/24"]);
+    let v6 = local_of(&c, "br0", "ipv6");
+    assert_eq!(
+        (v6.set.as_str(), v6.nets.clone()),
+        (LOCAL6, vec!["fd00:20::/64".to_string()])
+    );
+    // br10 monitors: nothing Picket blocks there, so nothing to exclude.
+    assert_eq!(c.len(), 2, "{c:#?}");
+    // The same snapshot goes out with the helper's conditions.
+    assert_eq!(g.shared.snapshot().conditions.local_dst, c);
+}
+
+#[test]
+fn local_network_edits_show_at_the_next_pass() {
+    let mut g = unifi("filter-block-all-reject.rules");
+    local_sets(&g.b);
+    g.apply(&lan());
+    g.take_events();
+    put(
+        &g.b,
+        LOCAL4,
+        SetType::HashNet,
+        SetFamily::Inet,
+        &[("192.168.30.0/24", false)],
+    );
+    let c = g.e.pass(Mode::Reassert).conditions.local_dst;
+    assert_eq!(local_of(&c, "br0", "ipv4").nets, vec!["192.168.30.0/24"]);
+    let ev = g.take_events();
+    assert!(ev.conditions.is_some(), "a change is published");
+}
+
+#[test]
+fn unusable_local_sets_are_reported_and_never_partly_used() {
+    let big: Vec<String> = (0..=MAX_LOCAL_DST_NETS)
+        .map(|i| format!("10.{}.{}.0/24", i / 256, i % 256))
+        .collect();
+    let big: Vec<(&str, bool)> = big.iter().map(|s| (s.as_str(), false)).collect();
+    type Make<'a> = Box<dyn Fn(&FakeBackend) + 'a>;
+    let cases: Vec<(&str, Make<'_>)> = vec![
+        (
+            "nomatch",
+            Box::new(|b| {
+                put(
+                    b,
+                    LOCAL4,
+                    SetType::HashNet,
+                    SetFamily::Inet,
+                    &[("192.168.0.0/16", false), ("192.168.20.0/24", true)],
+                );
+            }),
+        ),
+        (
+            "set_type:hash:net,net",
+            Box::new(|b| {
+                b.put_set(
+                    LOCAL4,
+                    SetType::HashNetNet,
+                    SetFamily::Inet,
+                    &[(Elem::host_pair(ip("192.168.20.1"), ip("10.0.0.1")), false)],
+                );
+            }),
+        ),
+        (
+            "family",
+            Box::new(|b| {
+                put(
+                    b,
+                    LOCAL4,
+                    SetType::HashNet,
+                    SetFamily::Inet6,
+                    &[("fd00::/64", false)],
+                )
+            }),
+        ),
+        ("read:no_set", Box::new(|_| {})),
+        (
+            "too_large",
+            Box::new(move |b| put(b, LOCAL4, SetType::HashNet, SetFamily::Inet, &big)),
+        ),
+    ];
+    for (want, make) in cases {
+        let mut g = unifi("filter-block-all-reject.rules");
+        make(&g.b);
+        g.apply(&lan());
+        let c = g.e.pass(Mode::Reassert).conditions.local_dst;
+        let v4 = local_of(&c, "br0", "ipv4");
+        assert_eq!(v4.unavailable.as_deref(), Some(want), "{v4:?}");
+        assert!(v4.nets.is_empty(), "{want}: {v4:?}");
+    }
+}
+
+#[test]
+fn an_unguarded_jump_into_the_external_chain_makes_local_networks_unavailable() {
+    let t = format!(
+        "{}-A UBIOS_LAN_IN_USER -m set --match-set UBIOS_ADDRv4_Internal dst -j {WAN}\n",
+        fx("filter-block-all-reject.rules")
+    );
+    let mut g = env(
+        Platform::Unifi,
+        "filter-block-all-reject.rules",
+        "filter6-block-all-reject.rules",
+    );
+    g.b.set_table(Family::V4, TableName::Filter, &t);
+    local_sets(&g.b);
+    g.apply(&lan());
+    let c = g.e.pass(Mode::Reassert).conditions.local_dst;
+    let v4 = local_of(&c, "br0", "ipv4");
+    assert!(
+        v4.unavailable
+            .as_deref()
+            .is_some_and(|u| u.starts_with("layout:")),
+        "{v4:?}"
+    );
+    assert!(v4.nets.is_empty());
+    // IPv6 has its own table and keeps its snapshot.
+    assert_eq!(local_of(&c, "br0", "ipv6").unavailable, None);
+}
+
+#[test]
+fn a_table_that_can_not_be_read_drops_that_familys_local_networks() {
+    let mut g = unifi("filter-block-all-reject.rules");
+    local_sets(&g.b);
+    g.apply(&lan());
+    assert_eq!(g.e.pass(Mode::Reassert).conditions.local_dst.len(), 2);
+    g.b.st().save_fail.push((Family::V4, TableName::Filter));
+    let c = g.e.pass(Mode::Reassert).conditions.local_dst;
+    assert_eq!(c.len(), 1, "{c:#?}");
+    assert_eq!(c[0].family, "ipv6");
+}
+
+#[test]
+fn debian_reports_no_local_networks() {
+    let mut g = env(
+        Platform::Debian,
+        "filter-debian-final-reject.rules",
+        "filter-debian-final-reject.rules",
+    );
+    local_sets(&g.b);
+    g.apply(&lan());
+    assert!(g.e.pass(Mode::Reassert).conditions.local_dst.is_empty());
+}

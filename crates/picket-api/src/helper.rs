@@ -18,6 +18,8 @@ pub const MAX_DUMP_LIMIT: u32 = 4096;
 pub const DEFAULT_SOCKET: &str = "/run/picket-helper/helper.sock";
 /// Largest timeout the helper accepts, in seconds (edge-firewall.md §4).
 pub const MAX_TIMEOUT_S: u32 = 2_147_483;
+/// Most networks one [`LocalDst`] snapshot carries; a larger set is reported `too_large`.
+pub const MAX_LOCAL_DST_NETS: usize = 1024;
 
 /// The four timed sets `ensure` and `delete` may touch.
 pub mod sets {
@@ -263,6 +265,30 @@ pub struct Conditions {
     pub fw_layout_unknown: Vec<String>,
     pub fw_catch_all: Vec<CatchAllFinding>,
     pub helper_disabled: bool,
+    /// UniFi: per `enforce` interface and family, the destinations whose traffic never reaches
+    /// Picket's jump. Not a condition the edge raises:
+    /// `FwClient::ip_blocked` uses it.
+    pub local_dst: Vec<LocalDst>,
+}
+
+/// UniFi's own networks for one interface and family: the members of the
+/// `…local_zoned_subnets` set that guards the only way into the interface's zone→External
+/// chain. Traffic from the interface to them is decided by UniFi's zone policies and never
+/// meets Picket's jump, so Picket never blocks it. Read afresh on every pass of the helper.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LocalDst {
+    pub interface: String,
+    /// `ipv4` or `ipv6`.
+    pub family: String,
+    pub set: String,
+    /// The set's members (`addr/len`), at most [`MAX_LOCAL_DST_NETS`]; empty when
+    /// `unavailable` is set.
+    pub nets: Vec<String>,
+    /// Why the set can't be used, if it can't: `layout:<what>`, `read:<reason>`,
+    /// `set_type:<type>`, `family`, `nomatch`, `undecodable` or `too_large`. The edge then
+    /// treats every destination as one that can be blocked.
+    pub unavailable: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

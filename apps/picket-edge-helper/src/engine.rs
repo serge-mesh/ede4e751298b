@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 
 use picket_api::edge_config::FwMode;
 use picket_api::helper::{
-    ApplyRequest, ApplyResponse, CatchAllFinding, Conditions, HelperError, RedirectCheck, RulesRepaired,
-    SetStatus, error_code, sets,
+    ApplyRequest, ApplyResponse, CatchAllFinding, Conditions, HelperError, LocalDst, MAX_LOCAL_DST_NETS,
+    RedirectCheck, RulesRepaired, SetStatus, error_code, sets,
 };
 use tokio::sync::oneshot;
 
@@ -150,6 +150,9 @@ pub struct Engine<B: Backend> {
     addrs: Option<(Duration, Vec<IfAddr>)>,
     dnsfilter_nat: bool,
     findings: BTreeMap<Family, Vec<IfFinding>>,
+    /// Each family's local destinations, read on every pass with its table; a family whose table
+    /// can't be read has none (they would be stale).
+    local_dst: BTreeMap<Family, Vec<LocalDst>>,
     shadowed: BTreeMap<Family, bool>,
     last_static_check: Option<Duration>,
     last_nat_check: Option<Duration>,
@@ -197,6 +200,7 @@ impl<B: Backend> Engine<B> {
             addrs: None,
             dnsfilter_nat: false,
             findings: BTreeMap::new(),
+            local_dst: BTreeMap::new(),
             shadowed: BTreeMap::new(),
             last_static_check: None,
             last_nat_check: None,
@@ -664,7 +668,92 @@ impl<B: Backend> Engine<B> {
                 found: f.as_str().into(),
             })
             .collect();
+        c.local_dst = self.local_dst.values().flatten().cloned().collect();
         c
+    }
+
+    /// The local destinations of each `enforce` interface of family `f` that has a place for its
+    /// jump on UniFi ([`layout::unifi_local_set`]). Each set is read once per pass.
+    fn local_dst(&self, f: Family, findings: &[IfFinding]) -> Vec<LocalDst> {
+        let mut read: HashMap<&str, Result<Vec<String>, String>> = HashMap::new();
+        let mut out = Vec::new();
+        for x in findings {
+            let Some(found) = &x.local_set else { continue };
+            let (set, res) = match found {
+                Err(e) => (String::new(), Err(format!("layout:{e}"))),
+                Ok(name) => {
+                    let r = read.entry(name).or_insert_with(|| self.read_local_set(f, name));
+                    (name.clone(), r.clone())
+                }
+            };
+            out.push(LocalDst {
+                interface: x.iface.clone(),
+                family: f.label().into(),
+                set,
+                nets: res.clone().unwrap_or_default(),
+                unavailable: res.err(),
+            });
+        }
+        out
+    }
+
+    /// Reads one of UniFi's `…local_zoned_subnets` sets as networks. Only what a plain lookup
+    /// means can be used: a `hash:net` or `hash:ip` set of the table's family, every member
+    /// decoded and none `nomatch` (an exception inside a wider member), at most
+    /// [`MAX_LOCAL_DST_NETS`] of them. Anything else is reported, never partly used.
+    fn read_local_set(&self, f: Family, name: &str) -> Result<Vec<String>, String> {
+        let family = match f {
+            Family::V4 => SetFamily::Inet,
+            Family::V6 => SetFamily::Inet6,
+        };
+        let usable = |h: &SetHeader| -> Result<(), String> {
+            if !matches!(h.type_name.as_str(), "hash:net" | "hash:ip") {
+                return Err(format!("set_type:{}", h.type_name));
+            }
+            if h.family != Some(family) {
+                return Err("family".into());
+            }
+            if h.elements.is_some_and(|n| n as usize > MAX_LOCAL_DST_NETS) {
+                return Err("too_large".into());
+            }
+            Ok(())
+        };
+        // The header first, so an oversized or foreign set is never listed.
+        match self.b.ipset_header(name) {
+            Ok(Some(h)) => usable(&h)?,
+            Ok(None) => return Err("read:no_set".into()),
+            Err(e) => return Err(format!("read:{}", e.reason())),
+        }
+        let host = family.host_mask();
+        let mut nets = BTreeSet::new();
+        let (mut over, mut nomatch, mut foreign) = (false, false, false);
+        let h = self
+            .b
+            .ipset_list(name, &mut |m| {
+                nomatch |= m.nomatch;
+                foreign |= SetFamily::of(&m.elem.ip) != family || m.elem.ip2.is_some();
+                if nets.len() >= MAX_LOCAL_DST_NETS {
+                    over = true;
+                } else {
+                    nets.insert((m.elem.ip, m.elem.cidr.unwrap_or(host)));
+                }
+            })
+            .map_err(|e| format!("read:{}", e.reason()))?;
+        // The set may have changed between the two reads.
+        usable(&h)?;
+        if h.undecoded > 0 {
+            return Err("undecodable".into());
+        }
+        if foreign {
+            return Err("family".into());
+        }
+        if nomatch {
+            return Err("nomatch".into());
+        }
+        if over {
+            return Err("too_large".into());
+        }
+        Ok(nets.into_iter().map(|(ip, c)| format!("{ip}/{c}")).collect())
     }
 
     /// One pass: sets, static contents, both families' chains and jumps (repaired and
@@ -753,6 +842,7 @@ impl<B: Backend> Engine<B> {
                 Err(code) => {
                     all_ok = false;
                     rep.pending.push(format!("save{}:{code}", f.digit()));
+                    self.local_dst.remove(&f);
                     continue;
                 }
             };
@@ -812,6 +902,17 @@ impl<B: Backend> Engine<B> {
                     self.last_ok.insert(internal_key(f, o, target), now);
                 }
             }
+            let local = self.local_dst(f, &last.findings);
+            for l in &local {
+                let before = self
+                    .local_dst
+                    .get(&f)
+                    .and_then(|v| v.iter().find(|p| p.interface == l.interface));
+                if l.unavailable.is_some() && before.is_none_or(|p| p.unavailable != l.unavailable) {
+                    tracing::info!(interface = %l.interface, family = f.label(), reason = l.unavailable.as_deref(), "UniFi's local networks can't be read; every destination counts as blockable");
+                }
+            }
+            self.local_dst.insert(f, local);
             self.findings.insert(f, last.findings.clone());
             self.shadowed.insert(f, last.shadowed);
         }

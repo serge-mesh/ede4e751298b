@@ -1528,3 +1528,105 @@ async fn a_move_the_firewall_missed_still_takes_the_old_devices_entries_off() {
     assert!(stored.addresses.is_empty(), "{:?}", stored.addresses);
     e.r.shutdown().await;
 }
+
+/// UniFi's local networks never reach Picket's jump (issue #47):
+/// the helper reads the `…local_zoned_subnets` set that guards `lo`'s zone→External chain, and
+/// the PTR probe and IP allows treat its members as not blocked, scoped by interface and family,
+/// while every other destination still counts as blocked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unifi_local_networks_get_no_firewall_block_and_no_ip_allow() {
+    use picket_edge_helper::ipset::{Elem, SetFamily, SetType};
+    use picket_edge_helper::iptables::{Family, TableName};
+    let h = helperkit::start();
+    // `lo` is one of the Internal zone's interfaces here.
+    let lo =
+        "-A UBIOS_FORWARD_IN_USER -i lo -m comment --comment \"UBIOS zone Internal\" -j UBIOS_LAN_IN_USER\n";
+    for (f, fx) in [
+        (Family::V4, "filter-block-all-reject.rules"),
+        (Family::V6, "filter6-block-all-reject.rules"),
+    ] {
+        h.b.set_table(f, TableName::Filter, &format!("{}{lo}", helperkit::fx(fx)));
+    }
+    let net = |s: &str| {
+        let (a, l) = s.split_once('/').unwrap();
+        (Elem::net(a.parse().unwrap(), l.parse().unwrap()), false)
+    };
+    let local4 = |nets: &[&str]| {
+        let m: Vec<_> = nets.iter().map(|s| net(s)).collect();
+        h.b.put_set("UBIOS_local_zoned_subnets", SetType::HashNet, SetFamily::Inet, &m);
+    };
+    // The NAS VLAN, and a routed network no interface of this host is on.
+    local4(&["198.51.100.0/24", "203.0.113.0/26"]);
+    h.b.put_set(
+        "UBIOS6_local_zoned_subnets",
+        SetType::HashNet,
+        SetFamily::Inet6,
+        &[net("2001:db8:20::/64")],
+    );
+    let e = env(
+        json!({"mode": "self", "max_duration": "1h", "ips": true, "max_active": 1, "rate_per_hour": 1}),
+        json!({"interfaces": [{"name": "lo", "mode": "enforce"}], "ack_wait_ms": 1000}),
+        Some(h.path.clone()),
+    )
+    .await;
+    let edge = Arc::clone(&e.r.edge);
+    let client: IpAddr = "127.0.0.1".parse().unwrap();
+    let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+    assert!(
+        wait_until(T, || !edge.fw.ip_blocked(client, ip("198.51.100.10"))).await,
+        "the helper's local networks reach the edge: {:?}",
+        edge.fw.state.load().conditions.local_dst
+    );
+    for local in ["198.51.100.10", "203.0.113.5"] {
+        let p = e.probe(&ptr_name(ip(local)), 12).await;
+        assert_eq!(p.rcode, 0, "{local}");
+        assert!(p.ede().is_empty(), "{local}: {:?}", p.ede());
+        let (st, v) = e
+            .ext("PATCH", Some(json!([{"ip": local, "expires_at": now() + 600}])))
+            .await;
+        assert_eq!(st, 409, "{local}: {v}");
+        assert_eq!(v["error"]["code"], "not_blocked", "{v}");
+    }
+    assert!(edge.allows.list().is_empty());
+    assert!(h.members("picket4").is_empty(), "{:?}", h.members("picket4"));
+    // IPv6 has its own set; an IPv4 member doesn't make the same bits local in IPv6.
+    assert!(!edge.fw.ip_blocked(client, ip("2001:db8:20::10")));
+    assert!(edge.fw.ip_blocked(client, ip("2001:db8:99::10")));
+    // Outside the set (the WAN side, or the rest of a routed /24): blocked, and allowable with the
+    // one allow the limits leave (the refusals above spent none of them).
+    assert!(edge.fw.ip_blocked(client, ip("203.0.113.70")));
+    let p = e.probe(&ptr_name(ip("192.0.2.5")), 12).await;
+    assert_eq!(p.rcode, 3);
+    assert_eq!(p.ede(), vec![(15, "cause=firewall".to_owned())]);
+    let (st, v) = e
+        .ext(
+            "PATCH",
+            Some(json!([{"ip": "192.0.2.5", "expires_at": now() + 600}])),
+        )
+        .await;
+    assert_eq!(st, 200, "{v}");
+    assert!(h.has("picket4", Some("127.0.0.1"), "192.0.2.5"));
+    // A network edit on the gateway shows at the helper's next pass.
+    local4(&["203.0.113.0/26"]);
+    assert!(
+        wait_until(T, || edge.fw.ip_blocked(client, ip("198.51.100.10"))).await,
+        "the NAS VLAN left UniFi's local networks"
+    );
+    assert!(!edge.fw.ip_blocked(client, ip("203.0.113.5")));
+    // A set the helper can't fully read is not used at all.
+    h.b.put_set(
+        "UBIOS_local_zoned_subnets",
+        SetType::HashNet,
+        SetFamily::Inet,
+        &[net("203.0.113.0/24"), (net("203.0.113.64/26").0, true)],
+    );
+    assert!(wait_until(T, || edge.fw.ip_blocked(client, ip("203.0.113.5"))).await);
+    // The snapshot counts only while the helper is connected.
+    local4(&["203.0.113.0/26"]);
+    assert!(wait_until(T, || !edge.fw.ip_blocked(client, ip("203.0.113.5"))).await);
+    let mut st = picket_edge::firewall::HelperState::clone(&edge.fw.state.load());
+    st.connected = false;
+    edge.fw.state.store(Arc::new(st));
+    assert!(edge.fw.ip_blocked(client, ip("203.0.113.5")));
+    e.r.shutdown().await;
+}

@@ -89,6 +89,11 @@ pub const IPSET_ATTR_IPADDR_IPV6: u16 = 2;
 /// `IPSET_FLAG_LIST_HEADER`: `LIST` returns the header only, no members.
 pub const IPSET_FLAG_LIST_HEADER: u32 = 1 << 2;
 
+// ---- ip_set.h: flags of an element (IPSET_ATTR_CADT_FLAGS) -------------------------------------
+
+/// `IPSET_FLAG_NOMATCH`: the element is an exception, a packet it matches doesn't match the set.
+pub const IPSET_FLAG_NOMATCH: u32 = 1 << 2;
+
 // ---- ip_set.h: enum ipset_errno, and ip_set_hash.h ---------------------------------------------
 
 pub const IPSET_ERR_PRIVATE: i32 = 4096;
@@ -237,6 +242,8 @@ pub struct Member {
     /// Remaining seconds; `None` on a set without timeouts, `Some(0)` for a permanent entry
     /// (kernel `ip_set_timeout_get`).
     pub timeout: Option<u32>,
+    /// A `nomatch` element (`IPSET_FLAG_NOMATCH`): an exception inside a wider element.
+    pub nomatch: bool,
 }
 
 /// Header data of a set (`LIST` with `IPSET_FLAG_LIST_HEADER`).
@@ -251,6 +258,8 @@ pub struct SetHeader {
     pub references: Option<u32>,
     /// The set's default timeout; present only on sets created with timeout support.
     pub timeout: Option<u32>,
+    /// Members of a `LIST` that didn't decode (skipped).
+    pub undecoded: u32,
 }
 
 // ---- attribute writer --------------------------------------------------------------------------
@@ -815,6 +824,7 @@ fn decode_member(data: &Attr<'_>) -> Option<Member> {
     let mut cidr = None;
     let mut cidr2 = None;
     let mut timeout = None;
+    let mut flags = 0;
     for a in data.children() {
         let a = a.ok()?;
         match a.kind {
@@ -823,6 +833,7 @@ fn decode_member(data: &Attr<'_>) -> Option<Member> {
             IPSET_ATTR_CIDR => cidr = Some(a.u8()?),
             IPSET_ATTR_CIDR2 => cidr2 = Some(a.u8()?),
             IPSET_ATTR_TIMEOUT => timeout = Some(a.be32()?),
+            IPSET_ATTR_CADT_FLAGS => flags = a.be32()?,
             _ => {}
         }
     }
@@ -839,6 +850,7 @@ fn decode_member(data: &Attr<'_>) -> Option<Member> {
     Some(Member {
         elem: Elem { ip, cidr, ip2, cidr2 },
         timeout,
+        nomatch: flags & IPSET_FLAG_NOMATCH != 0,
     })
 }
 
@@ -1012,6 +1024,35 @@ mod tests {
     }
 
     #[test]
+    fn decode_list_marks_nomatch_members() {
+        let mut w = AttrWriter::new();
+        w.strz(IPSET_ATTR_SETNAME, "UBIOS_local_zoned_subnets")
+            .strz(IPSET_ATTR_TYPENAME, "hash:net")
+            .begin_nested(IPSET_ATTR_ADT);
+        for (net, cidr, flags) in [("192.168.0.0", 16, 0), ("192.168.20.0", 24, IPSET_FLAG_NOMATCH)] {
+            w.begin_nested(IPSET_ATTR_DATA);
+            w.ip(IPSET_ATTR_IP, &v4(net));
+            w.u8(IPSET_ATTR_CIDR, cidr);
+            if flags != 0 {
+                w.be32(IPSET_ATTR_CADT_FLAGS, flags);
+            }
+            w.end_nested();
+        }
+        w.end_nested();
+        let mut h = SetHeader::default();
+        let mut got = vec![];
+        assert_eq!(decode_list(&w.finish(), &mut h, &mut |m| got.push(m)).unwrap(), 0);
+        assert_eq!(h.type_name, "hash:net");
+        assert_eq!(
+            got.iter().map(|m| (m.elem, m.nomatch)).collect::<Vec<_>>(),
+            vec![
+                (Elem::net(v4("192.168.0.0"), 16), false),
+                (Elem::net(v4("192.168.20.0"), 24), true)
+            ]
+        );
+    }
+
+    #[test]
     fn decode_list_reply_with_members_and_timeouts() {
         let m1 = Elem::host_pair(v4("192.168.1.10"), v4("1.1.1.1"));
         let m2 = Elem::host_pair(v4("192.168.1.11"), v4("8.8.8.8"));
@@ -1040,11 +1081,13 @@ mod tests {
             vec![
                 Member {
                     elem: m1,
-                    timeout: Some(120)
+                    timeout: Some(120),
+                    nomatch: false,
                 },
                 Member {
                     elem: m2,
-                    timeout: Some(1)
+                    timeout: Some(1),
+                    nomatch: false,
                 }
             ]
         );

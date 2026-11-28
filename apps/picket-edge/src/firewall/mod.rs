@@ -56,6 +56,7 @@
 //!   failing closed) and `helper_unreachable` holds while the helper can't be reached.
 
 pub mod conn;
+pub mod local_dst;
 pub mod shadow;
 
 use std::collections::{HashMap, VecDeque};
@@ -91,6 +92,7 @@ use crate::hooks::{HelperProbe, HelperSeed, HelperSnapshot, SelfCheck};
 use crate::logs::{LogProducer, fields};
 use crate::neighbours::{Mac, NeighbourEvent, Neighbours};
 use conn::{Conn, ConnError};
+use local_dst::LocalNets;
 use shadow::{FwKey, SetId, Shadow, owner_of, owner_of_mac};
 
 /// Most ops coalesced into one `ensure` or `delete` (edge-firewall.md §3 "Batching").
@@ -237,6 +239,8 @@ pub struct HelperState {
     pub connected: bool,
     pub rules_ok: bool,
     pub conditions: HelperConditions,
+    /// `conditions.local_dst`, usable entries only; trusted only while `connected`.
+    pub local_dst: LocalNets,
     pub pid: Option<u32>,
     pub helper_version: String,
 }
@@ -1090,8 +1094,9 @@ impl FwClient {
         }
         let client = client.to_canonical();
         let ip = ip.to_canonical();
-        let enforce = match self.interfaces.interface_for_client(client) {
-            Some(name) => v.modes.get(&*name) == Some(&FwMode::Enforce),
+        let iface = self.interfaces.interface_for_client(client);
+        let enforce = match &iface {
+            Some(name) => v.modes.get(&**name) == Some(&FwMode::Enforce),
             // Unknown interface: Picket's view assumes the check applies when any protected
             // interface enforces (an allow for an IP that wasn't blocked only adds an entry).
             None => v.modes.values().any(|m| *m == FwMode::Enforce),
@@ -1101,6 +1106,22 @@ impl FwClient {
             || v.static_allow.iter().any(|n| n.contains(&ip))
         {
             return false;
+        }
+        // UniFi's local networks never reach Picket's jump ([`local_dst`]): the interface's own snapshot decides; for an unknown interface, every
+        // enforcing interface's must agree. Only the connected helper's snapshot counts.
+        let st = self.state.load();
+        if st.connected && !st.local_dst.is_empty() {
+            let local = match &iface {
+                Some(name) => st.local_dst.contains(name, ip),
+                None => v
+                    .modes
+                    .iter()
+                    .filter(|(_, m)| **m == FwMode::Enforce)
+                    .all(|(name, _)| st.local_dst.contains(name, ip)),
+            };
+            if local {
+                return false;
+            }
         }
         let now = self.now_s();
         let v4 = ip.is_ipv4();
@@ -1606,6 +1627,7 @@ impl FwClient {
         self.conditions.sync_kinds(Source::Helper, &HELPER_KINDS, &cur);
         let mut st = HelperState::clone(&self.state.load());
         st.conditions = c.clone();
+        st.local_dst = LocalNets::of(&c.local_dst);
         self.state.store(Arc::new(st));
     }
 
@@ -1977,6 +1999,7 @@ impl FwClient {
             connected: true,
             rules_ok: hello.rules_ok,
             conditions: hello.conditions.clone(),
+            local_dst: LocalNets::default(),
             pid: c.pid,
             helper_version: crate::diag::truncate(&hello.helper_version, 64),
         }));

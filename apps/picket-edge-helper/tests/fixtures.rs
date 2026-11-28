@@ -37,6 +37,16 @@ fn assert_jumps_above(rules: &[String], anchor: &str) {
     assert_eq!(js, [a - 2, a - 1], "{rules:#?}");
 }
 
+
+/// The conditions without `local_dst`, which only reports UniFi's local networks (here: no set,
+/// so unavailable) and is no finding about the layout.
+fn findings(c: &picket_api::helper::Conditions) -> picket_api::helper::Conditions {
+    picket_api::helper::Conditions {
+        local_dst: vec![],
+        ..c.clone()
+    }
+}
+
 #[test]
 fn default_allow() {
     let mut g = unifi("filter-default-allow.rules");
@@ -65,7 +75,7 @@ fn block_all_reject_is_the_required_layout() {
         pos(&rules, "Block IoT telemetry") < pos(&rules, "PICKET-FWD"),
         "UniFi's policies run first"
     );
-    assert_eq!(r.conditions, Default::default());
+    assert_eq!(findings(&r.conditions), Default::default());
     assert!(r.rules_ok);
     // IPv6 uses the same layout.
     assert_jumps_above(&g.chain(Family::V6, WAN), "[FIREWALL_POLICY-R-30000]");
@@ -125,7 +135,7 @@ fn allow_all_above_block_all() {
     let rules = g.chain(Family::V4, WAN);
     assert_jumps_above(&rules, "[FIREWALL_POLICY-R-30000]");
     assert!(pos(&rules, "Allow All") < pos(&rules, "PICKET-FWD"));
-    assert_eq!(r.conditions, Default::default());
+    assert_eq!(findings(&r.conditions), Default::default());
 }
 
 #[test]
@@ -377,7 +387,7 @@ fn debian_forward_with_final_reject() {
         );
         assert_eq!(rules[rules.len() - 2], "-i eth1 -j PICKET-FWD");
     }
-    assert_eq!(r.conditions, Default::default());
+    assert_eq!(findings(&r.conditions), Default::default());
     assert!(r.rules_ok);
 }
 
@@ -537,7 +547,7 @@ fn ids_block_all_reject() {
         ("br10", FwMode::Monitor),
         ("br20", FwMode::Off),
     ]));
-    assert_eq!(r.conditions, Default::default());
+    assert_eq!(findings(&r.conditions), Default::default());
     assert!(r.rules_ok, "{r:?}");
     for f in [Family::V4, Family::V6] {
         let rules = g.chain(f, WAN);
@@ -624,7 +634,7 @@ fn ids_shadowed_rules_and_allow_all() {
     }
     let mut g = ids("filter-allow-all-above-block-all.rules");
     let r = g.apply(&req(&[("br0", FwMode::Enforce)]));
-    assert_eq!(r.conditions, Default::default());
+    assert_eq!(findings(&r.conditions), Default::default());
     let rules = g.chain(Family::V4, WAN);
     assert!(pos(&rules, "6731c0de00000000000000fe") < pos(&rules, "PICKET-FWD"));
 }
@@ -663,7 +673,7 @@ fn ids_debian_drop_policy_with_final_reject() {
     let f = "id-tags/debian-forward-reject.rules";
     let mut g = env(Platform::Debian, f, f);
     let r = g.apply(&req(&[("ens4", FwMode::Enforce)]));
-    assert_eq!(r.conditions, Default::default());
+    assert_eq!(findings(&r.conditions), Default::default());
     for fam in [Family::V4, Family::V6] {
         let rules = g.chain(fam, "FORWARD");
         assert_eq!(rules[rules.len() - 2], "-i ens4 -j PICKET-FWD");
