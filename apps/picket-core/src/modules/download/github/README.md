@@ -14,7 +14,8 @@ A file in a GitHub repository, followed on a branch (providers.md §3).
 - `version`: the blob SHA; `updated_at`: the newest commit time touching the path;
   `state`: `{head, blob}`; sibling group `github:<o>/<r>`.
 - **Rate limits:** 429, or 403 with a rate-limit header, pauses every `github` check until
-  `Retry-After` or `x-ratelimit-reset` (at most 1 h).
+  `Retry-After` or `x-ratelimit-reset`, kept whole past an hour (held to a week against a bad
+  header). The pause survives a restart.
 - `history()` reads the commits API back 60 days or 20 changes, skipping root commits.
 
 `tests/` holds a recorded `ls-refs` answer and runs the provider against a local fake of

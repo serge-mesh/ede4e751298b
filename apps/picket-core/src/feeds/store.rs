@@ -1,5 +1,5 @@
 //! Feed state in `core.db` (storage.md §3): `feed_state`, `feed_provider_state`, `feed_runs`,
-//! `feed_provider_checks`, `feed_checks`, `feed_changes`, module pauses. Plain functions over a
+//! `feed_provider_checks`, `feed_checks`, `feed_changes`, rate-limit pauses. Plain functions over a
 //! connection or a transaction, so the callers decide what commits together.
 
 use jiff::Timestamp;
@@ -167,6 +167,38 @@ pub fn load_provider_state(c: &Connection, provider: &str) -> rusqlite::Result<P
     )
     .optional()?
     .unwrap_or_default())
+}
+
+/// A provider's last weekly `k` choice ([`super::schedule::KChoiceRecord`]).
+pub fn load_k_choice(
+    c: &Connection,
+    provider: &str,
+) -> rusqlite::Result<Option<super::schedule::KChoiceRecord>> {
+    let j: Option<Option<String>> = c
+        .query_row(
+            "SELECT k_choice_json FROM feed_provider_state WHERE provider_id = ?1",
+            [provider],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(j.flatten().and_then(|s| serde_json::from_str(&s).ok()))
+}
+
+/// Records a provider's weekly `k` choice: `k` (what its checks use) and the record of how the
+/// budget shaped it.
+pub fn set_k_choice(
+    c: &Connection,
+    provider: &str,
+    k: f64,
+    record: &super::schedule::KChoiceRecord,
+) -> rusqlite::Result<()> {
+    ensure_provider_state(c, provider)?;
+    let j = serde_json::to_string(record).unwrap_or_default();
+    c.execute(
+        "UPDATE feed_provider_state SET k = ?2, k_choice_json = ?3 WHERE provider_id = ?1",
+        params![provider, k, j],
+    )?;
+    Ok(())
 }
 
 /// Every provider's state (start-up).
@@ -858,9 +890,10 @@ pub fn open_totals(c: &Connection, feed: &str) -> rusqlite::Result<TypeCounts> {
     Ok(out)
 }
 
-/// The pause after a `RateLimited` reply, per module (providers.md §2).
+/// The pauses after `RateLimited` replies, per pause scope (providers.md §2,
+/// [`crate::modules::download::DownloadModule::pause_scope`]).
 pub fn load_pauses(c: &Connection) -> rusqlite::Result<Vec<(String, Timestamp)>> {
-    let mut st = c.prepare("SELECT module, until FROM module_pauses")?;
+    let mut st = c.prepare("SELECT scope, until FROM rate_limit_pauses")?;
     let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
     let mut out = Vec::new();
     for row in rows {
@@ -872,11 +905,11 @@ pub fn load_pauses(c: &Connection) -> rusqlite::Result<Vec<(String, Timestamp)>>
     Ok(out)
 }
 
-pub fn set_pause(c: &Connection, module: &str, until: Timestamp) -> rusqlite::Result<()> {
+pub fn set_pause(c: &Connection, scope: &str, until: Timestamp) -> rusqlite::Result<()> {
     c.execute(
-        "INSERT INTO module_pauses(module, until) VALUES (?1, ?2)
-         ON CONFLICT(module) DO UPDATE SET until = max(until, excluded.until)",
-        params![module, ts(&until)],
+        "INSERT INTO rate_limit_pauses(scope, until) VALUES (?1, ?2)
+         ON CONFLICT(scope) DO UPDATE SET until = max(until, excluded.until)",
+        params![scope, ts(&until)],
     )?;
     Ok(())
 }

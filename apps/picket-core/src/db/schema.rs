@@ -10,7 +10,7 @@
 //! order. `metrics.db` keeps `ts` as INTEGER Unix milliseconds for cheap binning.
 
 /// `core.db` migration steps; version = index + 1.
-pub const CORE: &[&str] = &[CORE_V1, CORE_V2, CORE_V3, CORE_V4, CORE_V5];
+pub const CORE: &[&str] = &[CORE_V1, CORE_V2, CORE_V3, CORE_V4, CORE_V5, CORE_V6];
 
 /// `metrics.db` migration steps; version = index + 1.
 pub const METRICS: &[&str] = &[METRICS_V1, METRICS_V2];
@@ -1436,6 +1436,24 @@ CREATE INDEX bundle_psl_hits_suffix ON bundle_psl_hits(bundle_id, feed_id, suffi
 UPDATE bundle_builds SET definition_hash = '';
 "#;
 
+/// Pauses by scope and the weekly `k` choice record (#65).
+const CORE_V6: &str = r#"
+-- Pauses are keyed by the provider's pause scope (`DownloadModule::pause_scope`: `github`, or
+-- `http:<origin>`), no longer by module: after a `RateLimited` reply no check in that scope
+-- starts until `until` (providers.md §2), across restarts. Stored pauses carry over: a module
+-- id is the scope of every module but `http`, and an `http` row only pauses providers whose URL
+-- doesn't parse until it expires.
+ALTER TABLE module_pauses RENAME TO rate_limit_pauses;
+ALTER TABLE rate_limit_pauses RENAME COLUMN module TO scope;
+
+-- k_choice_json: the last weekly `k` choice of a `dynamic` provider (feed-scheduling.md §5) with
+-- the planning budget's part in it: the preferred and selected aggressiveness, whether the budget
+-- slowed the provider or no `k` fit it, the replay window, the predicted checks a day and, after a
+-- compromise, each feed's estimated change in its share caught within 2 minutes
+-- (`feeds::schedule::KChoiceRecord`).
+ALTER TABLE feed_provider_state ADD COLUMN k_choice_json TEXT;
+"#;
+
 /// Heartbeat samples by boot (chart baselines, core.md §10).
 const METRICS_V2: &str = r#"
 CREATE INDEX samples_edge_boot ON samples(edge_id, boot, ts);
@@ -1553,7 +1571,7 @@ pub const CORE_TABLES: &[&str] = &[
     "log_clamped",
     "feed_run_ids",
     "feed_runs_open",
-    "module_pauses",
+    "rate_limit_pauses",
     "feed_purges",
     "bundle_builds",
     "bundle_build_keys",

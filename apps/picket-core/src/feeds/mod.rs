@@ -171,7 +171,7 @@ pub enum Triggered {
     /// A check of the provider (or a run of the manual feed) is in progress; this one runs when
     /// it ends.
     Queued,
-    /// `min_interval` (or a module's rate-limit pause) puts the check at this time.
+    /// `min_interval` (or a rate-limit pause of the provider's scope) puts the check at this time.
     Scheduled(Timestamp),
     Disabled,
     Unknown,
@@ -270,7 +270,8 @@ impl ProviderRt {
 struct Inner {
     feeds: HashMap<String, FeedRt>,
     providers: HashMap<String, ProviderRt>,
-    /// Module id → no check through it starts until then (providers.md §2).
+    /// Pause scope ([`pause_scope`]) → no check of a provider in it starts until then
+    /// (providers.md §2).
     pauses: HashMap<String, Timestamp>,
 }
 
@@ -455,8 +456,14 @@ impl Feeds {
 
     /// When the provider's next check is due.
     pub fn next_due(&self, provider: &str) -> Option<Timestamp> {
-        self.with(|i| i.providers.get(provider).and_then(|p| p.due))
-            .flatten()
+        self.with(|i| {
+            let p = i.providers.get(provider)?;
+            let due = p.due?;
+            // A running pause of its scope holds it (as the loop does).
+            let pause = p.def.as_ref().and_then(|d| i.pauses.get(&pause_scope(d)));
+            Some(pause.filter(|u| **u > due).copied().unwrap_or(due))
+        })
+        .flatten()
     }
 
     /// The feed's ask (feed-scheduling.md §5).
@@ -485,19 +492,39 @@ impl Feeds {
         self.recompute_due(provider);
     }
 
-    /// The module's rate-limit pause, if one is running.
-    pub fn paused_until(&self, module: &str) -> Option<Timestamp> {
+    /// The rate-limit pause of a pause scope ([`pause_scope`]), if one is running.
+    pub fn paused_until(&self, scope: &str) -> Option<Timestamp> {
         let now = Timestamp::now();
-        self.with(|i| i.pauses.get(module).copied().filter(|u| *u > now))
+        self.with(|i| i.pauses.get(scope).copied().filter(|u| *u > now))
             .flatten()
     }
 
-    pub(crate) fn set_pause(&self, module: &str, until: Timestamp) {
+    /// The rate-limit pause that holds a provider's checks, if one is running.
+    pub fn provider_paused_until(&self, def: &FeedProviderDef) -> Option<Timestamp> {
+        self.paused_until(&pause_scope(def))
+    }
+
+    pub(crate) fn set_pause(&self, scope: &str, until: Timestamp) {
         self.with(|i| {
-            let e = i.pauses.entry(module.to_string()).or_insert(until);
+            let e = i.pauses.entry(scope.to_string()).or_insert(until);
             *e = (*e).max(until);
         });
         self.wake.notify_one();
+    }
+
+    /// The pauses a restart reads back (providers.md §2): each one still running is kept whole,
+    /// however long past an hour, held only to [`crate::modules::download::dates::MAX_COOLDOWN`]
+    /// from `now` (a clock set back can't stretch one).
+    pub(crate) fn restore_pauses(&self, pauses: Vec<(String, Timestamp)>, now: Timestamp) {
+        let max = picket_api::time::saturating_add(now, crate::modules::download::dates::MAX_COOLDOWN);
+        self.with(|i| {
+            for (scope, u) in pauses {
+                if u > now {
+                    let e = i.pauses.entry(scope).or_insert(u);
+                    *e = (*e).max(u).min(max);
+                }
+            }
+        });
     }
 
     /// Sets a feed's ask and recomputes its provider's due time.
@@ -636,7 +663,7 @@ impl Feeds {
         .flatten()
     }
 
-    /// Puts a provider's next check at `at` (a module pause).
+    /// Puts a provider's next check at `at` (a rate-limit pause).
     pub(crate) fn set_due(&self, provider: &str, at: Timestamp) {
         self.with(|i| {
             if let Some(p) = i.providers.get_mut(provider) {
@@ -1082,7 +1109,8 @@ impl Feeds {
     }
 
     /// "Check now" and the other causes that make a provider due at once: starts the check, or
-    /// queues it behind a running one, or schedules it at `min_interval` (or a module pause).
+    /// queues it behind a running one, or schedules it at `min_interval` (or the end of a
+    /// rate-limit pause of its scope: a server's cooldown holds "Check now" too).
     pub fn trigger_provider(&self, state: &SharedState, provider: &str, cause: Cause) -> Triggered {
         let now = Timestamp::now();
         match self.with(|i| start_decision(i, provider, cause, now)) {
@@ -1273,7 +1301,7 @@ impl Feeds {
                     continue;
                 }
                 let Some(mut d) = p.due else { continue };
-                if let Some(u) = pauses.get(&def.module).filter(|u| **u > d) {
+                if let Some(u) = pauses.get(&pause_scope(def)).filter(|u| **u > d) {
                     d = *u;
                 }
                 if d <= now {
@@ -1811,10 +1839,11 @@ impl Feeds {
 /// Whether an explicit cause may start a check of `provider` now, decided under the runtime's
 /// lock ([`Feeds::trigger_provider`], a queued "Check now" at [`Feeds::complete`]): `Ok` marks it
 /// checking (the caller spawns the check); otherwise it is queued behind a running check, or
-/// scheduled at `min_interval` or the end of a module pause. An explicit cause doesn't wait
+/// scheduled at `min_interval` or the end of a rate-limit pause of its scope. An explicit cause
+/// doesn't wait
 /// for a retry ([`Feeds::retry_at`]); the check it starts ends that retry.
 fn start_decision(i: &mut Inner, provider: &str, cause: Cause, now: Timestamp) -> Result<(), Triggered> {
-    let module = {
+    let scope = {
         let Some(p) = i.providers.get(provider) else {
             return Err(Triggered::Unknown);
         };
@@ -1824,9 +1853,9 @@ fn start_decision(i: &mut Inner, provider: &str, cause: Cause, now: Timestamp) -
         if !def.enabled {
             return Err(Triggered::Disabled);
         }
-        def.module.clone()
+        pause_scope(def)
     };
-    let pause = i.pauses.get(&module).copied().filter(|u| *u > now);
+    let pause = i.pauses.get(&scope).copied().filter(|u| *u > now);
     let p = i.providers.get_mut(provider).ok_or(Triggered::Unknown)?;
     let Some(def) = p.def.clone() else {
         return Err(Triggered::Unknown);
@@ -1844,7 +1873,8 @@ fn start_decision(i: &mut Inner, provider: &str, cause: Cause, now: Timestamp) -
         p.force = true;
         p.retry_at = None;
         p.due = Some(p.due.map_or(at, |d| d.min(at)));
-        return Err(Triggered::Scheduled(at));
+        // The loop holds it for a running pause too: say when it really runs.
+        return Err(Triggered::Scheduled(pause.map_or(at, |u| u.max(at))));
     }
     if let Some(u) = pause {
         p.cause = Some(cause);
@@ -1860,6 +1890,12 @@ fn start_decision(i: &mut Inner, provider: &str, cause: Cause, now: Timestamp) -
     p.retry_at = None;
     p.edited_during = false;
     Ok(())
+}
+
+/// A provider's pause scope (providers.md §2,
+/// [`crate::modules::download::DownloadModule::pause_scope`]): what its rate-limit pauses cover.
+pub fn pause_scope(def: &FeedProviderDef) -> String {
+    crate::modules::download::pause_scope(&def.module, &def.config)
 }
 
 /// Spawns the check of a provider just marked checking.
@@ -1995,13 +2031,8 @@ pub async fn start(state: &SharedState) -> anyhow::Result<()> {
         .read(|c| Ok::<_, anyhow::Error>(store::load_provider_states(c)?))
         .await?;
     let now = Timestamp::now();
+    state.feeds.restore_pauses(pauses, now);
     state.feeds.with(|i| {
-        for (m, u) in pauses {
-            if u > now {
-                i.pauses
-                    .insert(m, u.min(now + jiff::SignedDuration::from_hours(1)));
-            }
-        }
         for (id, st) in states {
             let f = i.feeds.entry(id).or_default();
             f.ask = st.next_ask_at;
@@ -2338,7 +2369,63 @@ mod lifecycle_tests {
         assert!(tick(&f, now + secs(121)).is_empty(), "once");
     }
 
-    /// An explicit cause doesn't wait for a retry, even when `min_interval` or a module pause
+    /// Issue #65: a restart keeps each stored pause still running whole, however long past an
+    /// hour, drops an ended one and holds a far one to the longest cooldown honoured.
+    #[test]
+    fn a_restart_keeps_a_pause_whole() {
+        let f = Feeds::default();
+        let now = Timestamp::now();
+        let max = crate::modules::download::dates::MAX_COOLDOWN;
+        f.restore_pauses(
+            vec![
+                ("http:https://a.example".into(), now + secs(3 * 3600)),
+                ("github".into(), now - secs(5)),
+                ("http:https://b.example".into(), now + secs(90 * 86_400)),
+            ],
+            now,
+        );
+        assert_eq!(
+            f.paused_until("http:https://a.example"),
+            Some(now + secs(3 * 3600))
+        );
+        assert_eq!(f.paused_until("github"), None);
+        assert_eq!(f.paused_until("http:https://b.example"), Some(now + max));
+    }
+
+    /// Issue #65: a pause holds the providers of its scope (an `http` provider's origin), scheduled
+    /// checks and "Check now" alike, past an hour; one on another origin goes ahead.
+    #[test]
+    fn a_pause_holds_its_scope_only() {
+        let f = feeds_with(0);
+        rt(&f, |p| {
+            if let Some(d) = p.def.as_mut() {
+                d.config = serde_json::json!({"url": "https://lists.example/a.txt"});
+            }
+        });
+        let now = Timestamp::now();
+        f.set_pause("http:https://other.example", now + secs(3600));
+        rt(&f, |p| p.due = Some(now - secs(1)));
+        assert_eq!(tick(&f, now).len(), 1, "another origin's pause holds nothing");
+        assert_eq!(f.complete(P, now), None);
+
+        let until = now + secs(3 * 3600);
+        f.set_pause("http:https://lists.example", until);
+        rt(&f, |p| {
+            p.due = Some(now - secs(1));
+            p.last_check = Some(now - secs(7200));
+        });
+        assert!(tick(&f, now).is_empty(), "its own origin's pause holds it");
+        assert!(tick(&f, now + secs(3600 + 60)).is_empty(), "past an hour too");
+        assert_eq!(f.next_due(P), Some(until), "the status says when it really runs");
+        assert_eq!(
+            f.with(|i| start_decision(i, P, Cause::CheckNow, now)).unwrap(),
+            Err(Triggered::Scheduled(until)),
+            "Check now waits too"
+        );
+        assert_eq!(tick(&f, until + secs(1)), vec![Cause::CheckNow]);
+    }
+
+    /// An explicit cause doesn't wait for a retry, even when `min_interval` or a rate-limit pause
     /// schedules it: a recompute before then keeps the time it reported.
     #[test]
     fn a_scheduled_check_now_drops_the_retry() {
