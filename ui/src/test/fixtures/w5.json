@@ -86,8 +86,7 @@
     "evidence_per_alert": 1000,
     "evidence_total_mib": 128,
     "thresholds": {},
-    "feed_stale_days": 30,
-    "temporary_allow": false
+    "feed_stale_days": 30
    },
    "edges": {
     "min_firmware": [
@@ -27345,8 +27344,7 @@
      "evidence_per_alert": 1000,
      "evidence_total_mib": 128,
      "thresholds": {},
-     "feed_stale_days": 30,
-     "temporary_allow": false
+     "feed_stale_days": 30
     },
     "edges": {
      "min_firmware": [
@@ -27478,8 +27476,7 @@
     "evidence_per_alert": 1000,
     "evidence_total_mib": 128,
     "thresholds": {},
-    "feed_stale_days": 30,
-    "temporary_allow": false
+    "feed_stale_days": 30
    },
    "edges": {
     "min_firmware": [
@@ -27635,8 +27632,7 @@
     "evidence_per_alert": 1000,
     "evidence_total_mib": 128,
     "thresholds": {},
-    "feed_stale_days": 30,
-    "temporary_allow": false
+    "feed_stale_days": 30
    },
    "edges": {
     "min_firmware": [
@@ -27760,8 +27756,7 @@
     "evidence_per_alert": 1000,
     "evidence_total_mib": 128,
     "thresholds": {},
-    "feed_stale_days": 30,
-    "temporary_allow": false
+    "feed_stale_days": 30
    },
    "edges": {
     "min_firmware": [
@@ -27879,8 +27874,7 @@
     "evidence_per_alert": 1000,
     "evidence_total_mib": 128,
     "thresholds": {},
-    "feed_stale_days": 30,
-    "temporary_allow": false
+    "feed_stale_days": 30
    },
    "edges": {
     "min_firmware": [
@@ -29543,8 +29537,7 @@
     "evidence_per_alert": 1000,
     "evidence_total_mib": 128,
     "thresholds": {},
-    "feed_stale_days": 30,
-    "temporary_allow": false
+    "feed_stale_days": 30
    },
    "edges": {
     "min_firmware": [

@@ -375,7 +375,7 @@ const fileSafe = (v: string) => v.replace(/[^A-Za-z0-9._-]/g, "_");
 
 /** Alerts that keep evidence besides the security ones (core.md §8, §9): wire_mismatch examples, the validator's and resolver's answers. */
 const EVIDENCE_KINDS = new Set(["wire_mismatch", "dnssec_bogus", "upstream_disagrees"]);
-/** Security alerts core keeps no evidence for (none: `temporary_allow` captures the device's queries under the allowed target, core.md §9 Evidence). */
+/** Security alerts core keeps no evidence for (none, core.md §9 Evidence). */
 const NO_EVIDENCE_KINDS = new Set<string>();
 
 /** The shortest time between two reads of an alert's evidence its own events cause (each can be alerts.evidence_per_alert copies and their wires). */
@@ -526,7 +526,6 @@ export function AlertDetailPage() {
         </Section>
       </div>
       {a.kind === "category_blocked" && <BlockedBy details={details} />}
-      {a.kind === "temporary_allow" && <TemporaryAllow details={details} />}
       {a.kind === "bundle_cold_share" && <ColdShare details={details} />}
       {a.kind === "bundle_warning" && details.warning === "public_suffix" && <PublicSuffixes details={details} />}
       {a.kind === "edge_tls_version_refused" && <TlsVersionRefused details={details} />}
@@ -606,40 +605,6 @@ export function AlertDetailPage() {
         </Section>
       )}
     </div>
-  );
-}
-
-/**
- * A `temporary_allow` alert's allow (core.md §9, off unless `alerts.temporary_allow`): the latest
- * allow of its edge, device and domain, as the edge logged it (logs/ingest.rs; read defensively).
- */
-function TemporaryAllow({ details: d }: { details: Record<string, unknown> }) {
-  const target = text(d.target);
-  const device = text(d.device);
-  const client = text(d.client);
-  const profile = text(d.profile);
-  const at = (v: unknown) => (text(v) ? formatTime(text(v)!) : "—");
-  return (
-    <Section title="Temporary allow" description="The latest allow this alert counts, as the edge logged it.">
-      <div className="space-y-3" data-testid="temporary-allow">
-        <KeyValue
-          items={[
-            ["Allowed", target ? <SafeText>{d.subdomains === true ? `${target} and its subdomains` : target}</SafeText> : "—"],
-            ["Device", <SafeText>{device && client && device !== client ? `${device} (${client})` : (device ?? client)}</SafeText>],
-            ["Profile", profile ? <Link to="/profiles/$profileId" params={{ profileId: profile }} className="hover:underline"><SafeText>{profile}</SafeText></Link> : "—"],
-            ["Created", at(d.created_at)],
-            ["Expires", at(d.expires_at)],
-            ["Made by", <SafeText>{text(d.via) ?? "the edge"}</SafeText>],
-          ]}
-        />
-        <p className="text-sm">
-          <Link to="/temporary-allows" className="text-primary hover:underline">
-            Temporary allows
-          </Link>{" "}
-          lists it with the other allows, to revoke it.
-        </p>
-      </div>
-    </Section>
   );
 }
 

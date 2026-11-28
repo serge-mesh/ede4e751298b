@@ -68,7 +68,6 @@ pub const KEYS: &[&str] = &[
     "alerts.evidence_total_mib",
     "alerts.thresholds",
     "alerts.feed_stale_days",
-    "alerts.temporary_allow",
     "edges.min_firmware",
     "default_profile",
 ];
@@ -417,9 +416,6 @@ pub struct AlertsSettings {
     pub thresholds: BTreeMap<String, DurationStr>,
     /// The days per false `feed_stale` alert its threshold allows (feed-scheduling.md §8).
     pub feed_stale_days: u32,
-    /// Raise `temporary_allow` (security, info) when an edge logs a created temporary allow:
-    /// off by default (core.md §9).
-    pub temporary_allow: bool,
 }
 
 impl Default for AlertsSettings {
@@ -429,7 +425,6 @@ impl Default for AlertsSettings {
             evidence_total_mib: 128,
             thresholds: BTreeMap::new(),
             feed_stale_days: 30,
-            temporary_allow: false,
         }
     }
 }

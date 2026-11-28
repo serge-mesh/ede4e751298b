@@ -37,8 +37,7 @@
 //! `compiler::commit` (`hot_max_mib`) and `edges::publish` (an edge's budget); `bundle_warning`,
 //! `broad_block` and `broad_allow` in `compiler::guard` (browser-list `bundle_warning` in
 //! `lists`); `warninglist_hit` and `allow_override` in `compiler::warn`; `bundle_cold_share`
-//! in `logs::cold_share` (through [`Alerts::condition_in`] and its threshold). `temporary_allow`
-//! (off by default: `alerts.temporary_allow`) in `logs::ingest`, with its evidence rule.
+//! in `logs::cold_share` (through [`Alerts::condition_in`] and its threshold).
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -65,7 +64,6 @@ pub const KINDS: &[(&str, AlertType)] = &[
     ("edge_key_mismatch", AlertType::Security),
     ("feed_rules_dropped", AlertType::Security),
     ("feed_redirect_added", AlertType::Security),
-    ("temporary_allow", AlertType::Security),
     ("ui_auth_failures", AlertType::Security),
     ("edge_offline", AlertType::Operational),
     ("edge_update_failed", AlertType::Operational),
@@ -154,19 +152,6 @@ pub fn category_answered_severity(security: bool) -> Severity {
 /// domain), the device being the record's `device`, else its client address.
 pub fn category_blocked_key(device: &str, name: &str) -> String {
     format!("category_blocked:{device}:{}", crate::psl::grouping_key(name))
-}
-
-/// The dedupe key of a `temporary_allow` alert (core.md §9; the spec names none): grouped as
-/// `category_blocked` (§9 Grouping), on the edge, the device (the record's `device`, else its
-/// client address) and the target's registrable domain (a DNS allow) or the IP (an IP allow),
-/// so a device's repeated allows of one site count on one alert.
-pub fn temporary_allow_key(edge: &str, device: &str, dns: bool, target: &str) -> String {
-    let target = if dns {
-        crate::psl::grouping_key(target)
-    } else {
-        target.to_string()
-    };
-    format!("temporary_allow:{edge}:{device}:{target}")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]

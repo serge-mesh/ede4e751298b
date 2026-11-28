@@ -2228,240 +2228,85 @@ async fn the_heartbeat_interval_runs_from_arrival_not_from_a_late_commit() {
     assert_eq!(stored["up_ms"], 3000, "the second heartbeat was stored");
 }
 
+/// Issue 79: an allow is history, never an alert. Each allow record updates its `temp_allows`
+/// row (created, re-timed, revoked, expired; a repeated or older delivery changes nothing), and
+/// no record raises an alert, makes an evidence rule or copies traffic, before or after it. The
+/// setting that turned alerts on is gone.
 #[tokio::test(flavor = "multi_thread")]
-async fn temporary_allow_alerts_are_off_by_default_and_raise_on_creation_once_on() {
-    // core.md §9 `temporary_allow` (security, info): an allow is created; off by default
-    // (`alerts.temporary_allow`). Once on, each `created` allow record raises it, grouped per
-    // (edge, device, the target's registrable domain or the IP), as `category_blocked` groups
-    // (§9 Grouping); `changed`, `revoked` and `expired` records and repeated deliveries add none.
+async fn allows_are_history_never_alerts() {
     let c = common::start_core(plain()).await;
-    let a = FakeEdge::registered(&c, "edge-a").await;
-    let (_ws, _) = a.session(hello("b1")).await;
-    let exp = ts(Timestamp::now() + jiff::SignedDuration::from_hours(1));
-    let allow = |seq: u64, action: &str, id: &str, device: Option<&str>, kind: &str, target: &str| {
-        let mut r = json!({"t": "allow", "ts": ts(Timestamp::now()), "boot": "b1", "seq": seq, "action": action,
-                           "allow_id": id, "client": "192.168.1.140", "kind": kind, "target": target,
-                           "expires_at": exp, "via": "extension"});
-        if let Some(d) = device {
-            r["device"] = json!(d);
-        }
-        if kind == "dns" {
-            r["subdomains"] = json!(true);
-        }
-        r
-    };
-    let count = || async {
-        q1::<i64>(
-            &c,
-            "SELECT count(*) FROM alerts WHERE kind = 'temporary_allow'",
-            vec![],
-        )
-        .await
-        .unwrap_or(0)
-    };
-    // Off: nothing.
-    assert_eq!(
-        a.post_logs(&[allow(
-            1,
-            "created",
-            "a-1",
-            Some("emma-tablet"),
-            "dns",
-            "www.example.org"
-        )])
-        .await
-        .status(),
-        200
-    );
-    assert_eq!(count().await, 0, "off by default");
-
-    // On.
-    c.state
-        .config
-        .patch_settings(json!({"alerts": {"temporary_allow": true}}), Actor::cli())
-        .await
-        .unwrap();
-    a.post_logs(&[allow(
-        2,
-        "created",
-        "a-2",
-        Some("emma-tablet"),
-        "dns",
-        "cdn.example.org",
-    )])
-    .await;
-    let key = format!("temporary_allow:{}:emma-tablet:example.org", a.id);
-    let al = c.state.alerts.get_by_key(&key).await.unwrap().expect("raised");
-    assert_eq!(al.alert_type, picket_core::alerts::AlertType::Security);
-    assert_eq!(al.severity, picket_core::alerts::Severity::Info);
-    assert_eq!(al.edge.as_deref(), Some(a.id.as_str()));
-    assert_eq!(al.count, 1);
-    for (k, v) in [
-        ("allow_id", json!("a-2")),
-        ("device", json!("emma-tablet")),
-        ("client", json!("192.168.1.140")),
-        ("kind", json!("dns")),
-        ("target", json!("cdn.example.org")),
-        ("subdomains", json!(true)),
-        ("expires_at", json!(exp)),
-        ("via", json!("extension")),
-    ] {
-        assert_eq!(al.details[k], v, "{k}: {}", al.details);
-    }
-    // A re-time, a revoke, an expiry and a repeated delivery of the creation add nothing.
-    a.post_logs(&[
-        allow(3, "changed", "a-2", Some("emma-tablet"), "dns", "cdn.example.org"),
-        allow(4, "revoked", "a-2", Some("emma-tablet"), "dns", "cdn.example.org"),
-        allow(5, "expired", "a-1", Some("emma-tablet"), "dns", "www.example.org"),
-        allow(2, "created", "a-2", Some("emma-tablet"), "dns", "cdn.example.org"),
-    ])
-    .await;
-    assert_eq!(c.state.alerts.get_by_key(&key).await.unwrap().unwrap().count, 1);
-    // Another allow of the same device and domain counts on the same alert.
-    a.post_logs(&[allow(
-        6,
-        "created",
-        "a-3",
-        Some("emma-tablet"),
-        "dns",
-        "example.org",
-    )])
-    .await;
-    let al = c.state.alerts.get_by_key(&key).await.unwrap().unwrap();
-    assert_eq!((al.count, al.details["allow_id"].clone()), (2, json!("a-3")));
-    // An IP allow from an address with no device name groups on the address and the IP.
-    a.post_logs(&[allow(7, "created", "a-4", None, "ip", "100.100.100.100")])
-        .await;
-    let ip_key = format!("temporary_allow:{}:192.168.1.140:100.100.100.100", a.id);
-    assert!(alert_open(&c, &ip_key).await);
-    assert_eq!(count().await, 2);
-    // Off again: nothing new.
-    c.state
-        .config
-        .patch_settings(json!({"alerts": {"temporary_allow": null}}), Actor::cli())
-        .await
-        .unwrap();
-    a.post_logs(&[allow(8, "created", "a-5", Some("other"), "dns", "new.example")])
-        .await;
-    assert_eq!(count().await, 2);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_temporary_allow_alert_keeps_its_evidence() {
-    // core.md §9 Evidence: "a security alert keeps full copies of its related log records", and
-    // `temporary_allow` is a security alert. Its related records are those of its key (§9
-    // Grouping, as `category_blocked`): the device's queries for names under the allowed
-    // target's registrable domain, or, for an IP allow, those whose answer holds the address;
-    // those already logged when it is raised, then each new one, until it is deleted.
-    let c = common::start_core(Some(
-        json!({"web": {"tls": "off"}, "alerts": {"temporary_allow": true}}),
-    ))
-    .await;
     let a = FakeEdge::registered(&c, "edge-a").await;
     let (_ws, _) = a.session(hello("b1")).await;
     let now = Timestamp::now();
     let t = |s: i64| ts(now - jiff::SignedDuration::from_secs(60 - s));
     let exp = ts(now + jiff::SignedDuration::from_hours(1));
-    let allow = |seq: u64, id: &str, client: &str, device: Option<&str>, kind: &str, target: &str| {
-        let mut r = json!({"t": "allow", "ts": t(seq as i64), "boot": "b1", "seq": seq, "action": "created",
-                           "allow_id": id, "client": client, "kind": kind, "target": target,
+    let allow = |seq: u64, action: &str, id: &str, device: Option<&str>, kind: &str, target: &str| {
+        let mut r = json!({"t": "allow", "ts": t(seq as i64), "boot": "b1", "seq": seq, "action": action,
+                           "allow_id": id, "client": "192.168.1.140", "kind": kind, "target": target,
                            "expires_at": exp, "via": "extension"});
         if let Some(d) = device {
             r["device"] = json!(d);
         }
         r
     };
-    let q = |seq: u64, qname: &str, device: Option<&str>, client: &str, answer: &str| {
+    let q = |seq: u64, qname: &str, decision: &str| {
         let mut r = query("b1", seq, &t(seq as i64), qname, None);
-        r["client"] = json!(client);
-        r["answers"] = json!([answer]);
-        match device {
-            Some(d) => r["device"] = json!(d),
-            None => {
-                r.as_object_mut().unwrap().remove("device");
-            }
-        }
+        r["client"] = json!("192.168.1.140");
+        r["device"] = json!("emma-tablet");
+        r["answers"] = json!(["192.0.2.1"]);
+        r["decision"] = json!(decision);
         r
     };
-    // Before the allow: the block it lifts (backfilled).
-    let mut before = q(
-        1,
-        "cdn.example.org",
-        Some("emma-tablet"),
-        "192.168.1.140",
-        "192.0.2.1",
-    );
-    before["decision"] = json!("block");
-    assert_eq!(a.post_logs(&[before]).await.status(), 200);
+    assert_eq!(a.post_logs(&[q(1, "cdn.example.org", "block")]).await.status(), 200);
     assert_eq!(
         a.post_logs(&[
-            allow(
-                2,
-                "a-1",
-                "192.168.1.140",
-                Some("emma-tablet"),
-                "dns",
-                "cdn.example.org"
-            ),
-            allow(3, "a-2", "192.168.1.150", None, "ip", "198.51.100.9"),
+            allow(2, "created", "a-1", Some("emma-tablet"), "dns", "cdn.example.org"),
+            allow(3, "created", "a-2", None, "ip", "198.51.100.9"),
+            q(4, "www.example.org", "allow"),
         ])
         .await
         .status(),
         200
     );
-    // After it: the device's queries under the domain and an answer holding the IP count;
-    // another device's, and other names, don't.
+    let row = |id: &str| {
+        q1::<String>(
+            &c,
+            "SELECT json_array(created_at, updated_at, ended_at, expires_at, kind, target, coalesce(device, '')) FROM temp_allows WHERE allow_id = ?1",
+            vec![id.to_string()],
+        )
+    };
+    let created: Value = serde_json::from_str(&row("a-1").await.unwrap()).unwrap();
+    assert_eq!(
+        created,
+        json!([t(2), t(2), null, exp, "dns", "cdn.example.org", "emma-tablet"])
+    );
+    // A re-time, a revoke, a repeated creation and an expiry: the rows follow, nothing else.
     a.post_logs(&[
-        q(
-            4,
-            "www.example.org",
-            Some("emma-tablet"),
-            "192.168.1.140",
-            "192.0.2.1",
-        ),
-        q(
-            5,
-            "example.org",
-            Some("other-phone"),
-            "192.168.1.141",
-            "192.0.2.1",
-        ),
-        q(
-            6,
-            "unrelated.example",
-            Some("emma-tablet"),
-            "192.168.1.140",
-            "192.0.2.1",
-        ),
-        q(7, "game.example", None, "192.168.1.150", "198.51.100.9"),
-        q(8, "game.example", None, "192.168.1.151", "198.51.100.9"),
+        allow(5, "changed", "a-1", Some("emma-tablet"), "dns", "cdn.example.org"),
+        allow(6, "revoked", "a-1", Some("emma-tablet"), "dns", "cdn.example.org"),
+        allow(2, "created", "a-1", Some("emma-tablet"), "dns", "cdn.example.org"),
+        allow(7, "expired", "a-2", None, "ip", "198.51.100.9"),
+        q(8, "example.org", "allow"),
     ])
     .await;
-    let copies = |key: String| {
-        let db = c.state.db.clone();
-        async move {
-            db.read(move |conn| {
-                let mut st = conn.prepare(
-                    "SELECT e.seq FROM alert_evidence e JOIN alerts a ON a.id = e.alert_id WHERE a.dedupe_key = ?1 ORDER BY e.seq",
-                )?;
-                Ok::<_, anyhow::Error>(st.query_map([key], |r| r.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?)
-            })
+    let ended: Value = serde_json::from_str(&row("a-1").await.unwrap()).unwrap();
+    assert_eq!((&ended[0], &ended[1], &ended[2]), (&json!(t(2)), &json!(t(6)), &json!(t(6))));
+    let ip: Value = serde_json::from_str(&row("a-2").await.unwrap()).unwrap();
+    assert_eq!(ip[2], json!(t(7)));
+    for sql in [
+        "SELECT count(*) FROM alerts WHERE type = 'security'",
+        "SELECT count(*) FROM alert_evidence_rules",
+        "SELECT count(*) FROM alert_evidence",
+    ] {
+        assert_eq!(q1::<i64>(&c, sql, vec![]).await, Some(0), "{sql}");
+    }
+    // No switch brings the alert back.
+    assert!(
+        c.state
+            .config
+            .patch_settings(json!({"alerts": {"temporary_allow": true}}), Actor::cli())
             .await
-            .unwrap()
-        }
-    };
-    let dns_key = format!("temporary_allow:{}:emma-tablet:example.org", a.id);
-    let ip_key = format!("temporary_allow:{}:192.168.1.150:198.51.100.9", a.id);
-    assert!(alert_open(&c, &dns_key).await && alert_open(&c, &ip_key).await);
-    assert!(
-        eventually(|| async { copies(dns_key.clone()).await == vec![1, 4] }).await,
-        "{:?}",
-        copies(dns_key.clone()).await
-    );
-    assert!(
-        eventually(|| async { copies(ip_key.clone()).await == vec![7] }).await,
-        "{:?}",
-        copies(ip_key.clone()).await
+            .is_err()
     );
 }
 
