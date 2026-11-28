@@ -2146,6 +2146,9 @@ async fn github_presets_complete_or_say_why_not() {
         .unwrap();
     assert_eq!(r.status(), StatusCode::OK, "{}", r.text().await.unwrap());
     repo.lock().unwrap().down = false;
+    // The install started a check while the repository was down: a check asked for now would
+    // only queue behind it, and then wait out `min_interval` after it.
+    wait_until("the install's check", || async { !c.state.feeds.is_checking("adguard") }).await;
     common::feeds::check_provider(&c, "adguard").await;
     wait_until("the other source's feed", || async {
         provider_feed_ids(&c, "adguard").len() == 1 && !c.state.feeds.is_checking("adguard")
@@ -2172,6 +2175,9 @@ async fn github_presets_complete_or_say_why_not() {
         .await
         .unwrap();
     repo.lock().unwrap().down = false;
+    // The install started a check while the repository was down: a check asked for now would
+    // only queue behind it, and then wait out `min_interval` after it.
+    wait_until("the install's check", || async { !c.state.feeds.is_checking("oisd-big") }).await;
     common::feeds::check_provider(&c, "oisd-big").await;
     wait_until("the listing's feed", || async {
         provider_feed_ids(&c, "oisd-big").len() == 1 && !c.state.feeds.is_checking("oisd-big")
@@ -2210,6 +2216,9 @@ async fn github_presets_complete_or_say_why_not() {
     let r = ui(&c, Method::POST, "/bundles").json(&bundle("standin")).send().await.unwrap();
     assert_eq!(r.status(), StatusCode::CREATED, "{}", r.text().await.unwrap());
     repo.lock().unwrap().down = false;
+    // The install started a check while the repository was down: a check asked for now would
+    // only queue behind it, and then wait out `min_interval` after it.
+    wait_until("the install's check", || async { !c.state.feeds.is_checking("oisd-big") }).await;
     common::feeds::check_provider(&c, "oisd-big").await;
     wait_until("the listing's feed", || async {
         provider_feed_ids(&c, "oisd-big").len() == 1 && !c.state.feeds.is_checking("oisd-big")
