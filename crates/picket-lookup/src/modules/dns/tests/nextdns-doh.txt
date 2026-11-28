@@ -1,31 +1,32 @@
-# NextDNS over doh.
-# 'normal' and 'nonexistent' are LIVE recordings from 45.90.28.0 (tls_host dns.nextdns.io, no
-# profile), 2026-11-20T19:16:38Z, with a padded query; they also confirm that the anycast IP
-# serves doh. 'blocked' and 'sinkhole_without_ede' are SYNTHESISED in the shape providers.md §5
-# describes (0.0.0.0 with EDE 17 'Blocked by NextDNS'; 0.0.0.0 without EDE, as with a block
-# page): a denylisted name needs a NextDNS profile the recording network doesn't have.
+# NextDNS over doh: live replies from 45.90.28.0, recorded 2026-11-28 (UTC).
+# Profile endpoint: https://dns.nextdns.io/<profile> (HTTP/2).
+# The profile denylists example.com. Queries match picket-wire: A/IN, RD, EDNS
+# payload 1232, DO/CD clear, no ECS, RFC 8467 128-byte padding. Replies were unpadded.
 
+# LIVE 2026-11-28T05:13:07Z: NOERROR with public A answers.
 case normal
+qname example.org
+qtype A
+answer 6fd781800001000200000001076578616d706c65036f72670000010001c00c0001000100000074000468141a88c00c00010001000000740004ac429ded00002904d0000000000000
+expect clean -
+
+# LIVE 2026-11-28T05:13:07Z: NXDOMAIN with the zone's SOA (not the old NOERROR/NODATA reply).
+case nonexistent
+qname nxdomain-picket-fixture.iana.org
+qtype A
+answer 05d181830001000000010001176e78646f6d61696e2d7069636b65742d666978747572650469616e61036f72670000010001c0240006000100000d58002a03736e7303646e73056963616e6ec029036e6f63c04278c3ffb600001c2000000e100012750000000e1000002904d0000000000000
+expect clean -
+
+# LIVE 2026-11-28T05:13:07Z: NOERROR, 0.0.0.0, EDE 17 'Blocked by NextDNS: blacklist'.
+case blocked
 qname example.com
 qtype A
-answer edc981800001000200000001076578616d706c6503636f6d0000010001c00c000100010000002700046814179ac00c00010001000000270004ac4293f300002904d0000000000000
-expect clean -
-
-case nonexistent
-qname nxdomain-picket-fixture.example.org
-qtype A
-answer 318d81800001000000010001176e78646f6d61696e2d7069636b65742d66697874757265076578616d706c65036f72670000010001c02400060001000007080035076b6174656c796e026e730a636c6f7564666c61726503636f6d0003646e73c04c903f6f06000027100000096000093a800000070800002904d0000000000000
-expect clean -
-
-case blocked
-qname ads.picket-fixture.example
-qtype A
-answer 424281800001000100000001036164730e7069636b65742d66697874757265076578616d706c650000010001c00c000100010000012c00040000000000002904d0000000000018000f00140011426c6f636b6564206279204e657874444e53
+answer b69981800001000100000001076578616d706c6503636f6d0000010001076578616d706c6503636f6d00000100010000012c00040000000000002904d0000000000023000f001f0011426c6f636b6564206279204e657874444e533a20626c61636b6c697374
 expect block blocked
 
+# SYNTHETIC: 0.0.0.0 without EDE; not observed with the padded EDNS queries above.
 case sinkhole_without_ede
 qname ads2.picket-fixture.example
 qtype A
 answer 42428180000100010000000104616473320e7069636b65742d66697874757265076578616d706c650000010001c00c000100010000012c00040000000000002904d0000000000000
 expect block sinkhole
-
