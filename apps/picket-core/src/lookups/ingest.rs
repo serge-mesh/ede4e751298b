@@ -420,6 +420,19 @@ pub async fn apply(
     queries: Vec<QueryInfo>,
     records: Vec<LookupRecord>,
 ) -> anyhow::Result<Applied> {
+    apply_within(state, edge, queries, records, None).await
+}
+
+/// [`apply`] for a log batch that started under config restore generation `restore`: its
+/// transaction commits nothing once a restore committed since ([`crate::logs::ingest`]), and
+/// fails with [`crate::logs::ingest::RestoreOvertook`] instead.
+pub async fn apply_within(
+    state: &AppState,
+    edge: &str,
+    queries: Vec<QueryInfo>,
+    records: Vec<LookupRecord>,
+    restore: Option<u64>,
+) -> anyhow::Result<Applied> {
     let model = state.lookups.model();
     if model.lookup_providers.is_empty() {
         return Ok(Applied::default());
@@ -470,9 +483,13 @@ pub async fn apply(
     let holds = state.lookups.scan_holds.clone();
     let edge_s = edge.to_string();
     let m2 = model.clone();
+    let gate = state.restore.clone();
     let (applied, ch, admitted, blocks_changed, new_rules, dropped) = state
         .db
         .write(move |c| {
+            if restore.is_some_and(|g| !gate.is_current(g)) {
+                return Err(crate::logs::ingest::RestoreOvertook.into());
+            }
             let tx = c.transaction()?;
             let mut out = Applied::default();
             let mut admitted: Vec<(String, Admitted)> = Vec::new();

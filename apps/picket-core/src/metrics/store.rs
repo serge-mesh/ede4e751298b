@@ -415,8 +415,25 @@ pub async fn write_points(
     cache: &SeriesCache,
     items: Vec<(String, Labels, i64, f64)>,
 ) -> anyhow::Result<()> {
+    write_points_if(db, cache, items, None).await.map(|_| ())
+}
+
+/// A check run on the `metrics.db` writer just before a write: false refuses it.
+pub type WriteGuard = std::sync::Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// [`write_points`], unless `guard` says no on the writer, ordered with the other writes there
+/// (a config restore's emptying of `metrics.db`): `Ok(false)` then, and nothing is written.
+pub async fn write_points_if(
+    db: &Db,
+    cache: &SeriesCache,
+    items: Vec<(String, Labels, i64, f64)>,
+    guard: Option<WriteGuard>,
+) -> anyhow::Result<bool> {
     let cache = cache.clone();
     db.write(move |c| {
+        if guard.is_some_and(|g| !g()) {
+            return Ok::<_, anyhow::Error>(false);
+        }
         let tx = c.transaction()?;
         let mut pending = Pending::default();
         for (name, l, ts, v) in &items {
@@ -427,7 +444,7 @@ pub async fn write_points(
         }
         tx.commit()?;
         cache.publish(pending);
-        Ok::<_, anyhow::Error>(())
+        Ok(true)
     })
     .await
 }

@@ -540,24 +540,42 @@ impl Metrics {
     /// Counts core events at their event time: totals for the export, and increments in
     /// `metrics.db` for charts. `items` are `(series, labels, event time ms, n)`.
     pub async fn count(&self, db: &crate::db::Db, items: Vec<(String, Labels, i64, f64)>) {
+        self.count_if(db, items, None).await;
+    }
+
+    /// [`Metrics::count`], unless `guard` says no on the `metrics.db` writer (a log batch that a
+    /// config restore overtook, [`crate::logs::ingest`]): then neither the chart increments nor
+    /// the export totals count anything, and it returns false.
+    pub async fn count_if(
+        &self,
+        db: &crate::db::Db,
+        items: Vec<(String, Labels, i64, f64)>,
+        guard: Option<store::WriteGuard>,
+    ) -> bool {
         if items.is_empty() {
-            return;
+            return guard.is_none_or(|g| g());
         }
         let mut binned: HashMap<(String, Labels, i64), f64> = HashMap::new();
+        let mut totals: Vec<(String, Labels, f64)> = Vec::with_capacity(items.len());
         for (name, l, ts, n) in items {
-            self.counters.add(&name, l.clone(), n);
             let bin = ts - ts.rem_euclid(store::CORE_BIN_MS);
-            *binned.entry((name, l, bin)).or_insert(0.0) += n;
+            *binned.entry((name.clone(), l.clone(), bin)).or_insert(0.0) += n;
+            totals.push((name, l, n));
         }
-        if let Err(e) = store::write_points(
-            db,
-            &self.series,
-            binned.into_iter().map(|((n, l, ts), v)| (n, l, ts, v)).collect(),
-        )
-        .await
-        {
-            tracing::warn!(error = %e, "cannot store core metrics");
+        let points = binned.into_iter().map(|((n, l, ts), v)| (n, l, ts, v)).collect();
+        let counted = match store::write_points_if(db, &self.series, points, guard).await {
+            Ok(written) => written,
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot store core metrics");
+                true
+            }
+        };
+        if counted {
+            for (name, l, n) in totals {
+                self.counters.add(&name, l, n);
+            }
         }
+        counted
     }
 
     /// Sets a core gauge now (export) and stores its sample (charts).
