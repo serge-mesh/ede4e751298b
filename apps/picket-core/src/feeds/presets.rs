@@ -126,15 +126,11 @@ fn id_of(v: &Value) -> CoreResult<String> {
 
 /// True when `cur` (a provider with a preset provider's id) reads the preset's source: the same
 /// module and the same normalized source identity, the module's `epoch_key` (GitHub: owner and
-/// repository, case-insensitively, and the branch, `HEAD` for the default branch when none is
-/// set, so an explicit branch matches only the same explicit branch; `http`: the canonical URL).
-/// Names, credentials, headers and the selection are the admin's and never count.
+/// repository, case-insensitively, and the branch: the default branch when none is set, which no
+/// explicit branch matches, not even `HEAD`; `http`: the canonical URL). Names, credentials,
+/// headers and the selection are the admin's and never count.
 pub fn same_source(preset: &FeedProviderDef, cur: &FeedProviderDef) -> bool {
-    // A branch left out (the default branch) is not one named, even `HEAD`, which the
-    // downloader reads as a branch of that name.
-    let branch = |p: &FeedProviderDef| p.config.get("branch").and_then(Value::as_str).map(str::to_owned);
     cur.module == preset.module
-        && branch(cur) == branch(preset)
         && crate::modules::download::builtin()
             .get(&preset.module)
             .is_some_and(|m| {

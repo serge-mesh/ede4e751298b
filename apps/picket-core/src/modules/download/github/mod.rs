@@ -967,9 +967,13 @@ impl DownloadModule for Module {
     }
 
     fn epoch_key(&self, cfg: &Value) -> String {
-        // Another branch is another set of files (feeds.md §3 "points elsewhere").
-        let branch = cfg.get("branch").and_then(Value::as_str).unwrap_or("HEAD");
-        format!("{}#{branch}", self.location(cfg))
+        // Another branch is another set of files (feeds.md §3 "points elsewhere"). The default
+        // branch (none set) is its own key: an explicit `HEAD` is read as a branch of that name.
+        // `:` never appears in a branch name (`check_branch`), so the two can't collide.
+        match cfg.get("branch").and_then(Value::as_str) {
+            Some(b) => format!("{}#branch:{b}", self.location(cfg)),
+            None => format!("{}#default", self.location(cfg)),
+        }
     }
 
     fn check_file(&self, _cfg: &Value, file: &str, pattern: bool) -> Result<(), String> {

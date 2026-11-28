@@ -801,10 +801,44 @@ impl BundleManager {
 
     /// Makes `t` live (the [`Activator`]): bundles, verdict sets, then the config. One that fails
     /// leaves the running config's bundles as they were: none was unloaded for it
-    /// ([`Self::fit_bytes`]).
+    /// ([`Self::fit_bytes`]). One refused for good ([`Activation::Failed`], not retried until core
+    /// sends another object) also gives back what it loaded ([`Self::drop_refused`]).
     pub async fn activate(&self, edge: &Edge, t: &ActivationTarget) -> Activation {
         let _g = self.lock.lock().await;
-        self.activate_locked(edge, t).await
+        let a = self.activate_locked(edge, t).await;
+        if matches!(a, Activation::Failed { .. }) {
+            self.drop_refused(edge).await;
+        }
+        a
+    }
+
+    /// After a refused activation: unloads the bundles only it named (loaded unused, kept by
+    /// nothing; a later config that names them reads their files from disk again) and clears
+    /// what it reported in progress. With no config running, nothing is unloaded.
+    async fn drop_refused(&self, edge: &Edge) {
+        self.set_progress(|p| *p = Progress::default());
+        let Some(running) = edge.active().config.clone() else {
+            return;
+        };
+        let (unused, weak): (Vec<Arc<str>>, Vec<Weak<Bundle>>) = {
+            let ab = edge.active().bundles.clone();
+            ab.bundles
+                .iter()
+                .filter(|(k, _)| !running.bundles.contains_key(&***k))
+                .map(|(k, b)| (Arc::clone(k), Arc::downgrade(b)))
+                .unzip()
+        };
+        if unused.is_empty() {
+            return;
+        }
+        self.swap(edge, |ab| {
+            for k in &unused {
+                ab.bundles.remove(k);
+            }
+        });
+        for (k, w) in unused.iter().zip(weak) {
+            self.wait_freed(w, &format!("bundle {k}")).await;
+        }
     }
 
     async fn activate_locked(&self, edge: &Edge, t: &ActivationTarget) -> Activation {

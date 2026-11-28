@@ -897,6 +897,81 @@ async fn a_replacement_that_fits_only_alone_waits_for_a_budget_that_fits_both() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_activation_gives_back_the_bundles_it_loaded() {
+    let up = FakeUpstream::plain(ok_upstream()).await;
+    let core = MockCore::start().await;
+    let d = dirs();
+    write_edge_json(&d.config, Some(&core), json!({}));
+    let lines = |p: &str, n: usize| {
+        let mut x: u64 = if p == "x" { 7 } else { 13 };
+        (0..n)
+            .map(|i| {
+                x = x
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                format!("||{p}{}-{:012x}.example^", i, x >> 16)
+            })
+            .collect::<Vec<_>>()
+    };
+    fn refs(l: &[String]) -> Vec<&str> {
+        l.iter().map(String::as_str).collect()
+    }
+    let (lx, ly1, ly2) = (lines("x", 45_000), lines("y1", 20), lines("y2", 45_000));
+    let bx = build_bundle("x", &refs(&lx), None);
+    let by1 = build_bundle("y1", &refs(&ly1), None);
+    let by2 = build_bundle("y2", &refs(&ly2), None);
+    let idx = publish(&core, &bx.head, &bx.blobs);
+    let idy1 = publish(&core, &by1.head, &by1.blobs);
+    let idy2 = publish(&core, &by2.head, &by2.blobs);
+    let mem = json!({"bundle_budget_mib": 1, "overlay_budget_mib": 4});
+    let mut c1 = config(&up, json!({"x": idx}));
+    c1["profiles"]["default"]["block"] = json!(["x"]);
+    c1["memory"] = mem.clone();
+    let cfg1 = core.set_config(&c1);
+    let r = start(&d, tuning(&d, true)).await;
+    wait_live(&r, &cfg1).await;
+    // y1 (small) loads beside x; y2 (as large as x) can't, with x kept for the running config.
+    let mut c2 = config(&up, json!({"y1": idy1, "y2": idy2}));
+    c2["profiles"]["default"]["block"] = json!(["y1", "y2"]);
+    c2["memory"] = mem;
+    let cfg2 = core.set_config(&c2);
+    core.changed(&cfg2);
+    let refused = || {
+        events(&core, "activation_failed")
+            .iter()
+            .any(|e| e["bundle"] == "y2" && e["stage"] == "budget")
+    };
+    assert!(
+        wait_until(T, refused).await,
+        "y2 refused at stage budget; convergence {:?}",
+        r.edge.convergence.load()
+    );
+    assert!(
+        events(&core, "activated").iter().any(|e| e["bundle"] == "y1"),
+        "y1 loaded first"
+    );
+    let edge = Arc::clone(&r.edge);
+    assert!(
+        wait_until(T, || edge.active().bundles.get("y1").is_none()).await,
+        "y1, loaded only for the refused config, is unloaded"
+    );
+    assert_eq!(edge.active().object_id.as_deref(), Some(cfg1.as_str()));
+    assert!(edge.active().bundles.get("x").is_some());
+    let n = core.with(|s| s.heartbeats.len());
+    assert!(
+        wait_until(T, || core.with(|s| s.heartbeats.len() > n + 1)).await,
+        "heartbeats go on"
+    );
+    let hb = core.with(|s| s.heartbeats.last().cloned().unwrap());
+    assert!(
+        hb.have.in_progress.bundles.is_empty(),
+        "nothing reported in progress after the refusal: {:?}",
+        hb.have.in_progress
+    );
+    r.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_firewall_changes_only_when_the_config_goes_live() {
     let h = helperkit::start();
     let up = FakeUpstream::plain(ok_upstream()).await;
