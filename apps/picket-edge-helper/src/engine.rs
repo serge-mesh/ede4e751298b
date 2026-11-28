@@ -981,8 +981,9 @@ impl<B: Backend> Engine<B> {
 
 /// Requests to the engine thread.
 pub enum Cmd {
-    /// A socket `apply`, validated and normalised while it was decoded.
-    Apply(Box<Desired>, oneshot::Sender<ApplyResponse>),
+    /// A socket `apply` is waiting in [`Shared::take_apply`]: only a wake, since the engine
+    /// also looks there before every command.
+    ApplyPending,
     Disable(oneshot::Sender<ApplyResponse>),
     Enable(oneshot::Sender<ApplyResponse>),
     /// Run a pass soon (inotify on UniFi's state file, or an `ensure` that found no set).
@@ -997,13 +998,20 @@ pub fn run<B: Backend>(mut engine: Engine<B>, rx: Receiver<Cmd>) {
     let mut follow_up: Option<Instant> = None;
     let mut last_end = Instant::now();
     loop {
+        // The newest socket apply, ahead of the next command: when the queue was full its wake
+        // was dropped, and the commands still queued bring the engine back here.
+        if let Some(p) = engine.shared.take_apply() {
+            let response = engine.apply_desired(*p.desired);
+            for w in p.waiters {
+                let _ = w.send(response.clone());
+            }
+            last_end = Instant::now();
+            next = last_end + REASSERT;
+            continue;
+        }
         let deadline = follow_up.map_or(next, |f| f.min(next));
         match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-            Ok(Cmd::Apply(desired, tx)) => {
-                let _ = tx.send(engine.apply_desired(*desired));
-                last_end = Instant::now();
-                next = last_end + REASSERT;
-            }
+            Ok(Cmd::ApplyPending) => {}
             Ok(Cmd::Disable(tx)) => {
                 let _ = tx.send(engine.disable());
                 last_end = Instant::now();
@@ -1022,6 +1030,7 @@ pub fn run<B: Backend>(mut engine: Engine<B>, rx: Receiver<Cmd>) {
                 follow_up = Some(soon + Duration::from_secs(1));
             }
             Ok(Cmd::Shutdown(tx)) => {
+                drop(engine.shared.take_apply());
                 engine.shutdown();
                 let _ = tx.send(());
                 return;
@@ -1036,6 +1045,7 @@ pub fn run<B: Backend>(mut engine: Engine<B>, rx: Receiver<Cmd>) {
                 next = (start + REASSERT).max(last_end + MIN_GAP);
             }
             Err(RecvTimeoutError::Disconnected) => {
+                drop(engine.shared.take_apply());
                 engine.shutdown();
                 return;
             }

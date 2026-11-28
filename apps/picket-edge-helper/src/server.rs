@@ -14,7 +14,8 @@
 //! - **Bounded memory:** frames are decoded straight into typed requests (never into
 //!   `serde_json::Value`, which can cost 30× a frame's size), frames over 64 KiB are decoded at
 //!   most two at a time, and an `apply` is validated while it streams in, keeping only its
-//!   normalised networks (never a string per CIDR). A connection holds at most one response
+//!   normalised networks (never a string per CIDR). At most one decoded `apply` waits for the
+//!   engine: a newer one replaces it (latest wins), so a slow engine can't pile them up. A connection holds at most one response
 //!   (≤ 1 MiB) plus its coalesced events (a few KiB), and a client that doesn't read is
 //!   dropped after a write timeout.
 //! - **Events** go to connections that said `hello` with `events: true`.
@@ -453,10 +454,18 @@ impl<B: Backend> Server<B> {
                     },
                 )
             }
-            Request::Apply(d) => match self.engine_call(id, |tx| Cmd::Apply(d, tx)).await {
-                Ok(r) => frame(kind::APPLY, id, &r),
-                Err(f) => f,
-            },
+            Request::Apply(d) => {
+                let (tx, rx) = oneshot::channel();
+                if self.shared.put_apply(d, tx) {
+                    // A full queue means the engine is busy and looks for the apply after the
+                    // command in hand, so a lost wake costs nothing.
+                    let _ = self.engine.try_send(Cmd::ApplyPending);
+                }
+                match timeout(self.cfg.engine_timeout, rx).await {
+                    Ok(Ok(r)) => frame(kind::APPLY, id, &r),
+                    _ => err_frame(id, error_code::INTERNAL, "the engine did not answer"),
+                }
+            }
             // The emergency switch is the CLI's alone (edge.md §15): an edge can neither lift an
             // admin's `disable` nor set one.
             Request::Disable | Request::Enable if uid != self.cfg.admin_uid => err_frame(
@@ -660,4 +669,68 @@ pub async fn feed_watchdog<B: Backend + ?Sized>(
         tracing::error!(fast_path = alive, engine, "watchdog not fed");
     }
     alive && engine
+}
+
+#[cfg(test)]
+mod apply_tests {
+    use super::*;
+    use crate::engine::{self, Engine};
+    use crate::fake::FakeBackend;
+    use crate::fast;
+    use crate::iptables::Platform;
+    use std::sync::mpsc::sync_channel;
+
+    const EDGE: u32 = 1001;
+
+    fn apply(name: &str) -> Vec<u8> {
+        format!(r#"{{"type":"apply","id":7,"data":{{"interfaces":[{{"name":"{name}","mode":"monitor"}}]}}}}"#)
+            .into_bytes()
+    }
+
+    async fn call(s: &Server<FakeBackend>, f: &[u8]) -> serde_json::Value {
+        serde_json::from_slice(&s.handle(EDGE, f, &mut None).await).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_newer_apply_replaces_a_waiting_one_and_both_callers_get_the_answer() {
+        let b = Arc::new(FakeBackend::new());
+        let shared = Shared::new();
+        // A one-slot queue, already full: the engine is busy and the applies' wakes are lost.
+        let (tx, rx) = sync_channel(1);
+        tx.try_send(Cmd::Trigger).unwrap();
+        let fast = fast::spawn(b.clone(), shared.clone(), tx.clone()).unwrap();
+        let s = Server::new(b.clone(), shared.clone(), tx, fast, ServerConfig::default());
+        let first = tokio::spawn({
+            let s = s.clone();
+            async move { call(&s, &apply("br0")).await }
+        });
+        let second = tokio::spawn({
+            let s = s.clone();
+            async move { call(&s, &apply("br1")).await }
+        });
+        // Both are decoded and waiting before the engine starts; neither was refused.
+        timeout(Duration::from_secs(2), async {
+            while shared.apply_waiters() != 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the second apply did not replace the first");
+        let engine = Engine::new(b.clone(), shared.clone(), Platform::Debian);
+        std::thread::spawn(move || engine::run(engine, rx));
+        for r in [first.await.unwrap(), second.await.unwrap()] {
+            assert_eq!(r["type"], "apply", "{r}");
+        }
+        // Only the newer state was applied.
+        let hello = call(
+            &s,
+            br#"{"type":"hello","id":8,"data":{"proto_version":1,"events":false}}"#,
+        )
+        .await;
+        assert_eq!(
+            hello["data"]["interfaces"],
+            serde_json::json!([{"name": "br1", "mode": "monitor"}]),
+            "{hello}"
+        );
+    }
 }
