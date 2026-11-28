@@ -935,7 +935,7 @@ impl Bypass {
             {
                 Ok(keys) => granted.push((keys, prev.cloned())),
                 Err(reason) => {
-                    undo_grants(edge, &granted, now);
+                    undo_grants(edge, &text, &granted, now);
                     let idx = entries.iter().position(|e| {
                         e.ip.as_deref()
                             .and_then(|x| x.parse::<IpAddr>().ok())
@@ -1009,9 +1009,11 @@ impl Bypass {
             .map_err(crate::diag::cap)
             .and_then(|r| r.map_err(|e| crate::diag::cap_chain(&e)));
         if let Err(e) = r {
-            undo_grants(edge, &granted, now);
+            undo_grants(edge, &text, &granted, now);
             return Err(Refusal::new(StatusCode::SERVICE_UNAVAILABLE, "storage", e, None));
         }
+        drop_moved_after_write(edge, upserts.iter_mut().map(|(a, _)| a));
+        drop_moved_after_write(edge, shortened.iter_mut());
         for a in &ends {
             if a.kind == AllowKind::Ip {
                 edge.fw.set_allow(&allow_keys(a), None);
@@ -1231,6 +1233,7 @@ impl Bypass {
             edge.fw.set_allow(&granted, None);
             return;
         }
+        drop_moved_after_write(edge, changes.iter_mut().map(|(a, _)| a));
         for a in &revoke {
             if a.kind == AllowKind::Ip {
                 edge.fw.set_allow(&allow_keys(a), None);
@@ -1298,16 +1301,59 @@ fn owned_by_or_unknown(edge: &Edge, x: &str, m: &crate::neighbours::Mac) -> bool
         .is_none_or(|o| o == *m)
 }
 
+/// Takes an address that moved to another device after the ownership filter ran, but before the
+/// write landed, off the IP allows just written (`allows`, updated to match): the firewall's move
+/// handling may have looked for allows listing it before the write, and the write put back the
+/// copy that still listed it. A move after this check finds the written allows itself
+/// (edge-firewall.md §1). The address's keys lose the allow, as in the filter.
+fn drop_moved_after_write<'a>(edge: &Edge, allows: impl IntoIterator<Item = &'a mut StoredAllow>) {
+    for a in allows {
+        let Some(m) = crate::neighbours::parse_mac(&a.device) else {
+            continue;
+        };
+        if a.kind != AllowKind::Ip {
+            continue;
+        }
+        let (kept, moved): (Vec<String>, Vec<String>) = a
+            .addresses
+            .iter()
+            .cloned()
+            .partition(|x| owned_by_or_unknown(edge, x, &m));
+        if moved.is_empty() {
+            continue;
+        }
+        for x in &moved {
+            edge.allows.remove_address_held(std::slice::from_ref(&*a), x);
+        }
+        let gone = StoredAllow {
+            addresses: moved,
+            ..a.clone()
+        };
+        edge.fw.set_allow(&allow_keys(&gone), None);
+        a.addresses = kept;
+    }
+}
+
 /// Puts back the IP allows a failed request granted: a new allow's entries lose its expiry
 /// (removed unless a DNS grant keeps them), an extended one's go back to its previous expiry
-/// (and keys it newly covered lose the allow).
-fn undo_grants(edge: &Edge, granted: &[(Vec<FwKey>, Option<StoredAllow>)], now: Timestamp) {
+/// (and keys it newly covered lose the allow). A key on an address that moved to another device
+/// (`device` is the request's) loses the allow too, rather than getting the previous expiry back
+/// under its new owner (edge-firewall.md §1).
+fn undo_grants(edge: &Edge, device: &str, granted: &[(Vec<FwKey>, Option<StoredAllow>)], now: Timestamp) {
+    let mac = crate::neighbours::parse_mac(device);
+    let still_held = |k: &FwKey| {
+        mac.is_none_or(|m| {
+            k.src
+                .is_none_or(|ip| edge.neighbours.mac_of(&ip).is_none_or(|o| o == m))
+        })
+    };
     for (keys, prev) in granted {
         match prev {
             None => edge.fw.set_allow(keys, None),
             Some(old) => {
                 let had = allow_keys(old);
-                let (kept, added): (Vec<FwKey>, Vec<FwKey>) = keys.iter().partition(|k| had.contains(k));
+                let (kept, added): (Vec<FwKey>, Vec<FwKey>) =
+                    keys.iter().partition(|k| had.contains(k) && still_held(k));
                 edge.fw.set_allow(&kept, Some(secs_until(old.expires_at, now)));
                 edge.fw.set_allow(&added, None);
             }
