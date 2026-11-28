@@ -894,9 +894,10 @@ async fn finish_feeds(
         _ => None,
     };
     // A rate limit or server cooldown anywhere pauses the provider's scope (providers.md §2):
-    // the latest deadline, kept whole however long past an hour, held to `MAX_COOLDOWN`.
+    // the latest deadline, kept whole however long past an hour, held to `MAX_COOLDOWN` from now
+    // (not from the check's start, which would cut a long cooldown received later short).
     let scope = super::pause_scope(pdef);
-    let max = picket_api::time::saturating_add(now, crate::modules::download::dates::MAX_COOLDOWN);
+    let max = picket_api::time::saturating_add(now_done, crate::modules::download::dates::MAX_COOLDOWN);
     let pause = whole
         .as_ref()
         .and_then(|w| w.rate_limited)
