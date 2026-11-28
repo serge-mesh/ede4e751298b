@@ -757,7 +757,9 @@ function SuffixRules({ bundle, item }: { bundle: string; item: PublicSuffixItem 
     getNextPageParam: (p) => p.next_cursor ?? undefined,
     enabled: open && !!item.rules_cursor,
   });
-  const rules = [...item.rules, ...(more.data?.pages.flatMap((p) => p.items) ?? [])];
+  // Pages cached from an earlier visit show only once asked for again, like the list above.
+  const loaded = open ? (more.data?.pages.flatMap((p) => p.items) ?? []) : [];
+  const rules = [...item.rules, ...loaded];
   const count = typeof item.rule_count === "number" ? item.rule_count : rules.length;
   const left = Math.max(count - rules.length, 0);
   const hasMore = !!item.rules_cursor && (!open || more.hasNextPage);
@@ -769,7 +771,7 @@ function SuffixRules({ bundle, item }: { bundle: string; item: PublicSuffixItem 
         ))}
       </ul>
       {open && more.error && !more.isFetchNextPageError && <RefetchError error={more.error} onRetry={() => void more.refetch()} />}
-      <PagedListError query={more} placement="bottom" what="more rules" />
+      {open && <PagedListError query={more} placement="bottom" what="more rules" />}
       {hasMore && (
         <Button
           variant="link"

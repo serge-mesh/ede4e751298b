@@ -452,9 +452,12 @@ fn psl_rules(
     after: &str,
     limit: usize,
 ) -> anyhow::Result<(Vec<PublicSuffixRule>, Option<String>)> {
+    // `unlikely` keeps SQLite on `bundle_psl_hits_suffix` (one suffix's rows, in rule-hash
+    // order) before `ANALYZE` has stats for the table: without it the planner picks the primary
+    // key's (bundle, feed, rule_hash > ?) range and scans every rule of the feed.
     let mut st = c.prepare_cached(
         "SELECT rule_hash, identity_json FROM bundle_psl_hits
-          WHERE bundle_id = ?1 AND feed_id = ?2 AND suffix = ?3 AND rule_hash > ?4
+          WHERE bundle_id = ?1 AND feed_id = ?2 AND unlikely(suffix = ?3) AND rule_hash > ?4
           ORDER BY rule_hash LIMIT ?5",
     )?;
     let mut rows: Vec<(String, String)> = st
