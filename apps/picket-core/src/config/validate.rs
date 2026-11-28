@@ -1283,6 +1283,25 @@ fn profile_rules(m: &Model, o: &mut Out) {
                 "range",
                 "bypass: max_duration 1m–30d, max_active and rate_per_hour ≤ 10000".into(),
             );
+        } else if bp.mode == picket_api::edge_config::BypassMode::SelfService
+            && br.ttl <= 86_400
+            && bp.max_duration.as_secs() < picket_api::edge_config::min_allow_for_block_s(br.ttl)
+        {
+            // An allow of a fresh block would end while browsers still use its cached answer:
+            // the edge refuses those (`too_short`), so such a profile could lift no fresh block
+            // (#50).
+            let need = picket_api::edge_config::min_allow_for_block_s(br.ttl);
+            o.err(
+                e,
+                id,
+                Some("bypass.max_duration"),
+                "bypass_shorter_than_block_hold",
+                format!(
+                    "bypass.max_duration {} s is shorter than the {need} s a temporary allow needs to outlast the cached block answer (block_response.ttl {} s, plus 5 s slack and 5 s for the reload; at least 60 s): raise bypass.max_duration to {need} s or more, or lower block_response.ttl",
+                    bp.max_duration.as_secs(),
+                    br.ttl.min(picket_api::edge_config::MAX_BLOCK_TTL_S),
+                ),
+            );
         }
         for c in &p.alert_categories {
             if !["security", "privacy", "mixed"].contains(&c.as_str()) {

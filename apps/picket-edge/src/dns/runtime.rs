@@ -36,8 +36,10 @@ pub mod bounds {
     pub const SYNC_LOOKUP_BUDGET_MS: u32 = 60_000;
     /// The longest block TTL the edge serves ([`picket_api::edge_config::MAX_BLOCK_TTL_S`]): 900 s
     /// − 5 s hold slack (`bypass::ring::HOLD_SLACK_S`) − 5 s reload margin
-    /// (`bypass::RETRY_BEFORE_EXPIRY_S`), so an allow made right after the block still reloads
-    /// after the cached answer expired. Longer configured TTLs are lowered to this (#15, #34).
+    /// (`bypass::RETRY_BEFORE_EXPIRY_S`), so a 15 min allow (the extension's shortest choice)
+    /// made right after the block still reloads after the cached answer expired; shorter allows
+    /// that wouldn't are refused (`bypass::earliest_end`, #50). Longer configured TTLs are
+    /// lowered to this (#15, #34).
     pub const BLOCK_TTL_S: u32 = picket_api::edge_config::MAX_BLOCK_TTL_S;
     pub const CLIENT_QPS: (u32, u32) = (1, 100_000);
     pub const CLIENT_INFLIGHT: (u32, u32) = (1, 4_096);

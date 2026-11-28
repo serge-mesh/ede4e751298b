@@ -107,9 +107,14 @@ impl Drop for Held {
     }
 }
 
-/// Runs one check of `provider` (the caller marked it checking) and frees it.
+/// Runs one check of `provider` (the caller marked it checking) and frees it. A failed setup's
+/// backoff is installed before the provider is freed, so the scheduler can't claim it in
+/// between; a panic or a cancellation of this task frees it too ([`Release`]).
 pub async fn run(state: SharedState, provider: String, cause: Cause) {
-    match run_inner(&state, &provider, cause).await {
+    let s = state.clone();
+    let p = provider.clone();
+    let mut release = Release::new(move || s.feeds.provider_done(&s, &p));
+    match run_inner(&state, &provider, cause, &mut release).await {
         Ok(()) => state.feeds.setup_ok(&provider),
         Err(e) => {
             // Nothing could be recorded (the database): back off in memory, as the error backoff
@@ -117,12 +122,71 @@ pub async fn run(state: SharedState, provider: String, cause: Cause) {
             let n = state.feeds.setup_failed(&provider);
             let due = Timestamp::now() + schedule::backoff(n);
             tracing::warn!(provider = %provider, failures = n, error = %format!("{e:#}"), "feed provider check failed to run");
-            state.feeds.provider_done(&state, &provider);
-            state.feeds.set_due(&provider, due);
-            return;
+            state.feeds.retry_at(&provider, due);
         }
     }
-    state.feeds.provider_done(&state, &provider);
+    release.now();
+}
+
+/// Frees a checking provider exactly once: when its check ends, or when the task running it
+/// panics or is cancelled (#45: the provider would otherwise stay `checking` until a restart).
+/// While the check's light-lane job runs, freeing waits for it: dropping its join handle doesn't
+/// stop it, and the provider must not be checked twice at once.
+pub(crate) struct Release {
+    free: Option<Box<dyn FnOnce() + Send>>,
+    /// The check's light-lane job while it runs.
+    lane: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Release {
+    pub(crate) fn new(free: impl FnOnce() + Send + 'static) -> Self {
+        Self {
+            free: Some(Box::new(free)),
+            lane: None,
+        }
+    }
+
+    /// The check's light-lane job is running: a cancellation frees the provider when it ends.
+    pub(crate) fn lane(&mut self, job: tokio::task::JoinHandle<()>) {
+        self.lane = Some(job);
+    }
+
+    /// The light-lane job ended.
+    pub(crate) fn lane_done(&mut self) {
+        self.lane = None;
+    }
+
+    /// The check ended: frees the provider now.
+    pub(crate) fn now(mut self) {
+        self.lane = None;
+        if let Some(f) = self.free.take() {
+            f();
+        }
+    }
+}
+
+impl Drop for Release {
+    fn drop(&mut self) {
+        let Some(free) = self.free.take() else { return };
+        let lane = self.lane.take().filter(|j| !j.is_finished());
+        match (lane, tokio::runtime::Handle::try_current()) {
+            (Some(job), Ok(rt)) => {
+                tracing::warn!(
+                    "a feed provider check ended early; the provider is freed once its download ends"
+                );
+                rt.spawn(async move {
+                    let _ = job.await;
+                    free();
+                });
+            }
+            // No runtime (core is stopping): nothing would run another check anyway.
+            (Some(_), Err(_)) => {}
+            (None, _) => {
+                tracing::warn!("a feed provider check ended early; the provider is freed");
+                free();
+            }
+        }
+    }
 }
 
 /// What the stored history says about one feed before a check.
@@ -358,7 +422,7 @@ struct Trained {
     learner: Option<super::Learner>,
 }
 
-async fn run_inner(state: &SharedState, provider: &str, cause: Cause) -> Result<()> {
+async fn run_inner(state: &SharedState, provider: &str, cause: Cause, release: &mut Release) -> Result<()> {
     let pdef = state
         .feeds
         .provider_def(provider)
@@ -534,12 +598,33 @@ async fn run_inner(state: &SharedState, provider: &str, cause: Cause) -> Result<
         }
     };
     let keys = [key.as_str(), crate::modules::download::FEED_SHARE_KEY];
+    // The job's output goes through a channel, so `release` can hold its handle: a cancelled
+    // check frees the provider only once the job ends.
+    let (out_tx, out_rx) = tokio::sync::oneshot::channel();
+    let job = move |slot: crate::scheduler::LightSlot| async move {
+        let _ = out_tx.send(job(slot).await);
+    };
     let Some(h) = state.scheduler.light.spawn_slotted(&keys, job) else {
-        // The light lane is full: try again soon, nothing recorded.
+        // The light lane is full: try again in a minute, nothing recorded; the retry holds
+        // through the check's end (#45).
         state
             .feeds
-            .set_due(provider, now + jiff::SignedDuration::from_mins(1));
+            .retry_at(provider, now + jiff::SignedDuration::from_mins(1));
         return Ok(());
+    };
+    release.lane(h);
+    let joined = match release.lane.as_mut() {
+        Some(h) => h.await,
+        None => Ok(()),
+    };
+    release.lane_done();
+    let h = async move {
+        match joined {
+            Ok(()) => out_rx
+                .await
+                .map_err(|_| "the check's job ended without an outcome".to_string()),
+            Err(e) => Err(e.to_string()),
+        }
     };
     let redact = |e: CheckError| match e {
         CheckError::Failed(err) => CheckError::Failed(anyhow!(redactor.redact(&format!("{err:#}")))),
@@ -1544,9 +1629,10 @@ async fn on_failure(fc: &FeedCtx<'_>, e: CheckError, suppress_down: bool) -> Res
 const VOID_RETRY: jiff::SignedDuration = jiff::SignedDuration::from_secs(5);
 
 /// A check whose provider changed or was deleted while it ran: nothing it observed was stored.
+/// The retry holds through the check's end until the edit's reload replaces it (#45).
 fn void(state: &SharedState, provider: &str) {
     tracing::info!(provider = %provider, "the feed provider was deleted or its source changed during the check; nothing was stored");
-    state.feeds.set_due(provider, Timestamp::now() + VOID_RETRY);
+    state.feeds.retry_at(provider, Timestamp::now() + VOID_RETRY);
 }
 
 /// Records a feed's warm start for its epoch (feed-scheduling.md §6), read in the check's

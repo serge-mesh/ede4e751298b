@@ -57,15 +57,13 @@ pub struct Entry {
     pub profile: Arc<str>,
 }
 
-/// Seconds past the block TTL that `hold` adds: a reload right at the TTL can still find the
-/// browser's cached block answer unexpired, and Firefox then serves it to the extension's second
-/// attempt too, while refreshing it (#15). With the slack the reload finds it expired, and the
-/// second attempt gets the fresh answer.
-pub const HOLD_SLACK_S: u64 = 5;
+/// Seconds past the block TTL that `hold` adds ([`picket_api::edge_config::BLOCK_HOLD_SLACK_S`]).
+pub const HOLD_SLACK_S: u64 = picket_api::edge_config::BLOCK_HOLD_SLACK_S;
 
-/// `hold` for a block TTL: max(60 s, TTL + [`HOLD_SLACK_S`]) (edge.md §12 `retry_after_s`).
+/// `hold` for a block TTL: max(60 s, TTL + [`HOLD_SLACK_S`])
+/// ([`picket_api::edge_config::block_hold_s`]).
 pub fn hold_s(ttl: u32) -> u64 {
-    60u64.max(u64::from(ttl) + HOLD_SLACK_S)
+    picket_api::edge_config::block_hold_s(ttl)
 }
 
 impl Entry {
