@@ -10,7 +10,10 @@ manifests and lockfiles, and `.node-version` select JavaScript/TypeScript; the C
 `ci.yml` select both), and weekly and on manual runs for both. They don't run on PRs: across the
 first PR scans, none found anything the scan of `main` hadn't. The `fuzz/` workspaces are
 excluded: they are test harnesses, and loading their eight Cargo manifests took minutes of every
-Rust scan. Results appear under **Security → Code scanning**.
+Rust scan. A third job, `CodeQL (rust, fuzz workspaces)`, scans them monthly under its own category
+(`/language:rust/fuzz`), reporting only alerts in `fuzz/` (`.github/codeql/codeql-fuzz-config.yml`)
+so the crates they call aren't reported twice. A manual run of `ci.yml` can pick `codeql` or
+`codeql-fuzz` to scan on demand. Results appear under **Security → Code scanning**.
 
 GitHub Actions workflows are checked by zizmor (`.github/zizmor.yml`) in the first CI job
 whenever a workflow, `dependabot.yml` or the zizmor config changes, and in weekly and manual runs;

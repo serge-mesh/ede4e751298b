@@ -1,0 +1,7 @@
+name: picket-fuzz
+queries:
+  - uses: security-extended
+# Only the fuzz workspaces' harness code. The shipped crates they call are scanned by the main Rust
+# analysis (codeql-config.yml), so their alerts aren't reported a second time here.
+paths:
+  - fuzz

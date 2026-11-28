@@ -60,7 +60,9 @@ handling for previously stored data. Revisit this once there are real deployment
 jobs a change needs from the paths it touches (`dorny/paths-filter`: a PR's diff against its
 base; on `main`, the diff since the commit before the push; changing `ci.yml` picks every job)
 and runs the cheap checks before anything long starts: typos (`_typos.toml`) and, when workflows
-change, zizmor (`.github/zizmor.yml`). Weekly and manual runs pick every job.
+change, zizmor (`.github/zizmor.yml`). Weekly runs pick every job but the fuzz CodeQL scan, which
+runs monthly. Manual runs (**Actions → ci → Run workflow**) pick every job, or one group: `rust`,
+`edge`, `deny`, `fuzz`, `ui`, `extension`, `codeql` or `codeql-fuzz`.
 
 | Job | Runs when | What |
 |---|---|---|
@@ -72,7 +74,8 @@ change, zizmor (`.github/zizmor.yml`). Weekly and manual runs pick every job.
 | UI | `ui/` | lint, typecheck, build, tests |
 | Extension | `extension/` | build, lint, tests, reproducible packages, Chromium and Firefox tests in the Playwright image |
 | Review dependency changes | PRs changing manifests, lockfiles or workflows | rejects new high/critical vulnerabilities |
-| CodeQL (rust, javascript-typescript) | pushes to `main` changing that language; weekly | `security-extended`, `fuzz/` excluded (`.github/codeql/codeql-config.yml`); not on PRs |
+| CodeQL (rust, javascript-typescript) | pushes to `main` changing that language; weekly; manual | `security-extended`, `fuzz/` excluded (`.github/codeql/codeql-config.yml`); not on PRs |
+| CodeQL (rust, fuzz workspaces) | monthly; manual | the harness code in `fuzz/` only, under its own category (`.github/codeql/codeql-fuzz-config.yml`) |
 | CI | always | the one check to require: fails if change selection failed or a picked job didn't pass |
 
 A PR's new push cancels its older run; every push to `main` runs to completion (one concurrency

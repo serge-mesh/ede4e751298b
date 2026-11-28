@@ -5,9 +5,27 @@ on:
       - main
   pull_request:
   schedule:
-    # Weekly full run: every job, including the fuzz workspaces, arm64 and CodeQL.
+    # Weekly: every job, including the fuzz workspaces, arm64 and CodeQL.
     - cron: 23 4 * * 1
+    # Monthly: only CodeQL over the fuzz workspaces (codeql-fuzz). Keep in sync with MONTHLY_CRON.
+    - cron: 41 5 1 * *
+  # By hand (Actions → ci → Run workflow): every job, or one group of them.
   workflow_dispatch:
+    inputs:
+      jobs:
+        description: Jobs to run
+        type: choice
+        default: all
+        options:
+          - all
+          - rust
+          - edge
+          - deny
+          - fuzz
+          - ui
+          - extension
+          - codeql
+          - codeql-fuzz
 permissions:
   contents: read
 concurrency:
@@ -40,6 +58,7 @@ jobs:
       deps: ${{ steps.select.outputs.deps }}
       codeql_rust: ${{ steps.select.outputs.codeql_rust }}
       codeql_js: ${{ steps.select.outputs.codeql_js }}
+      codeql_fuzz: ${{ steps.select.outputs.codeql_fuzz }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -155,6 +174,9 @@ jobs:
         id: select
         env:
           EVENT: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          MONTHLY_CRON: 41 5 1 * *
+          PICKED: ${{ inputs.jobs }}
           RUST: ${{ steps.filter.outputs.rust }}
           EDGE: ${{ steps.filter.outputs.edge }}
           DENY: ${{ steps.filter.outputs.deny }}
@@ -165,15 +187,27 @@ jobs:
           CODEQL_RUST: ${{ steps.filter.outputs.codeql_rust }}
           CODEQL_JS: ${{ steps.filter.outputs.codeql_js }}
         run: |
+          # PRs and pushes: the changed paths. Weekly: everything but codeql-fuzz. Monthly:
+          # codeql-fuzz. By hand: everything, or the one group picked.
           case "$EVENT" in
-            pull_request | push) all=false ;;
-            *) all=true ;;
+            pull_request | push) mode=paths ;;
+            schedule) if [ "$SCHEDULE" = "$MONTHLY_CRON" ]; then mode=codeql-fuzz; else mode=weekly; fi ;;
+            workflow_dispatch) mode=${PICKED:-all} ;;
+            *) mode=weekly ;;
           esac
-          for pair in rust:"$RUST" edge:"$EDGE" deny:"$DENY" fuzz:"$FUZZ" ui:"$UI" \
-            extension:"$EXTENSION" deps:"$DEPS" codeql_rust:"$CODEQL_RUST" codeql_js:"$CODEQL_JS"; do
+          for pair in rust:"$RUST":rust edge:"$EDGE":edge deny:"$DENY":deny fuzz:"$FUZZ":fuzz \
+            ui:"$UI":ui extension:"$EXTENSION":extension deps:"$DEPS":- \
+            codeql_rust:"$CODEQL_RUST":codeql codeql_js:"$CODEQL_JS":codeql codeql_fuzz:false:codeql-fuzz; do
             name=${pair%%:*}
-            value=${pair#*:}
-            if [ "$all" = true ]; then value=true; fi
+            rest=${pair#*:}
+            changed=${rest%%:*}
+            group=${rest#*:}
+            case "$mode" in
+              paths) value=$changed ;;
+              weekly) if [ "$group" = codeql-fuzz ]; then value=false; else value=true; fi ;;
+              all) value=true ;;
+              *) if [ "$group" = "$mode" ]; then value=true; else value=false; fi ;;
+            esac
             [ "$value" = true ] || value=false
             echo "$name=$value" | tee -a "$GITHUB_OUTPUT"
           done
@@ -187,11 +221,11 @@ jobs:
         run: typos
 
       - name: Install zizmor (pinned prebuilt)
-        if: steps.filter.outputs.workflows == 'true' || github.event_name != 'pull_request' && github.event_name != 'push'
+        if: steps.filter.outputs.workflows == 'true' || github.event.schedule == '23 4 * * 1' || inputs.jobs == 'all'
         run: scripts/install-ci-tool.sh zizmor
 
       - name: zizmor (workflow security)
-        if: steps.filter.outputs.workflows == 'true' || github.event_name != 'pull_request' && github.event_name != 'push'
+        if: steps.filter.outputs.workflows == 'true' || github.event.schedule == '23 4 * * 1' || inputs.jobs == 'all'
         env:
           GH_TOKEN: ${{ github.token }}
         run: zizmor --format=github .
@@ -668,6 +702,35 @@ jobs:
         uses: github/codeql-action/analyze@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
         with:
           category: /language:javascript-typescript
+
+  # Monthly and by hand: the fuzz workspaces' harness code, under its own category. The crates they
+  # call are scanned above; codeql-fuzz-config.yml reports only alerts in fuzz/.
+  codeql-fuzz:
+    name: CodeQL (rust, fuzz workspaces)
+    needs: changes
+    if: needs.changes.outputs.codeql_fuzz == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read  # CodeQL reads the workflow run's details
+      security-events: write  # uploads the analysis to code scanning
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        with:
+          languages: rust
+          build-mode: none
+          config-file: ./.github/codeql/codeql-fuzz-config.yml
+
+      - name: Analyze and upload results
+        uses: github/codeql-action/analyze@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        with:
+          category: /language:rust/fuzz
 
   # The one check to require in branch protection. It fails if change selection failed or a
   # selected job didn't pass; unselected jobs skip, which passes. CodeQL isn't part of it.
