@@ -19,7 +19,6 @@
     "id": "oisd-big",
     "title": "OISD big",
     "description": "OISD's big list (ads, tracking, malware) in adblock syntax, from its GitHub repository.",
-    "legacy": [{"module": "http", "url": "https://big.oisd.nl/"}],
     "bundle": "block-common",
     "provider": {
       "id": "oisd-big",

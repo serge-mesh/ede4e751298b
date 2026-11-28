@@ -43,11 +43,6 @@ pub struct Preset {
     /// The feed provider it creates (editable), whose `files` select its feeds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<Value>,
-    /// Providers of the same list an older release's preset made under its provider id (OISD big
-    /// was an `http` provider of `https://big.oisd.nl/`): such a provider is this preset,
-    /// installed.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub legacy: Vec<LegacyProvider>,
     /// A manual preset's feed definition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feed: Option<Value>,
@@ -57,27 +52,6 @@ pub struct Preset {
     /// The bundle the feeds go in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bundle: Option<String>,
-}
-
-/// A provider an older release's preset made (a preset's `legacy`): its module and its `url` (as
-/// providers are matched by URL).
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct LegacyProvider {
-    pub module: String,
-    pub url: String,
-}
-
-impl LegacyProvider {
-    fn is(&self, p: &FeedProviderDef) -> bool {
-        let key = |u: &str| {
-            url::Url::parse(u)
-                .ok()
-                .map(|u| crate::modules::download::http::url_key(&u))
-        };
-        p.module == self.module
-            && key(&self.url)
-                .is_some_and(|k| p.config.get("url").and_then(Value::as_str).and_then(key) == Some(k))
-    }
 }
 
 /// Every preset.
@@ -159,9 +133,8 @@ fn provider_def(p: &Preset, pv: &Value) -> CoreResult<FeedProviderDef> {
     serde_json::from_value(pv.clone()).map_err(|e| CoreError::Other(anyhow::anyhow!("preset {}: {e}", p.id)))
 }
 
-/// True when the preset's provider (of its module and source, [`same_source`], or a
-/// [`Preset::legacy`] one: another provider with its id is no install of it) or manual feed
-/// exists.
+/// True when the preset's provider (of its module and source, [`same_source`]: another provider
+/// with its id is no install of it) or manual feed exists.
 pub fn installed(p: &Preset, m: &crate::config::Model) -> bool {
     match (&p.provider, &p.feed) {
         (Some(pv), _) => {
@@ -170,7 +143,7 @@ pub fn installed(p: &Preset, m: &crate::config::Model) -> bool {
             };
             m.feed_providers
                 .get(&def.id)
-                .is_some_and(|cur| same_source(&def, cur) || p.legacy.iter().any(|l| l.is(cur)))
+                .is_some_and(|cur| same_source(&def, cur))
         }
         (None, Some(f)) => f
             .get("id")
@@ -185,15 +158,12 @@ enum ProviderStep {
     Created,
     /// The preset's provider exists (possibly updated to select the preset's files again).
     Present,
-    /// An older release's provider of the same list: left as it is.
-    Legacy,
 }
 
 /// Creates the preset's provider, or brings back the preset's files on the existing provider of
 /// the same source, in `tx`; refuses a provider with the id that reads another source.
 fn provider_step(
     tx: &rusqlite::Transaction<'_>,
-    p: &Preset,
     pv: &Value,
     def: &FeedProviderDef,
     actor: &Actor,
@@ -204,11 +174,6 @@ fn provider_step(
         crate::config::store::apply(tx, EntityKind::FeedProvider, Op::Create(pv.clone()), actor, None)?;
         return Ok((ProviderStep::Created, true));
     };
-    // An older release's provider of the same list is this preset, installed: left as it is,
-    // its feeds go in the bundle.
-    if p.legacy.iter().any(|l| l.is(cur)) {
-        return Ok((ProviderStep::Legacy, false));
-    }
     // Another module's or another source's provider with the preset's id (the admin's) isn't
     // merged into: the install is refused and says so (ids never change).
     if cur.module != def.module {
@@ -260,24 +225,13 @@ pub async fn install(state: &SharedState, id: &str, actor: Actor) -> CoreResult<
         let (step, _) = state
             .config
             .change_when(
-                move |tx| provider_step(tx, p, &pv, &def2, &a),
+                move |tx| provider_step(tx, &pv, &def2, &a),
                 |(_, changed)| *changed,
             )
             .await?;
         match step {
             ProviderStep::Created => out.created = true,
             ProviderStep::Present => {}
-            ProviderStep::Legacy => {
-                let model = state.config.model().await?;
-                out.provider = Some(pid.clone());
-                out.feeds = model
-                    .feeds
-                    .values()
-                    .filter(|f| f.provider.as_deref() == Some(pid.as_str()))
-                    .map(|f| f.id.clone())
-                    .collect();
-                return bundle_feeds(state, p, out, actor).await;
-            }
         }
         // Its feeds (a module that lists files adds them with its first listing, named by the
         // files entries' templates then). A feed still on its default name (its file's, or its

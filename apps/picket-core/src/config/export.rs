@@ -1253,14 +1253,13 @@ fn zones_refusal(want: &[String], have: &[String]) -> String {
     )
 }
 
-/// The model a document's head holds, checked (module docs, step 1), with the providers the
-/// upgrade of an older release's shapes split off ([`super::store::upgrade_previous`]). `stored`
-/// names the secrets with a stored value.
+/// The model a document's head holds, checked (module docs, step 1). `stored` names the secrets
+/// with a stored value.
 pub fn check_head(
     doc: &stream::Head,
     zones: &[String],
     stored: &BTreeSet<String>,
-) -> Result<(Model, super::store::Upgrade), Refused> {
+) -> Result<Model, Refused> {
     if doc.format_version == 0 || doc.format_version > FORMAT_VERSION {
         return Err(Refused::Invalid(format!(
             "an export of format {} (this release reads formats 1 to {FORMAT_VERSION})",
@@ -1379,9 +1378,6 @@ pub fn check_head(
             return Err(Refused::Issues(vec![validate::too_many(kind)]));
         }
     }
-    // What an older release's export holds in a since-changed shape reads as the stored
-    // configuration does (README §2 Compatibility).
-    let upgrade = super::store::upgrade_previous(&mut m);
     // System objects a document lacks (an older release's) are created by the restore.
     super::system::fill_missing(&mut m);
     // Every reference and rule a save checks (one bad reference rejects the whole document).
@@ -1392,7 +1388,7 @@ pub fn check_head(
     if !errors.is_empty() {
         return Err(Refused::Issues(errors));
     }
-    Ok((m, upgrade))
+    Ok(m)
 }
 
 /// The model a document holds, checked with what its first pass read (module docs, step 1):
@@ -1405,8 +1401,8 @@ pub fn check_parsed(
     read: &stream::Checker,
     zones: &[String],
     stored: &BTreeSet<String>,
-) -> Result<(Model, super::store::Upgrade), Refused> {
-    let (m, upgrade) = check_head(head, zones, stored)?;
+) -> Result<Model, Refused> {
+    let m = check_head(head, zones, stored)?;
     let max = u64::from(m.settings.feeds.max_download_mib) * 1024 * 1024;
     let mut seen = BTreeSet::new();
     for mf in &read.manual {
@@ -1450,7 +1446,7 @@ pub fn check_parsed(
     }
     crate::feeds::restore::check_refs(&read.check_providers, &read.check_feeds, &m)
         .map_err(Refused::Invalid)?;
-    Ok((m, upgrade))
+    Ok(m)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2331,24 +2327,7 @@ pub async fn restore_file(
         .await
         .map_err(|e| CoreError::Other(anyhow!("{e}")))?
         .map_err(CoreError::Invalid)?;
-    let (model, upgrade) = check_parsed(&head, &read, &zones, &stored).map_err(CoreError::from)?;
-    // A provider split off an older one takes its `k` (README §2 Compatibility).
-    let mut head = head;
-    for (new, from) in &upgrade.splits {
-        if let Some(k) = head
-            .feed_providers
-            .iter()
-            .find(|x| &x.provider == from)
-            .map(|x| x.k)
-        {
-            head.feed_providers.push(crate::feeds::restore::ProviderPart {
-                provider: new.clone(),
-                listing: None,
-                k,
-                capacity_skipped: None,
-            });
-        }
-    }
+    let model = check_parsed(&head, &read, &zones, &stored).map_err(CoreError::from)?;
     let data_dir = state.data_dir.clone();
     let applied_feeds: Vec<String> = read
         .manual
@@ -2414,8 +2393,6 @@ pub async fn restore_file(
         });
     }
     state.feeds.reload(state).await;
-    // What upgrading an older release's shapes changed is told (README §2 Compatibility).
-    super::store::announce_upgrade(&state.alerts, &upgrade).await;
     // A manual feed with an applied blob in the document gets it applied, then its file runs
     // (its saved file stays its file, core.md §2).
     submit_applied(state, &restored.applied).await;

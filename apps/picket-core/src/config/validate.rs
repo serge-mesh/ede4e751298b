@@ -99,8 +99,8 @@ pub fn max_entities(kind: EntityKind) -> usize {
         EntityKind::Listener | EntityKind::Profile | EntityKind::UpstreamGroup => 256,
         EntityKind::Upstream | EntityKind::Bundle | EntityKind::Secret => 512,
         EntityKind::ForwardZone | EntityKind::Feed => 1024,
-        // 256 an older release allowed, plus one per feed (1,024): upgrading its `http`
-        // providers to one provider per feed's URL (`store::upgrade_previous`) always fits.
+        // 256, plus one per feed (1,024): an `http` provider is one URL, so each feed of its
+        // own URL takes a provider of its own.
         EntityKind::FeedProvider => 1280,
         EntityKind::LookupProvider => 64,
         EntityKind::Settings => 1,

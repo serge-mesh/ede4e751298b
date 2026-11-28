@@ -5324,22 +5324,6 @@
         ],
         "type": "object"
       },
-      "LegacyProvider": {
-        "description": "A provider an older release's preset made (a preset's `legacy`): its module and its `url` (as\nproviders are matched by URL).",
-        "properties": {
-          "module": {
-            "type": "string"
-          },
-          "url": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "module",
-          "url"
-        ],
-        "type": "object"
-      },
       "Limits": {
         "properties": {
           "client_inflight": {
@@ -6921,7 +6905,7 @@
           "feed_checks",
           "feed_records_added",
           "feed_records_deleted",
-          "feed_records_total",
+          "feed_records",
           "feed_parse_errors",
           "feed_held_runs",
           "lookup_calls",
@@ -7368,6 +7352,14 @@
               "feed"
             ]
           },
+          "feed_records": {
+            "family": "picket_feed_records",
+            "kind": "coregauge",
+            "labels": [
+              "feed",
+              "type"
+            ]
+          },
           "feed_records_added": {
             "family": "picket_feed_records_added_total",
             "kind": "corecounter",
@@ -7379,14 +7371,6 @@
           "feed_records_deleted": {
             "family": "picket_feed_records_deleted_total",
             "kind": "corecounter",
-            "labels": [
-              "feed",
-              "type"
-            ]
-          },
-          "feed_records_total": {
-            "family": "picket_feed_records",
-            "kind": "coregauge",
             "labels": [
               "feed",
               "type"
@@ -8375,13 +8359,6 @@
           },
           "installed": {
             "type": "boolean"
-          },
-          "legacy": {
-            "description": "Providers of the same list an older release's preset made under its provider id (OISD big\nwas an `http` provider of `https://big.oisd.nl/`): such a provider is this preset,\ninstalled.",
-            "items": {
-              "$ref": "#/components/schemas/LegacyProvider"
-            },
-            "type": "array"
           },
           "provider": {
             "description": "The feed provider it creates (editable), whose `files` select its feeds."
@@ -12491,7 +12468,6 @@
                 "feed_provider_trigger_down",
                 "feed_provider_listing_incomplete",
                 "feed_limit_reached",
-                "config_upgraded",
                 "feed_held",
                 "bundle_build_failed",
                 "bundle_over_budget",

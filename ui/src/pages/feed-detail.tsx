@@ -1470,7 +1470,7 @@ function FeedMetrics({ feedId }: { feedId: string }) {
         <WindowPicker value={window} onChange={setWindow} allowed={allowed} />
       </div>
       <div className="grid gap-4 xl:grid-cols-2">
-        <MetricPanel title="Entries per rule type" series={["feed_records_total"]} window={window} edge="all" transform={filter as never} specs={[{ match: () => true, label: (l) => l.labels?.type ?? "total" }]} />
+        <MetricPanel title="Entries per rule type" series={["feed_records"]} window={window} edge="all" transform={filter as never} specs={[{ match: () => true, label: (l) => l.labels?.type ?? "total" }]} />
         <MetricPanel
           title="Records added and deleted"
           series={["feed_records_added", "feed_records_deleted"]}

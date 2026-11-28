@@ -1160,8 +1160,9 @@ async fn presets_install_and_restore() {
         "FireHOL level 1",
         "a restored preset feed is named too"
     );
-    // The older release's OISD big (an http provider of https://big.oisd.nl/, as upgraded) is
-    // the preset, installed: shown so, and installing it leaves it as it is and bundles its feed.
+    // Issue 74: an `http` provider of https://big.oisd.nl/ under OISD big's id is no install of
+    // the (GitHub) preset: not shown installed, and installing it is refused like any other
+    // module's provider with the id, leaving it and the bundle as they are.
     let r = ui(&c, Method::POST, "/feed-providers")
         .json(
             &json!({"id": "oisd-big", "name": "OISD big", "module": "http", "enabled": false,
@@ -1180,22 +1181,16 @@ async fn presets_install_and_restore() {
             .unwrap()["installed"]
             .clone()
     };
-    assert_eq!(installed(&get_json(&c, "/feed-presets").await, "oisd-big"), true);
+    assert_eq!(installed(&get_json(&c, "/feed-presets").await, "oisd-big"), false);
     let r = ui(&c, Method::POST, "/feed-presets/oisd-big")
         .json(&json!({}))
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status(), StatusCode::OK);
-    let v: Value = r.json().await.unwrap();
-    assert_eq!(
-        (v["provider"].as_str(), v["feeds"].clone()),
-        (Some("oisd-big"), json!(["oisd-big"])),
-        "{v}"
-    );
+    assert_eq!(r.status(), StatusCode::CONFLICT);
     assert_eq!(get_json(&c, "/feed-providers/oisd-big").await["module"], "http");
     assert!(
-        get_json(&c, "/bundles/block-common").await["feeds"]
+        !get_json(&c, "/bundles/block-common").await["feeds"]
             .as_array()
             .unwrap()
             .iter()
