@@ -5,6 +5,14 @@
 //!   firmware check), `allowed_binds` (flagged listeners), `have`, `applied`, `update` and its
 //!   conditions. A hello counting more than 3 starts since the last session, or more than 3 new
 //!   boots in 10 min, raises `edge_crash_loop`.
+//! - **An edge that can't start a session** (#69: e.g. it refuses to run with a helper speaking
+//!   another protocol, exiting before its hello, and systemd restarting it) sends core nothing:
+//!   no hello, so no `edge_crash_loop` during the outage; what core shows then is `edge_offline`
+//!   (no heartbeat for 5 min, below). The edge's reason waits in its spool (the
+//!   `helper_protocol_mismatch` event) and reaches core with the first batch a compatible start
+//!   ships: after the updater rolls a failed update back (with `update_failed` at `readiness`),
+//!   or a repaired install. That start's hello counts the starts since the last session, so the
+//!   refused ones can raise `edge_crash_loop` then.
 //! - **`heartbeat`:** `edge_status` (last seen, versions and the versions before them,
 //!   conditions, the heartbeat), metrics (`metrics.db`), convergence (`edge_named`: the first
 //!   heartbeat showing each named version active; `convergence_lag_s`), pins (`have`), request

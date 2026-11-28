@@ -1019,6 +1019,7 @@ fn known_event(kind: &str) -> bool {
             | event_kind::PANIC
             | event_kind::PAGE_FILE_REFETCHED
             | event_kind::TLS_VERSION_REFUSED
+            | event_kind::HELPER_PROTOCOL_MISMATCH
     )
 }
 

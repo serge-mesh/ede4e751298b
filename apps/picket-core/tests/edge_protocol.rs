@@ -2817,3 +2817,37 @@ async fn a_restore_during_lookup_or_metric_publication_refuses_the_rest() {
         assert!(log_records_points(&c, &a.id).await > 0, "{point:?}");
     }
 }
+
+/// #69: an edge refusing to run with a helper of another protocol logs `helper_protocol_mismatch`
+/// and exits before any session; the record reaches core later from the spool, under a boot core
+/// never heard a hello from. Core keeps it and the edge page shows it with its fields.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_spooled_helper_protocol_mismatch_is_stored_and_shown() {
+    let c = common::start_core(plain()).await;
+    let a = FakeEdge::registered(&c, "edge-a").await;
+    let t = ts(Timestamp::now() - jiff::SignedDuration::from_mins(20));
+    let ev = json!({"t": "event", "ts": t, "boot": "refused-1", "seq": 1,
+        "kind": picket_api::logs::event_kind::HELPER_PROTOCOL_MISMATCH,
+        "helper_proto": 3, "edge_proto": 2, "helper_version": "9.9.9", "connection": "fast"});
+    let r = a.post_logs(std::slice::from_ref(&ev)).await;
+    assert_eq!(r.status(), 200);
+    // A redelivery (a drain whose ack was lost) stores nothing new.
+    assert_eq!(a.post_logs(&[ev]).await.status(), 200);
+    let n: Option<i64> = q1(
+        &c,
+        "SELECT count(*) FROM edge_events WHERE edge_id = ?1 AND kind = 'helper_protocol_mismatch'",
+        vec![a.id.clone()],
+    )
+    .await;
+    assert_eq!(n, Some(1));
+    let view = picket_core::edges::status::view(&c.state, &a.id).await.unwrap();
+    let e = view
+        .events
+        .iter()
+        .find(|e| e.kind == "helper_protocol_mismatch")
+        .expect("on the edge page");
+    assert_eq!(e.detail["helper_proto"], 3);
+    assert_eq!(e.detail["edge_proto"], 2);
+    assert_eq!(e.detail["helper_version"], "9.9.9");
+    assert_eq!(e.detail["connection"], "fast");
+}
