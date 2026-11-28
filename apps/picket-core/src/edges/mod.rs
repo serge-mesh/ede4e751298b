@@ -4,9 +4,9 @@
 //! - [`hub`]: one session per edge, the pinned-key registry, each edge's live state;
 //! - [`messages`]: decoding the edge's session messages (fuzzed);
 //! - [`status`]: hello and heartbeat processing, conditions → alerts, the watcher, the UI view;
-//! - [`render`] and [`publish`]: config objects, published on change with `changed`, pins and
+//! - [`render`](mod@render) and [`publish`]: config objects, published on change with `changed`, pins and
 //!   convergence tracking;
-//! - [`requests`]: Update, flushes and revokes as config-object state;
+//! - [`requests`](mod@requests): Update, flushes and revokes as config-object state;
 //! - [`releases`]: the edge release bundled with core and its signature check.
 
 pub mod hub;

@@ -4,8 +4,8 @@
 //! [`crate::bundles::BundleHave`]). Each hook also has a minimal default (activate config-only
 //! objects, report no helper) for tests that want one.
 //!
-//! Install hooks before the core session starts ([`crate::service::EdgeBuilder`] takes them, or
-//! call the `set_*` methods); they can also be swapped later.
+//! Install hooks before the core session starts ([`crate::service::start`]'s `install` callback
+//! takes them, or call the `set_*` methods); they can also be swapped later.
 
 use std::sync::Arc;
 

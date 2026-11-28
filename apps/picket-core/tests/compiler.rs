@@ -4,16 +4,7 @@
 //! overlays, staged fresh builds, blobs of a build in progress, bounded steps that keep results
 //! identical, feed retention pins and purged feeds.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "integration test code: a failed unwrap or expect is the test's report, and it may cast freely"
-)]
-
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 use std::time::Duration;

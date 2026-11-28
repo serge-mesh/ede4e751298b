@@ -2,7 +2,7 @@
 //! with simulated checks. The weekly `k` choice and the `backtest` endpoint both call
 //! [`replay`]; the tests below hold the acceptance harness on recorded histories (§6 "Tests").
 
-use super::learner::{Learner, Obs, SimResult, simulate_provider};
+use crate::learner::{Learner, Obs, SimResult, simulate_provider};
 
 /// Replays `[start, end)` of a provider's feeds with simulated checks, once per `k` in `ks`: the
 /// provider is checked at its feeds' earliest ask, each spaced from that feed's own last check
@@ -44,7 +44,7 @@ mod tests {
     use std::sync::OnceLock;
 
     use super::*;
-    use crate::feeds::schedule::learner::{K_CHOICES, K_REPLAY_DAYS, k_replay_starts, provider_k, respace};
+    use crate::learner::{K_CHOICES, K_REPLAY_DAYS, k_replay_starts, provider_k, respace};
 
     const DAY: f64 = 86_400.0;
 
@@ -162,7 +162,7 @@ mod tests {
         F.get_or_init(|| {
             parse(
                 "OISD big",
-                include_str!("../../../tests/fixtures/feed-histories/oisd-big.txt"),
+                include_str!("../tests/fixtures/feed-histories/oisd-big.txt"),
             )
         })
     }
@@ -172,7 +172,7 @@ mod tests {
         F.get_or_init(|| {
             parse(
                 "AdGuard DNS filter",
-                include_str!("../../../tests/fixtures/feed-histories/adguard-dns-filter.txt"),
+                include_str!("../tests/fixtures/feed-histories/adguard-dns-filter.txt"),
             )
         })
     }
@@ -182,7 +182,7 @@ mod tests {
         F.get_or_init(|| {
             parse(
                 "jpgpi250 DoH",
-                include_str!("../../../tests/fixtures/feed-histories/jpgpi250-doh.txt"),
+                include_str!("../tests/fixtures/feed-histories/jpgpi250-doh.txt"),
             )
         })
     }
@@ -190,8 +190,8 @@ mod tests {
     /// The days replayed: the history the learner keeps (feed-scheduling.md §4 "Rebuild").
     const REPLAYED_DAYS: f64 = 60.0;
     /// The `github` warm start's reach (feed-scheduling.md §6): back until 20 changes or 60 days.
-    const WARM_CHANGES: usize = crate::modules::download::github::HISTORY_CHANGES;
-    const WARM_DAYS: f64 = crate::modules::download::github::HISTORY_DAYS as f64;
+    const WARM_CHANGES: usize = crate::HISTORY_CHANGES;
+    const WARM_DAYS: f64 = crate::HISTORY_DAYS as f64;
     /// The default `min_interval`; a `github` check's no-change cost is one `ls-refs`, so the
     /// cost factor is 1.
     const MIN_INTERVAL: f64 = 120.0;

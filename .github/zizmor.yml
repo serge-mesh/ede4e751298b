@@ -1,0 +1,5 @@
+rules:
+  dependabot-cooldown:
+    config:
+      # Dependabot's own default; security updates skip the cooldown (.github/dependabot.yml).
+      days: 3

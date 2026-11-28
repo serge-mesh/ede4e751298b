@@ -3,10 +3,14 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use picket_edge_helper::ipset::proto::{Reply, SetHeader, decode_datagram, decode_list, decode_protocol, decode_type};
+use picket_edge_helper::ipset::proto::{
+    Reply, SetHeader, decode_datagram, decode_list, decode_protocol, decode_type,
+};
 
 fuzz_target!(|data: &[u8]| {
-    let Ok(replies) = decode_datagram(data) else { return };
+    let Ok(replies) = decode_datagram(data) else {
+        return;
+    };
     for r in replies {
         if let Reply::Ipset { attrs, .. } = r {
             let mut h = SetHeader::default();

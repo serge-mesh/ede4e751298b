@@ -13,6 +13,7 @@ app; and **picket-browser-extension**.
 | `crates/picket-bundle` | Bundle format writer (core) and reader/matcher (edge) |
 | `crates/picket-lookup` | Lookup module trait, `LookupClient`, built-in lookup modules (`src/modules/<id>/`) |
 | `crates/picket-api` | Serde types for every interface |
+| `crates/picket-schedule` | The `dynamic` feed scheduler's learner and its backtests (core re-exports them) |
 | `apps/picket-edge` | The edge service and CLI |
 | `apps/picket-edge-helper` | The ipset/iptables helper |
 | `apps/picket-edge-update` | The root installer and updater |
@@ -55,46 +56,64 @@ handling for previously stored data. Revisit this once there are real deployment
 
 ## CI
 
-`.github/workflows/ci.yml` runs fmt, clippy and tests, and builds the UI and the extension, on
-GitHub Actions (`ubuntu-latest`). Rust checks run independently from four test jobs: core unit
-tests, two groups of core integration tests, and the remaining workspace. Integration targets
-are discovered from Cargo metadata and balanced using approximate durations in
-`scripts/ci-core-test-seconds.json`; new targets get a default estimate and are included
-automatically. Core doctests run separately; the remaining workspace job includes its doctests.
+`.github/workflows/ci.yml` runs on GitHub Actions. Its first job, **Changes and lint**, picks the
+jobs a change needs from the paths it touches (`dorny/paths-filter`: a PR's diff against its
+base; on `main`, the diff since the commit before the push; changing `ci.yml` picks every job)
+and runs the cheap checks before anything long starts: typos (`_typos.toml`) and, when workflows
+change, zizmor (`.github/zizmor.yml`). Weekly runs pick every job but the fuzz CodeQL scan, which
+runs monthly. Manual runs (**Actions → ci → Run workflow**) pick every job, or one group: `rust`,
+`edge`, `deny`, `fuzz`, `ui`, `extension`, `codeql` or `codeql-fuzz`.
 
-To reproduce a test job locally:
+| Job | Runs when | What |
+|---|---|---|
+| Rust (x86_64) | Rust sources, manifests, fixtures, toolchain | rustfmt (also over the lookup modules, which `cargo fmt` doesn't reach), updater dependency allowlist, clippy, `cargo doc` (broken links fail; links to private items are allowed), cargo-nextest over the workspace except the edge side, doctests |
+| Edge tests (arm64) | the edge apps or the crates they link | the edge side's tests (`EDGE_PACKAGES` in `ci.yml`), natively on `ubuntu-24.04-arm`, where the edge ships |
+| Edge aarch64 cross-build | same | `scripts/check-edge-aarch64.sh` (zig, glibc floor 2.41); on PRs, a warning (never a failure) when an edge binary grows more than 2 % against `main` |
+| cargo deny | manifests, `Cargo.lock`, `deny.toml` | advisories, licences, bans, sources |
+| Fuzz workspaces | `fuzz/` | rustfmt and `cargo check --locked --all-targets` in each `fuzz/*` workspace |
+| UI | `ui/` | lint, typecheck, build, tests |
+| Extension | `extension/` | build, lint, tests, reproducible packages, Chromium and Firefox tests in the Playwright image |
+| Review dependency changes | PRs changing manifests, lockfiles or workflows | rejects new high/critical vulnerabilities |
+| CodeQL (rust, javascript-typescript) | pushes to `main` changing that language; weekly; manual | `security-extended`, `fuzz/` excluded (`.github/codeql/codeql-config.yml`); not on PRs |
+| CodeQL (rust, fuzz workspaces) | monthly; manual | the harness code in `fuzz/` only, under its own category (`.github/codeql/codeql-fuzz-config.yml`) |
+| CI | always | the one check to require: fails if change selection failed or a picked job didn't pass |
+
+A PR's new push cancels its older run; every push to `main` runs to completion (one concurrency
+group per commit), so routing by diff never skips a merge. Jobs run on GitHub's free runners for
+public repositories, sized to the work: the router, the `CI` gate, dependency review and the
+SonarQube sync on `ubuntu-slim` (1 CPU, 15-minute job cap, no Rust toolchain), builds and tests
+on `ubuntu-latest` (4 CPUs), and the edge tests on `ubuntu-24.04-arm`. The cross-build stays alongside the
+arm64 tests so the edge checks still work where only x86_64 runners exist.
+
+To run the Rust checks locally:
 
 ```sh
-python3 scripts/ci-rust-tests.py core-integration-1  # also: core-unit, core-integration-2, workspace
-cargo test --profile ci --package picket-core --doc --locked
+cargo clippy --profile ci --workspace --all-targets --locked -- -D warnings
+RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" cargo doc --profile ci --workspace --no-deps --locked
+cargo nextest run --profile ci --cargo-profile ci --workspace --locked
+cargo test --profile ci --workspace --doc --locked
 ```
 
-The `ci` test profile optimises the rules, bundle and wire crates. Application crates keep dev
-optimisation settings; debug assertions and overflow checks stay enabled. Native jobs share
-compiled objects through `sccache`; Cargo download archives have one
-writer on `main`. They cache neither complete `target` directories nor toolchains. The ARM job
-uses a pruned dependency cache. Cache keys follow compiler/dependency inputs rather than commit
-SHAs. Compatible finished compilations can be reused across jobs; simultaneous cold misses
-can still compile the same dependency. Tool binaries are downloaded at pinned versions and
-verified against pinned SHA-256 sums.
+`picket-core`'s integration tests build as one test binary (`tests/main.rs` declares each file);
+nextest runs each test in its own process and kills one still running after 5 minutes
+(`.config/nextest.toml`). The `ci` profile optimises the rules, bundle and wire crates, and
+`picket-schedule` is built at opt-level 3 in every dev build (its backtests are CPU-bound);
+application crates keep dev settings, and debug assertions and overflow checks stay on.
+`Swatinem/rust-cache` restores dependencies' build output from `main`'s last run (only `main`
+saves). Tool binaries are downloaded at pinned versions and checked against pinned SHA-256 sums
+(`scripts/install-ci-tool.sh`).
 
-UI lint/build, two UI test shards, extension packaging, and the two browser projects run
-independently. The UI typecheck runs once in the build job; each browser uses two workers.
-PRs run only the components and CodeQL languages selected by their changed files; pushes to
-`main` run all components. The combined `rust`, `ui`, `extension-browsers` and `CodeQL` checks
-fail if a selected job fails or change selection fails, and allow intentionally unselected jobs.
+The arm64 job covers the spec's golden-bundle reads on aarch64 natively (the `binfmt` runner
+would run them under QEMU). The spec's VM integration, UniFi userland smoke test, Valgrind
+budget, release, signing, image-rebuild and firmware-canary pipelines are not wired up here yet.
 
-The spec's VM integration, binfmt, golden-bundle-on-aarch64,
-Valgrind budget, release, signing, image-rebuild and firmware-canary pipelines are not wired up
-here yet.
-
-CodeQL scans affected languages on PRs, and all three languages on `main`, weekly and manual runs.
 SonarQube Cloud findings (vulnerabilities, bugs, and code smells) are synced into GitHub Code
-Scanning via `.github/workflows/sonar-sarif.yml`.
-Dependency review rejects newly introduced high/critical vulnerabilities on PRs. Dependabot
-checks for version updates daily at staggered times for Cargo (including fuzz workspaces), npm,
-Actions and the Docker base image, with at most two open version-update PRs per ecosystem.
-Minor/patch and major groups are separate; security updates remain alert-driven. Dependabot's
-Rust test matrix runs at most two lanes concurrently; other PRs can run all four.
+Scanning via `.github/workflows/sonar-sarif.yml`. `.github/workflows/rustsec-advisories.yml`
+checks RustSec advisories daily for the root and every fuzz lockfile and opens an issue (or
+comments on the open one) when one fails. Dependabot checks for version updates weekly, at
+staggered times on Mondays, for Cargo (including fuzz workspaces), npm, Actions and the Docker
+base image, waits 3 days after a release before proposing it, and opens at most two
+version-update PRs per ecosystem. Minor/patch and major groups are separate; security updates
+remain alert-driven and skip the schedule and the wait.
 See [CI security](docs/ci-security.md) for coverage and the
 repository settings needed for Dependabot alerts and security updates.

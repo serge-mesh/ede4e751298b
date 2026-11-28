@@ -2008,6 +2008,7 @@ dependencies = [
  "picket-bundle",
  "picket-lookup",
  "picket-rules",
+ "picket-schedule",
  "picket-wire",
  "publicsuffix",
  "rand 0.10.4",
@@ -2094,6 +2095,14 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "picket-schedule"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
 ]
 
 [[package]]

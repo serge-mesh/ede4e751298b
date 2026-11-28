@@ -5,9 +5,9 @@
 use std::sync::OnceLock;
 
 use libfuzzer_sys::fuzz_target;
+use picket_bundle::Bundle;
 use picket_bundle::compile::{BuildOptions, CompileOptions, build, compile_rules, load_bundle};
 use picket_bundle::page::MemPages;
-use picket_bundle::Bundle;
 use picket_rules::compile::Part;
 use picket_rules::formats::{DomainsAs, Format, ParseConfig, parse_lines};
 use picket_rules::matcher::{BundleAction, BundleMatcher};
@@ -44,9 +44,15 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
     let qtype = if data[0] & 1 == 1 { 28 } else { 1 };
-    let ctx = QueryCtx { qtype, ..Default::default() };
+    let ctx = QueryCtx {
+        qtype,
+        ..Default::default()
+    };
     // Labels split at 0x2f ('/'), so `.` bytes stay inside labels.
-    let labels: Vec<&[u8]> = data[1..].split(|&b| b == b'/').filter(|l| !l.is_empty() && l.len() <= 63).collect();
+    let labels: Vec<&[u8]> = data[1..]
+        .split(|&b| b == b'/')
+        .filter(|l| !l.is_empty() && l.len() <= 63)
+        .collect();
     let wire_len: usize = labels.iter().map(|l| l.len() + 1).sum::<usize>() + 1;
     if !labels.is_empty() && labels.len() <= 127 && wire_len <= 255 {
         let got = fx.bundle.lookup_labels_full(&labels, &ctx, &fx.pages).outcome;
@@ -62,7 +68,11 @@ fuzz_target!(|data: &[u8]| {
             std::net::IpAddr::V4(std::net::Ipv4Addr::new(a[0] % 12, a[1] % 4, a[2] % 4, a[3] % 8))
         };
         let d = fx.bundle.lookup_ip(ip, &ctx);
-        let d = if d.cold == picket_bundle::ColdCheck::Needed { d.with_cold(fx.bundle.lookup_ip_cold(ip, &fx.pages)) } else { d };
+        let d = if d.cold == picket_bundle::ColdCheck::Needed {
+            d.with_cold(fx.bundle.lookup_ip_cold(ip, &fx.pages))
+        } else {
+            d
+        };
         assert_eq!(d.outcome, fx.reference.match_ip(ip, &ctx).outcome, "{ip}");
     }
 });

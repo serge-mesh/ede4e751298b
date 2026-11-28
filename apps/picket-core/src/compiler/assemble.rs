@@ -26,6 +26,10 @@
 //! - **Blobs** ([`store_blobs`]): registered as pending, as the build's (`bundle_build_blobs`),
 //!   before their files move into the store; the head's other blobs are marked too, so retention
 //!   never collects what a build in progress names (storage.md §4).
+//!
+//! [`ips`]: picket_bundle::ips
+//! [`fold_runs`]: picket_bundle::runs::fold_runs
+//! [`RichBuilder::retain_sets`]: picket_bundle::rich::RichBuilder::retain_sets
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 

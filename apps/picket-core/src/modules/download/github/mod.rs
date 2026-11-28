@@ -87,8 +87,7 @@ pub const WALK_RETRY: jiff::SignedDuration = jiff::SignedDuration::from_hours(6)
 /// The longest rate-limit pause (providers.md §2).
 const MAX_PAUSE: jiff::SignedDuration = jiff::SignedDuration::from_hours(1);
 /// Warm start: how far back, and how many changes (feed-scheduling.md §6).
-pub const HISTORY_DAYS: i64 = 60;
-pub const HISTORY_CHANGES: usize = 20;
+pub use picket_schedule::{HISTORY_CHANGES, HISTORY_DAYS};
 const HISTORY_PAGES: u32 = 10;
 
 const GIT_HOST: &str = "https://github.com";

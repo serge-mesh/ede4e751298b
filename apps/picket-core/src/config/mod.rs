@@ -135,7 +135,7 @@ impl ConfigStore {
         .await
     }
 
-    /// [`Config::apply`] with every save option.
+    /// [`Self::apply`] with every save option.
     pub async fn apply_with(
         &self,
         kind: EntityKind,

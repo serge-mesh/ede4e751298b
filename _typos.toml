@@ -1,0 +1,54 @@
+# typos (CI's first job runs it over the repository). Everything below is deliberate: names,
+# protocol terms, review IDs and test inputs, not misspellings.
+
+[files]
+extend-exclude = [
+  # Upstream data and recorded inputs, kept byte for byte.
+  "apps/picket-core/data/public_suffix_list.dat",
+  "fixtures/",
+  "**/fixtures/**",
+  "**/corpus/**",
+]
+
+[default]
+extend-ignore-re = [
+  # Keys, hashes and cursors (base64 or hex runs).
+  "[A-Za-z0-9+/_-]{32,}={0,2}",
+  # "ANDed" (cron day fields).
+  "ANDed",
+]
+
+[default.extend-words]
+# Extended DNS Errors (RFC 8914) and the extension's EDE probe.
+ede = "ede"
+# Spellings in use: field names, error kinds, "extendible hashing".
+befores = "befores"
+unparseable = "unparseable"
+extendible = "extendible"
+# CLASSnnn mnemonics (RFC 3597), the flate2 crate, Unicode scripts and categories.
+clas = "clas"
+flate = "flate"
+tham = "tham"
+vai = "vai"
+nd = "nd"
+# Short local names and fragments (`ot`, `pn`, `fo`, `lits`, `ba`, `abd`, `alse` of "false",
+# "catch-alls", "café", "PNGs").
+ot = "ot"
+pn = "pn"
+fo = "fo"
+lits = "lits"
+ba = "ba"
+abd = "abd"
+alse = "alse"
+alls = "alls"
+caf = "caf"
+# Review IDs (UE2, FO5-3).
+ue = "ue"
+# Misspelled on purpose: inputs a test expects to be refused or unknown.
+tarbal = "tarbal"
+exammple = "exammple"
+limt = "limt"
+serie = "serie"
+
+[default.extend-identifiers]
+WRONLY = "WRONLY"

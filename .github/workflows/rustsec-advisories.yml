@@ -1,0 +1,74 @@
+name: RustSec advisories
+# A new RustSec advisory (including the unmaintained, unsound and yanked kinds Dependabot alerts
+# don't cover) shows up here the day it lands, against the root and every fuzz lockfile, instead
+# of as a failure on some unrelated PR. A failure opens an issue, or comments on the open one.
+on:
+  schedule:
+    - cron: '41 3 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: rustsec-advisories
+  cancel-in-progress: false
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_NET_RETRY: '5'
+jobs:
+  advisories:
+    name: cargo deny advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write  # reports a failure as an issue
+    env:
+      CARGO_DENY_VERSION: 0.22.1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Cache cargo-deny
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.local/cargo-deny-${{ env.CARGO_DENY_VERSION }}
+          key: cargo-deny-${{ runner.os }}-${{ runner.arch }}-${{ env.CARGO_DENY_VERSION }}-${{ hashFiles('scripts/install-ci-tool.sh') }}
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          command -v rustup >/dev/null || { echo "GitHub-hosted Ubuntu must provide rustup" >&2; exit 1; }
+          rustup show active-toolchain || rustup toolchain install --no-self-update
+
+      - name: Install cargo-deny (pinned prebuilt)
+        run: scripts/install-ci-tool.sh cargo-deny
+
+      - name: Advisories for the workspace and each fuzz workspace
+        run: |
+          status=0
+          scripts/check-deny.sh advisories || status=1
+          for manifest in fuzz/*/Cargo.toml; do
+            echo "::group::$manifest"
+            cargo deny --manifest-path "$manifest" --config deny.toml --all-features --locked check advisories || status=1
+            echo "::endgroup::"
+          done
+          exit "$status"
+
+      - name: Open or update the advisories issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="RustSec advisories: cargo deny failed"
+          body="The daily \`cargo deny check advisories\` failed: $RUN_URL"
+          number=$(gh issue list --state open --search "\"$title\" in:title" --json number,title \
+            --jq "map(select(.title == \"$title\")) | first | .number // empty")
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

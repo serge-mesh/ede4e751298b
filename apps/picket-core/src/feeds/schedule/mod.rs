@@ -4,8 +4,8 @@
 //! `min_interval` floor, and on `cron` triggers a list's `! Expires:` as the minimum interval
 //! between full downloads of its file (feeds.md §5).
 
-pub mod backtest;
-pub mod learner;
+// The model and its backtests live in their own crate, which CI builds optimised.
+pub use picket_schedule::{backtest, learner};
 
 use jiff::{SignedDuration, Timestamp};
 use picket_api::time::saturating_add;

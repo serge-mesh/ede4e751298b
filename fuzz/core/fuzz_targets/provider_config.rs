@@ -1,9 +1,10 @@
 //! Feed providers as the UI API receives them (providers.md §1–§3, feeds.md §1): each module's
 //! save-time check and stored form, the provider entity, its `files`/`exclude` globs, the
-//! `github` URL forms and `http` file paths under a base URL. Never panic; a config a module
-//! accepts is accepted again in its stored form; a file `resolve` accepts stays under the base
-//! and maps back to the same URL; a pattern without a wildcard matches exactly its literal path;
-//! a glob that matches a path reaches its directories.
+//! `github` URL forms and the `http` module's URL checks. Never panic; a config a module accepts
+//! is accepted again in its stored form; a URL `check_url` accepts is accepted again as it prints
+//! (when that still fits [`http::MAX_URL`]), under the same key, and `check_feed_url` accepts
+//! only such URLs, without a fragment; a pattern without a wildcard matches exactly its literal
+//! path; a glob that matches a path reaches its directories.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
@@ -13,13 +14,16 @@ use picket_core::modules::download::{github, glob, http, known_ids, normalize};
 fuzz_target!(|data: &[u8]| {
     if let Ok(s) = std::str::from_utf8(data) {
         let _ = github::parse_url(s);
-        let _ = http::check_base(s);
-        let base = http::check_base("https://lists.example/dir/").unwrap();
-        if let Ok(u) = http::resolve(&base, s) {
-            assert!(u.as_str().starts_with(base.as_str()), "{u} is outside {base}");
-            if let Some(f) = http::file_of(&base, &u) {
-                assert_eq!(http::resolve(&base, &f).ok().as_ref(), Some(&u), "{f:?}");
+        if let Ok(u) = http::check_url(s) {
+            // Printing can percent-encode, so the printed form may outgrow the limit.
+            if u.as_str().len() <= http::MAX_URL {
+                let again = http::check_url(u.as_str()).unwrap();
+                assert_eq!(http::url_key(&again), http::url_key(&u), "{u}");
             }
+        }
+        if let Ok(u) = http::check_feed_url(s) {
+            assert!(http::check_url(s).is_ok(), "{u}");
+            assert!(u.fragment().is_none(), "{u}");
         }
         // A pattern and a path, one per line.
         let (pattern, path) = s.split_once('\n').unwrap_or((s, s));

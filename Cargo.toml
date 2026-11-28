@@ -6,6 +6,7 @@ members = [
     "crates/picket-bundle",
     "crates/picket-lookup",
     "crates/picket-api",
+    "crates/picket-schedule",
     "apps/picket-edge",
     "apps/picket-edge-helper",
     "apps/picket-edge-update",
@@ -49,6 +50,7 @@ picket-rules = { path = "crates/picket-rules" }
 picket-bundle = { path = "crates/picket-bundle" }
 picket-lookup = { path = "crates/picket-lookup" }
 picket-api = { path = "crates/picket-api" }
+picket-schedule = { path = "crates/picket-schedule" }
 
 # runtime / net
 tokio = { version = "1.54", features = ["full"] }
@@ -183,6 +185,12 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 1
+
+# The feed-scheduling backtests replay 60 days of recorded history: about two minutes each at
+# opt-level 0, seconds at 3 (debug assertions and overflow checks stay on). The ci profile
+# inherits this.
+[profile.dev.package.picket-schedule]
+opt-level = 3
 
 # Optimise the data-processing libraries without paying LLVM's optimisation cost
 # for the large application/test binaries. Keep dev assertions and overflow checks.

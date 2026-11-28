@@ -3,16 +3,7 @@
 //! warnings that follow their block bundles, IP warnings, the warn matcher's rule types, rechecks
 //! across a restart, warnings per block bundle, and blobs collected only when unreferenced.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "integration test code: a failed unwrap or expect is the test's report, and it may cast freely"
-)]
-
-mod common;
+use crate::common;
 
 use common::bundles::*;
 use common::{Core, start_core};

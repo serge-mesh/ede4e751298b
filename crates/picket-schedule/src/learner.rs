@@ -138,7 +138,7 @@ impl Candidate {
     fn phase_bin(&self, t: f64) -> usize {
         match self.period {
             Some(p) => {
-                crate::util::f64_to_usize(t.rem_euclid(p as f64) / self.phase_w as f64).min(self.n_phase - 1)
+                crate::f64_to_usize(t.rem_euclid(p as f64) / self.phase_w as f64).min(self.n_phase - 1)
             }
             None => 0,
         }
@@ -331,7 +331,7 @@ impl Frozen {
     fn phase_bin(&self, t: f64) -> usize {
         match self.period {
             Some(p) if self.n_phase > 0 && self.phase_w > 0 => {
-                crate::util::f64_to_usize(t.rem_euclid(p as f64) / self.phase_w as f64).min(self.n_phase - 1)
+                crate::f64_to_usize(t.rem_euclid(p as f64) / self.phase_w as f64).min(self.n_phase - 1)
             }
             _ => 0,
         }
@@ -815,7 +815,7 @@ pub fn simulate(
         if delays.is_empty() {
             None
         } else {
-            let idx = crate::util::f64_to_usize(((delays.len() as f64 - 1.0) * q).round());
+            let idx = crate::f64_to_usize(((delays.len() as f64 - 1.0) * q).round());
             delays.get(idx).copied()
         }
     };
@@ -938,9 +938,7 @@ pub fn simulate_provider(
             None
         } else {
             delays
-                .get(crate::util::f64_to_usize(
-                    ((delays.len() as f64 - 1.0) * q).round(),
-                ))
+                .get(crate::f64_to_usize(((delays.len() as f64 - 1.0) * q).round()))
                 .copied()
         }
     };

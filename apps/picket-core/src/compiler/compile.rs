@@ -9,7 +9,7 @@
 //!   bundle's, read in full each build that needs them; the pattern admission is the reference
 //!   matcher's ([`pattern_admission`]), so the edge drops exactly what core's reference drops.
 //! - **Bundle-wide inputs** ([`BundleWide`]): urlfilter's matched-rule order of `$dnsrewrite`
-//!   rules ([`rewrite_orders`]) and the `$denyallow` entity table within the per-bundle cap
+//!   rules ([`rank_orders`]) and the `$denyallow` entity table within the per-bundle cap
 //!   ([`expand_entities`]), both functions of the current rules alone, so an incremental build
 //!   and a build from scratch agree.
 //!

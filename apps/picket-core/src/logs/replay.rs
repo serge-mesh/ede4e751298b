@@ -477,7 +477,7 @@ const COST_BYTES: usize = 32 * 1024 * 1024;
 
 /// The compiled pattern regexes of everything replay matches, under one budget (core.md §6:
 /// "compiled lazily, LRU-cached …, 32 MB cap"): one entry per regex source, shared by every feed
-/// run's patterns, every candidate set's matcher ([`picket_rules::RegexProvider`]: a candidate
+/// run's patterns, every candidate set's matcher ([`picket_rules::matcher::RegexProvider`]: a candidate
 /// matcher compiles nothing of its own) and retro-match ([`ReplayCaches::pattern_hits`]).
 ///
 /// The budget is split as the reference matcher splits its own: three quarters hold the regexes,

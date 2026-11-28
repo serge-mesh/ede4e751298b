@@ -7,16 +7,7 @@
 //! go in through `POST /v1/logs`. The background analysis is paused, so each test runs the
 //! analysis itself ([`picket_core::logs::analysis::drain`]) and sees every result.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "integration test code: a failed unwrap or expect is the test's report, and it may cast freely"
-)]
-
-mod common;
+use crate::common;
 
 use base64::Engine;
 use common::bundles::{build, get, manual_feed, put_entity, save, ui, wait};

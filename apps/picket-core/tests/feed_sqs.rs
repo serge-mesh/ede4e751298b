@@ -5,16 +5,7 @@
 //! failed entries retried, a nudge during a check, the backstop, receives failing raising
 //! `feed_provider_trigger_down`, and a queue a second provider can't use.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "integration test code: a failed unwrap or expect is the test's report, and it may cast freely"
-)]
-
-mod common;
+use crate::common;
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex};

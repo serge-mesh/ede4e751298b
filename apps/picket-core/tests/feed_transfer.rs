@@ -3,16 +3,7 @@
 //! open entries and first-seen dates; merging and replacing a manual feed; merging into an
 //! `aggregate` provider feed (an import run); the refusals.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "integration test code: a failed unwrap or expect is the test's report, and it may cast freely"
-)]
-
-mod common;
+use crate::common;
 
 use common::feeds::{create_feed, ui, wait_until};
 use common::{Core, client};
