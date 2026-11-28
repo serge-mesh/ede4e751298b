@@ -605,6 +605,9 @@ impl Shipper {
             }
         }
         let env = Arc::clone(&self.env);
+        // A failed cleanup stops the drain only after every head's accounting below: an
+        // eviction `end_flight` reported is counted once, here, or never.
+        let mut failed = false;
         for (hi, ((h, v), end)) in heads.iter().zip(&views).zip(&plan.ends).enumerate() {
             if evicted.contains(&h.key) {
                 // Evicted while its records were in flight: what this round shipped arrived;
@@ -633,10 +636,18 @@ impl Shipper {
                 );
             }
             if !blocking(|| self.spool.finish(h.key, env.as_ref(), &limits)) {
-                self.note_failure();
-                return DrainResult::Stop;
+                // Every record of it was handled: it takes no more appends, and an eviction
+                // or the age limit before the retry deletes it drops nothing.
+                self.spool.seal(h.key);
+                self.spool.set_unshipped(h.key, 0);
+                failed = true;
+                continue;
             }
             self.progress.remove(&h.key);
+        }
+        if failed {
+            self.note_failure();
+            return DrainResult::Stop;
         }
         DrainResult::Done
     }
@@ -1122,6 +1133,9 @@ mod tests {
         pub poison: Mutex<Option<String>>,
         /// How long core takes to answer each POST.
         pub delay: Mutex<Option<Duration>>,
+        /// Runs while each POST waits for its answer.
+        #[allow(clippy::type_complexity, reason = "a test hook")]
+        pub during: Mutex<Option<Box<dyn FnMut() + Send>>>,
     }
 
     pub(crate) fn decode(body: &Bytes) -> Vec<String> {
@@ -1136,6 +1150,9 @@ mod tests {
     impl LogSink for ScriptSink {
         async fn post(&self, body: Bytes) -> PostOutcome {
             let lines = decode(&body);
+            if let Some(f) = self.during.lock().unwrap().as_mut() {
+                f();
+            }
             let delay = *self.delay.lock().unwrap();
             if let Some(d) = delay {
                 tokio::time::sleep(d).await;
@@ -2343,5 +2360,47 @@ mod tests {
         assert!(s.spool.is_empty());
         assert_eq!(dropped.snapshot()["too_old"], 2, "each record counted once");
         assert!(acked_ns(&sink).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_cleanup_leaves_nothing_to_count_of_a_delivered_segment() {
+        let d = tempfile::tempdir().unwrap();
+        let sink = Arc::new(ScriptSink::default());
+        *sink.default.lock().unwrap() = Some(PostOutcome::Unreachable("down".into()));
+        let (mut s, p, _env, dropped, control) = shipper(d.path(), sink.clone());
+        drop(p.emit_at_with_receipt(
+            event_record("e", fields(&[("n", 0.into())])),
+            Timestamp::now() - jiff::SignedDuration::from_hours(3),
+        ));
+        s.collect();
+        s.step().await;
+        assert_eq!(s.mode, Mode::Spool);
+        let (key, path) = s.spool.oldest().unwrap();
+        let saved = std::fs::read(&path).unwrap();
+        // Core takes the record, but the segment can't be deleted: a directory took its place.
+        *sink.default.lock().unwrap() = Some(PostOutcome::Acked);
+        let at = path.clone();
+        *sink.during.lock().unwrap() = Some(Box::new(move || {
+            if at.is_file() {
+                std::fs::remove_file(&at).unwrap();
+                std::fs::create_dir(&at).unwrap();
+                std::fs::write(at.join("x"), b"x").unwrap();
+            }
+        }));
+        s.retry_at = None;
+        s.step().await;
+        assert_eq!(acked_ns(&sink).len(), 1);
+        assert!(s.spool.keys().contains(&key), "the cleanup failed");
+        *sink.during.lock().unwrap() = None;
+        std::fs::remove_dir_all(&path).unwrap();
+        std::fs::write(&path, saved).unwrap();
+        // The segment ages out before the retry deletes it: its record arrived, so no drop.
+        retention(&control, 2, 1000);
+        s.retry_at = None;
+        s.step().await;
+        assert!(s.spool.is_empty());
+        assert_eq!(dropped.snapshot()["too_old"], 0, "{:?}", dropped.snapshot());
+        assert_eq!(dropped.snapshot()["evicted"], 0, "{:?}", dropped.snapshot());
+        assert_eq!(acked_ns(&sink).len(), 1);
     }
 }
