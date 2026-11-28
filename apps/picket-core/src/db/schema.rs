@@ -10,7 +10,7 @@
 //! order. `metrics.db` keeps `ts` as INTEGER Unix milliseconds for cheap binning.
 
 /// `core.db` migration steps; version = index + 1.
-pub const CORE: &[&str] = &[CORE_V1, CORE_V2, CORE_V3, CORE_V4];
+pub const CORE: &[&str] = &[CORE_V1, CORE_V2, CORE_V3, CORE_V4, CORE_V5];
 
 /// `metrics.db` migration steps; version = index + 1.
 pub const METRICS: &[&str] = &[METRICS_V1, METRICS_V2];
@@ -854,9 +854,10 @@ CREATE INDEX policy_drops_feed ON policy_drops(feed_id, status);
 CREATE INDEX feed_changes_check ON feed_changes(check_id);
 CREATE INDEX feed_checks_provider_check ON feed_checks(provider_check_id);
 
--- After a `RateLimited` reply no check through the module starts until `until` (providers.md §2).
-CREATE TABLE module_pauses (
-    module TEXT PRIMARY KEY,
+-- After a `RateLimited` reply no check in the provider's pause scope (`DownloadModule::pause_scope`:
+-- `github`, or `http:<origin>`) starts until `until` (providers.md §2), across restarts.
+CREATE TABLE rate_limit_pauses (
+    scope TEXT PRIMARY KEY,
     until TEXT NOT NULL
 ) STRICT;
 
@@ -1410,6 +1411,15 @@ CREATE TABLE cold_share_state (
 ) STRICT, WITHOUT ROWID;
 "#;
 
+const CORE_V5: &str = r#"
+-- k_choice_json: the last weekly `k` choice of a `dynamic` provider (feed-scheduling.md §5) with
+-- the planning budget's part in it: the preferred and selected aggressiveness, whether the budget
+-- slowed the provider or no `k` fit it, the replay window, the predicted checks a day and, after a
+-- compromise, each feed's estimated change in its share caught within 2 minutes
+-- (`feeds::schedule::KChoiceRecord`).
+ALTER TABLE feed_provider_state ADD COLUMN k_choice_json TEXT;
+"#;
+
 /// Heartbeat samples by boot (chart baselines, core.md §10).
 const METRICS_V2: &str = r#"
 CREATE INDEX samples_edge_boot ON samples(edge_id, boot, ts);
@@ -1526,7 +1536,7 @@ pub const CORE_TABLES: &[&str] = &[
     "log_clamped",
     "feed_run_ids",
     "feed_runs_open",
-    "module_pauses",
+    "rate_limit_pauses",
     "feed_purges",
     "bundle_builds",
     "bundle_build_keys",

@@ -31,7 +31,9 @@
 //! - `version` = the blob SHA; `updated_at` = the newest commit time touching the path; file
 //!   `state` = `{head, blob}`; provider `state` = `{listed_head}`.
 //! - **Rate limits:** HTTP 429, or 403 with a rate-limit header, is `RateLimited` until
-//!   `Retry-After` or `x-ratelimit-reset` (at most 1 h), which pauses every `github` check.
+//!   `Retry-After` or `x-ratelimit-reset`, kept whole however long past an hour (held to
+//!   [`super::dates::MAX_COOLDOWN`] against a bad header), which pauses every `github` check
+//!   (the module is the pause scope: one API quota).
 //! - `history()` pages through the commits API for one path (the warm start).
 //! - **Adding a feed by URL** ([`parse_url`]): `raw.githubusercontent.com/<o>/<r>/<branch>/<path>`,
 //!   `cdn.jsdelivr.net/gh/<o>/<r>@latest/<path>` (the default branch; jsDelivr caches for up to
@@ -84,8 +86,6 @@ pub const MAX_PATH: usize = 1024;
 /// How long a walk that couldn't finish at a head isn't tried again at that head (policy
 /// choice); a head move tries at once.
 pub const WALK_RETRY: jiff::SignedDuration = jiff::SignedDuration::from_hours(6);
-/// The longest rate-limit pause (providers.md §2).
-const MAX_PAUSE: jiff::SignedDuration = jiff::SignedDuration::from_hours(1);
 /// Warm start: how far back, and how many changes (feed-scheduling.md §6).
 pub use picket_schedule::{HISTORY_CHANGES, HISTORY_DAYS};
 const HISTORY_PAGES: u32 = 10;
@@ -341,7 +341,8 @@ pub fn rate_limit_until(resp: &Resp, now: Timestamp) -> Option<Timestamp> {
                 .and_then(|s| Timestamp::from_second(s).ok())
         })
         .unwrap_or(now + jiff::SignedDuration::from_secs(60));
-    Some(until.clamp(now + jiff::SignedDuration::from_secs(1), now + MAX_PAUSE))
+    let max = picket_api::time::saturating_add(now, super::dates::MAX_COOLDOWN);
+    Some(until.clamp(now + jiff::SignedDuration::from_secs(1), max))
 }
 
 #[derive(Deserialize)]

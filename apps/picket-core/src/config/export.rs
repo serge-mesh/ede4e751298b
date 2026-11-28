@@ -377,7 +377,7 @@ pub const TABLES: &[(&str, Fate)] = &[
     // Run ids and source generations: AUTOINCREMENT keeps them increasing across the restore.
     ("feed_run_ids", Fate::Deleted),
     ("feed_runs_open", Fate::Deleted),
-    ("module_pauses", Fate::Kept),
+    ("rate_limit_pauses", Fate::Kept),
     ("feed_imports", Fate::Deleted),
     ("feed_purges", Fate::Deleted),
     ("retro_runs", Fate::Deleted),

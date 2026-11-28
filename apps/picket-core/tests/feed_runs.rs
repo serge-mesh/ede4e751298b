@@ -1208,6 +1208,109 @@ async fn a_rate_limited_history_pauses_the_provider() {
     );
 }
 
+/// Issue #65: an `http` list server's `429` with `Retry-After` pauses every provider on that
+/// origin, kept whole past an hour and stored for a restart; neither "Check now" nor a scheduled
+/// check sends a request before it ends; a list on another host carries on; and the status shows
+/// the pause.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_http_cooldown_holds_its_origin_and_spares_other_hosts() {
+    const OTHER: &str = "other.example";
+    let limited = Arc::new(Mutex::new(false));
+    let l2 = limited.clone();
+    let srv = TestServer::start(&[HOST, OTHER], move |s: &Seen| {
+        if s.host.starts_with(HOST) && *l2.lock().unwrap() {
+            return Reply::status(429).header("retry-after", "7200");
+        }
+        Reply::ok(format!("||{}.example^\n", s.path.trim_start_matches('/').replace('.', "-")))
+    })
+    .await;
+    let c = core_with(Some(&srv), None).await;
+    for (id, host) in [("lim", HOST), ("sib", HOST), ("oth", OTHER)] {
+        create_feed(
+            &c,
+            json!({"id": id, "name": id, "provider": "http", "provider_config": {"url": format!("https://{host}/{id}.txt")},
+                   "format": "adblock"}),
+        )
+        .await;
+        first_run(&c, id).await;
+    }
+    *limited.lock().unwrap() = true;
+    check_now(&c, "lim").await;
+    let t0 = Timestamp::now();
+    let def = c.state.feeds.provider_def("lim").unwrap();
+    let until = c.state.feeds.provider_paused_until(&def).expect("the origin is paused");
+    assert!(
+        until > t0 + jiff::SignedDuration::from_mins(115) && until <= t0 + jiff::SignedDuration::from_mins(121),
+        "the 2 h Retry-After is kept whole: {until}"
+    );
+    // Stored for a restart, under the origin.
+    let stored: String = c
+        .state
+        .db
+        .read(|db| {
+            Ok::<_, anyhow::Error>(db.query_row(
+                "SELECT until FROM rate_limit_pauses WHERE scope = 'http:https://lists.example'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(stored, picket_api::time::format_micros(&until));
+    let err: String = c
+        .state
+        .db
+        .read(|db| {
+            Ok::<_, anyhow::Error>(db.query_row(
+                "SELECT error FROM feed_checks WHERE feed_id = 'lim' ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert!(err.contains("rate limited until"), "{err}");
+
+    // "Check now" on the paused provider and on its sibling on the same origin: scheduled at the
+    // pause's end, no request.
+    srv.clear();
+    for id in ["lim", "sib"] {
+        let v = common::feeds::check_provider(&c, id).await;
+        assert_eq!(v["result"], "scheduled", "{id}: {v}");
+        assert_eq!(v["at"], json!(picket_api::time::format_micros(&until)), "{id}: {v}");
+        assert_eq!(c.state.feeds.next_due(id), Some(until), "{id}");
+    }
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert!(
+        !srv.seen().iter().any(|s| s.host.starts_with(HOST)),
+        "no request to the cooling-down origin: {:?}",
+        srv.seen()
+    );
+
+    // A list on another host carries on.
+    check_now(&c, "oth").await;
+    assert!(srv.seen().iter().any(|s| s.host.starts_with(OTHER)));
+    assert_eq!(
+        q_i64(
+            &c,
+            "SELECT ok FROM feed_checks WHERE feed_id = ?1 ORDER BY id DESC LIMIT 1",
+            "oth"
+        )
+        .await,
+        1
+    );
+    let other = c.state.feeds.provider_def("oth").unwrap();
+    assert_eq!(c.state.feeds.provider_paused_until(&other), None);
+
+    // The status shows the pause on both providers of the origin, not on the other.
+    for (id, paused) in [("lim", true), ("sib", true), ("oth", false)] {
+        let v = get_json(&c, &format!("/feed-providers/{id}/status")).await;
+        assert_eq!(v["paused_until"].is_string(), paused, "{id}: {v}");
+        let v = get_json(&c, &format!("/feeds/{id}/status")).await;
+        assert_eq!(v["paused_until"].is_string(), paused, "{id}: {v}");
+    }
+}
+
 /// F10: a client that stops sending its upload holds neither the feed's save lock nor a
 /// blocking thread: another save to the same feed goes through meanwhile.
 #[tokio::test(flavor = "multi_thread")]

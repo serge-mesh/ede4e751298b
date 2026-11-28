@@ -24,8 +24,12 @@
 //!    to the newest run's: unchanged, the file's state still kept) and the run goes to the heavy
 //!    lane; an error (`Missing` included) → recorded, the feed's error backoff, and `feed_down`
 //!    once every check of the feed has failed for its threshold while the provider's other
-//!    checks work. After `RateLimited`, no check through the module starts until `until` (at
-//!    most 1 h).
+//!    checks work. After `RateLimited` (a rate limit, or a server cooldown such as an `http`
+//!    `Retry-After`, also one a module noted on a request whose check it kept:
+//!    [`Ctx::note_cooldown`]), no check of a provider in the same pause scope
+//!    ([`super::pause_scope`]) starts until `until`, scheduled or "Check now", however long past
+//!    an hour (held to [`crate::modules::download::dates::MAX_COOLDOWN`]); the pause is stored,
+//!    so a restart keeps it. A check under way asks before each request ([`Ctx::cooldown`]).
 //! 5. **Void:** a check whose provider's `module` or `config` changed, or whose feed was deleted
 //!    (and maybe created again), while it ran stores nothing it observed of that source (feeds.md
 //!    §3; storage.md §4): each transaction checks the source generations it read
@@ -318,7 +322,8 @@ pub(crate) fn adopt(
 
 /// What the light-lane job of a check returns.
 enum LaneOut {
-    /// The module is paused by a rate limit (set meanwhile): no request was made.
+    /// The provider's pause scope is paused by a rate limit (set meanwhile): no request was
+    /// made.
     Paused(Timestamp),
     Done {
         /// The warm starts read: feed id → its file's change times (or why not).
@@ -326,6 +331,8 @@ enum LaneOut {
         outcome: Box<Result<ProviderCheck, CheckError>>,
         /// What the module reported through `Ctx::listing_incomplete`.
         incomplete: Option<String>,
+        /// A server cooldown the module noted through `Ctx::note_cooldown`.
+        cooldown: Option<Timestamp>,
     },
 }
 
@@ -527,6 +534,7 @@ async fn run_inner(state: &SharedState, provider: &str, cause: Cause, release: &
                     duration_ms: picket_api::duration::as_millis_u64(started.elapsed()),
                     outcome,
                     incomplete: None,
+                    cooldown: None,
                 },
             )
             .await;
@@ -550,11 +558,11 @@ async fn run_inner(state: &SharedState, provider: &str, cause: Cause, release: &
     let state_in = pstate.state.clone();
     let m = module.clone();
     let key = format!("feed:{}", pdef.module);
-    let (s2, module_id) = (state.clone(), pdef.module.clone());
+    let (s2, scope) = (state.clone(), super::pause_scope(&pdef));
     let deadline = check_deadline(checks.len());
     let job = move |slot: crate::scheduler::LightSlot| async move {
         // A rate limit that started while this check waited: no request (providers.md §2).
-        if let Some(u) = s2.feeds.paused_until(&module_id) {
+        if let Some(u) = s2.feeds.paused_until(&scope) {
             return LaneOut::Paused(u);
         }
         let ctx = ctx.with_slot(slot);
@@ -582,11 +590,13 @@ async fn run_inner(state: &SharedState, provider: &str, cause: Cause, release: &
                 history,
                 outcome: Box::new(Err(CheckError::RateLimited { until })),
                 incomplete: None,
+                cooldown: None,
             };
         }
         let r =
             tokio::time::timeout(deadline, m.check(&ctx, &cfg, state_in.as_ref(), &checks, &select)).await;
         let incomplete = ctx.take_listing_incomplete();
+        let cooldown = ctx.take_cooldown();
         drop(ctx);
         LaneOut::Done {
             history,
@@ -595,6 +605,7 @@ async fn run_inner(state: &SharedState, provider: &str, cause: Cause, release: &
                 Err(_) => Err(CheckError::Failed(anyhow!("the check timed out"))),
             }),
             incomplete,
+            cooldown,
         }
     };
     let keys = [key.as_str(), crate::modules::download::FEED_SHARE_KEY];
@@ -630,7 +641,7 @@ async fn run_inner(state: &SharedState, provider: &str, cause: Cause, release: &
         CheckError::Failed(err) => CheckError::Failed(anyhow!(redactor.redact(&format!("{err:#}")))),
         other => other,
     };
-    let (history, outcome, incomplete) = match h.await {
+    let (history, outcome, incomplete, cooldown) = match h.await {
         Ok(LaneOut::Paused(u)) => {
             state.feeds.set_due(provider, u);
             return Ok(());
@@ -639,6 +650,7 @@ async fn run_inner(state: &SharedState, provider: &str, cause: Cause, release: &
             history,
             outcome,
             incomplete,
+            cooldown,
         }) => {
             let outcome = (*outcome).map_err(redact).map(|mut pc| {
                 pc.files = std::mem::take(&mut pc.files)
@@ -647,11 +659,17 @@ async fn run_inner(state: &SharedState, provider: &str, cause: Cause, release: &
                     .collect();
                 pc
             });
-            (history, outcome, incomplete.map(|i| redactor.redact(&i)))
+            (
+                history,
+                outcome,
+                incomplete.map(|i| redactor.redact(&i)),
+                cooldown,
+            )
         }
         Err(e) => (
             vec![],
             Err(CheckError::Failed(anyhow!("the check panicked: {e}"))),
+            None,
             None,
         ),
     };
@@ -686,6 +704,7 @@ async fn run_inner(state: &SharedState, provider: &str, cause: Cause, release: &
             duration_ms: picket_api::duration::as_millis_u64(started.elapsed()),
             outcome,
             incomplete,
+            cooldown,
         },
     )
     .await
@@ -703,6 +722,8 @@ struct Finish {
     duration_ms: u64,
     outcome: Result<ProviderCheck, CheckError>,
     incomplete: Option<String>,
+    /// A server cooldown the module noted ([`Ctx::note_cooldown`]).
+    cooldown: Option<Timestamp>,
 }
 
 /// Stores a check's outcome: the provider's record, state, listing and alerts, then each feed's.
@@ -723,11 +744,13 @@ async fn finish(
         duration_ms,
         outcome,
         incomplete,
+        cooldown,
     } = fin;
     let gens = Gens {
         provider_gen,
         list_gen,
         left_out,
+        cooldown,
     };
     // Per-file results, in the order of `feeds`.
     let (pstate_new, listing, results): (
@@ -821,6 +844,9 @@ struct Gens {
     provider_gen: Option<i64>,
     list_gen: Option<i64>,
     left_out: Vec<String>,
+    /// A server cooldown the module met on a request whose check it kept
+    /// ([`Ctx::note_cooldown`]): it pauses the scope like a `RateLimited` result.
+    cooldown: Option<Timestamp>,
 }
 
 /// A check that failed as a whole.
@@ -855,6 +881,7 @@ async fn finish_feeds(
         provider_gen,
         list_gen,
         left_out,
+        cooldown,
     } = gens;
     let keep_nudges = !left_out.is_empty();
     let all_failed = whole.is_some() || (!results.is_empty() && results.iter().all(Result::is_err));
@@ -866,19 +893,23 @@ async fn finish_feeds(
             .map(|e| crate::util::sanitize_for_message(&format!("every file failed: {e}"), MAX_ERROR)),
         _ => None,
     };
-    // A rate limit anywhere pauses the module (providers.md §2).
+    // A rate limit or server cooldown anywhere pauses the provider's scope (providers.md §2):
+    // the latest deadline, kept whole however long past an hour, held to `MAX_COOLDOWN`.
+    let scope = super::pause_scope(pdef);
+    let max = picket_api::time::saturating_add(now, crate::modules::download::dates::MAX_COOLDOWN);
     let pause = whole
         .as_ref()
         .and_then(|w| w.rate_limited)
-        .or_else(|| {
-            results.iter().find_map(|r| match r {
-                Err(CheckError::RateLimited { until }) => Some(*until),
-                _ => None,
-            })
-        })
-        .map(|u| u.min(now + jiff::SignedDuration::from_hours(1)).max(now));
+        .into_iter()
+        .chain(results.iter().filter_map(|r| match r {
+            Err(CheckError::RateLimited { until }) => Some(*until),
+            _ => None,
+        }))
+        .chain(cooldown)
+        .max()
+        .map(|u| u.min(max).max(now));
     if let Some(u) = pause {
-        state.feeds.set_pause(&pdef.module, u);
+        state.feeds.set_pause(&scope, u);
     }
     // 1. The provider's record, state, listing and alerts.
     let threshold = state.settings().alerts.threshold("feed_provider_down");
@@ -888,7 +919,7 @@ async fn finish_feeds(
     let alerts = state.alerts.clone();
     let p = provider.clone();
     let pname = pdef.name.clone();
-    let module_name = pdef.module.clone();
+    let scope2 = scope.clone();
     let incomplete2 = incomplete.clone();
     let listed = listing.is_some();
     let stored = state
@@ -896,7 +927,7 @@ async fn finish_feeds(
         .write(move |c| {
             let tx = c.transaction()?;
             if let Some(u) = pause {
-                store::set_pause(&tx, &module_name, u)?;
+                store::set_pause(&tx, &scope2, u)?;
             }
             if !store::provider_source_current(&tx, &p, provider_gen)? {
                 tx.commit()?;
@@ -1164,8 +1195,25 @@ async fn prepare(
         state.config.secret_values(names).await?
     };
     let r = picket_lookup::secrets::resolve(&pdef.config, &values).map_err(|e| anyhow!("{e}"))?;
+    // Every request of the check asks for a pause of the provider's scope that started
+    // meanwhile (a sibling's rate limit), not only the check's start; a cooldown the module
+    // meets pauses the scope at once, in memory (the check's end stores it).
+    let scope = super::pause_scope(pdef);
+    let (s2, scope2) = (state.clone(), scope.clone());
+    let (s3, scope3) = (state.clone(), scope);
+    let gate = crate::modules::download::ctx::CooldownGate {
+        held: std::sync::Arc::new(move || s2.feeds.paused_until(&scope2)),
+        pause: std::sync::Arc::new(move |until| {
+            let max = picket_api::time::saturating_add(
+                Timestamp::now(),
+                crate::modules::download::dates::MAX_COOLDOWN,
+            );
+            s3.feeds.set_pause(&scope3, until.min(max));
+        }),
+    };
     let ctx = Ctx::new(http, &pdef.id, &staging, max, state.shutdown.child_token())
-        .with_now(Timestamp::now(), pstate.last_ok_at);
+        .with_now(Timestamp::now(), pstate.last_ok_at)
+        .with_cooldown_gate(gate);
     Ok((ctx, r.config, r.redactor))
 }
 
@@ -1567,7 +1615,8 @@ async fn on_failure(fc: &FeedCtx<'_>, e: CheckError, suppress_down: bool) -> Res
     let missing = matches!(e, CheckError::Missing);
     let error = match &e {
         CheckError::RateLimited { until } => {
-            let until = (*until).min(now + jiff::SignedDuration::from_hours(1)).max(now);
+            let max = picket_api::time::saturating_add(now, crate::modules::download::dates::MAX_COOLDOWN);
+            let until = (*until).min(max).max(now);
             format!("rate limited until {}", crate::util::ts(&until))
         }
         CheckError::Missing => "the provider no longer has this file".to_string(),
@@ -1796,7 +1845,10 @@ async fn warm_start(
 /// feeds' choices that keeps the provider's own replay within the budget
 /// ([`schedule::learner::provider_k`]). A feed without a successful check, or with less than a
 /// day of them, sits the choice out; with no feed left, the provider keeps its `k` and tries
-/// again at the next daily run.
+/// again at the next daily run. The choice is recorded with what the planning budget did to it
+/// ([`schedule::KChoiceRecord`], the provider status's `k_choice`): a slowdown it forced, or no
+/// `k` fitting, is logged at warn with each feed's estimated cost
+/// ([`schedule::backtest::weekly_choice`]).
 pub async fn choose_ks(state: &SharedState) {
     let providers: Vec<FeedProviderDef> = state
         .feeds
@@ -1830,64 +1882,108 @@ pub async fn choose_ks(state: &SharedState) {
         };
         let end = schedule::to_secs(now);
         let own: Vec<_> = inputs.iter().map(|f| (f.first_check, f.warm_started)).collect();
-        let replays: Vec<(FeedReplay, f64)> = inputs
+        let mut bytes = Vec::new();
+        let voting: Vec<schedule::backtest::VotingFeed> = inputs
             .into_iter()
             .zip(schedule::learner::k_replay_starts(end, &own))
-            .filter_map(|(f, start)| Some((f, start?)))
+            .filter_map(|(f, start)| {
+                let start = start?;
+                bytes.extend(f.mean_unchanged_bytes);
+                Some(schedule::backtest::VotingFeed {
+                    name: f.feed,
+                    cost_factor: schedule::cost_factor(f.mean_unchanged_bytes),
+                    obs: f.obs,
+                    start,
+                })
+            })
             .collect();
-        if replays.is_empty() {
+        if voting.is_empty() {
             continue;
         }
+        // The voting feeds together, for the provider's budget: their mean no-change cost.
+        let mean = (!bytes.is_empty()).then(|| bytes.iter().sum::<f64>() / bytes.len() as f64);
+        let pooled_cost = schedule::cost_factor(mean);
         let min = p.trigger.min_interval().as_secs() as f64;
-        let replayed = tokio::task::spawn_blocking(move || {
-            let ks = schedule::learner::K_CHOICES;
-            let per_feed: Vec<_> = replays
-                .iter()
-                .map(|(f, start)| {
-                    let cost = schedule::cost_factor(f.mean_unchanged_bytes);
-                    schedule::backtest::replay(std::slice::from_ref(&f.obs), *start, end, &ks, cost, min)
-                })
-                .collect();
-            // The voting feeds together, for the provider's budget, from the latest of their
-            // starts.
-            let pooled = if replays.len() > 1 {
-                let start = replays.iter().map(|r| r.1).fold(f64::MIN, f64::max);
-                let bytes: Vec<f64> = replays.iter().filter_map(|r| r.0.mean_unchanged_bytes).collect();
-                let mean = (!bytes.is_empty()).then(|| bytes.iter().sum::<f64>() / bytes.len() as f64);
-                let obs: Vec<Vec<Obs>> = replays.into_iter().map(|r| r.0.obs).collect();
-                schedule::backtest::replay(&obs, start, end, &ks, schedule::cost_factor(mean), min)
-            } else {
-                per_feed.first().cloned().unwrap_or_default()
-            };
-            (per_feed, pooled)
+        let names: Vec<String> = voting.iter().map(|v| v.name.clone()).collect();
+        let Ok(chosen) = tokio::task::spawn_blocking(move || {
+            schedule::backtest::weekly_choice(&voting, pooled_cost, end, min)
         })
-        .await;
-        let Ok((per_feed, pooled)) = replayed else {
+        .await
+        else {
             continue;
         };
-        let k = schedule::learner::provider_k(per_feed.iter().map(Vec::as_slice), &pooled);
         for f in &feeds {
             state.feeds.with_learner(&f.id, |l| {
-                if let Some(k) = k {
-                    l.k = k;
+                if let Some(c) = &chosen {
+                    l.k = c.choice.k;
                 }
                 l.k_chosen_at = Some(end);
             });
         }
-        if let Some(k) = k {
-            let pid = p.id.clone();
-            let _ = state
-                .db
-                .write(move |c| {
-                    store::ensure_provider_state(c, &pid)?;
-                    c.execute(
-                        "UPDATE feed_provider_state SET k = ?2 WHERE provider_id = ?1",
-                        rusqlite::params![pid, k],
-                    )?;
-                    Ok::<_, anyhow::Error>(())
+        let Some(chosen) = chosen else { continue };
+        let k = chosen.choice.k;
+        let record = schedule::KChoiceRecord {
+            chosen_at: crate::util::ts(&now),
+            window_start: crate::util::ts(&schedule::from_unix(chosen.window_start)),
+            window_end: crate::util::ts(&now),
+            voting_feeds: names,
+            budget_per_day: schedule::learner::BUDGET_PER_DAY,
+            choice: chosen.choice,
+            feeds: chosen.impacts,
+        };
+        let (pid, rec) = (p.id.clone(), record.clone());
+        let _ = state
+            .db
+            .write(move |c| {
+                store::set_k_choice(c, &pid, k, &rec)?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .await;
+        log_k_choice(&p.id, &record);
+    }
+}
+
+/// Logs a weekly `k` choice: an ordinary one at info; one the planning budget forced (slowed, or
+/// no `k` fit) at warn, with the provider, the preferred and selected `k`, the replay window, the
+/// predicted checks a day and each feed's estimated change in its share caught within 2 minutes.
+fn log_k_choice(provider: &str, r: &schedule::KChoiceRecord) {
+    use schedule::learner::BudgetFit;
+    let c = &r.choice;
+    match c.budget {
+        BudgetFit::Within => tracing::info!(
+            provider = %provider,
+            k = c.k,
+            checks_per_day = ?c.checks_per_day,
+            "chose the provider's schedule aggressiveness"
+        ),
+        BudgetFit::Slowed | BudgetFit::NoneFits => {
+            let impacts: Vec<String> = r
+                .feeds
+                .iter()
+                .map(|f| {
+                    format!(
+                        "{}: {:.1} % alone, {:.1} % grouped ({:+.1} points, {} changes)",
+                        f.feed,
+                        f.standalone_share_2min * 100.0,
+                        f.grouped_share_2min * 100.0,
+                        f.change_points,
+                        f.changes
+                    )
                 })
-                .await;
-            tracing::info!(provider = %p.id, k, "chose the provider's schedule aggressiveness");
+                .collect();
+            tracing::warn!(
+                provider = %provider,
+                k = c.k,
+                preferred_k = c.preferred,
+                budget = ?c.budget,
+                budget_per_day = r.budget_per_day,
+                checks_per_day = ?c.checks_per_day,
+                preferred_checks_per_day = ?c.preferred_checks_per_day,
+                window_start = %r.window_start,
+                window_end = %r.window_end,
+                feeds = %impacts.join("; "),
+                "the planning budget made the provider's schedule less aggressive than its feeds chose"
+            );
         }
     }
 }
@@ -1924,6 +2020,7 @@ pub async fn backtest(
 /// What a replay reads of one enabled feed of a provider (its current epoch, feed-scheduling.md
 /// §4).
 struct FeedReplay {
+    feed: String,
     obs: Vec<Obs>,
     mean_unchanged_bytes: Option<f64>,
     /// Its first successful check in the epoch that wasn't its warm start, and when that warm
@@ -1963,6 +2060,7 @@ async fn replay_inputs(
                 )?;
                 let warm = store::load_state(c, f)?.warm_started_at;
                 out.push(FeedReplay {
+                    feed: f.clone(),
                     obs,
                     mean_unchanged_bytes,
                     first_check: first.as_deref().and_then(crate::util::parse_ts).map(schedule::to_secs),

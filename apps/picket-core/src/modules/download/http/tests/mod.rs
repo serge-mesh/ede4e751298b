@@ -9,6 +9,7 @@ use serde_json::json;
 
 use super::*;
 use crate::modules::download::client::{Http, HttpOptions};
+use crate::modules::download::ctx::CooldownGate;
 use crate::modules::download::testkit::{Reply, ReplyBody, Seen, TestServer};
 
 const HOST: &str = "lists.example";
@@ -510,4 +511,210 @@ async fn one_file_per_provider_and_a_missing_url() {
             "{gone}"
         );
     }
+}
+
+// ---- Server cooldowns (issue #65) ----
+
+#[test]
+fn cooldowns_from_429_and_503() {
+    let now: Timestamp = "2026-01-01T00:00:00Z".parse().unwrap();
+    let at = |s: &str| Some(s.parse::<Timestamp>().unwrap());
+    assert_eq!(
+        cooldown_from(429, Some("120"), now),
+        at("2026-01-01T00:02:00Z")
+    );
+    // Longer than an hour: kept whole.
+    assert_eq!(
+        cooldown_from(503, Some("Thu, 01 Jan 2026 03:00:00 GMT"), now),
+        at("2026-01-01T03:00:00Z")
+    );
+    // Held to a week.
+    assert_eq!(
+        cooldown_from(429, Some("99999999"), now),
+        at("2026-01-08T00:00:00Z")
+    );
+    // No valid Retry-After, a date already past, another status: an ordinary failure.
+    assert_eq!(cooldown_from(429, None, now), None);
+    assert_eq!(cooldown_from(429, Some("soon"), now), None);
+    assert_eq!(cooldown_from(503, Some("-5"), now), None);
+    assert_eq!(
+        cooldown_from(503, Some("Wed, 31 Dec 2025 23:00:00 GMT"), now),
+        None
+    );
+    assert_eq!(cooldown_from(500, Some("120"), now), None);
+    assert_eq!(cooldown_from(200, Some("120"), now), None);
+}
+
+#[test]
+fn pause_scope_is_the_origin() {
+    let m = Module;
+    let scope = |u: &str| m.pause_scope(&json!({ "url": u }));
+    assert_eq!(scope("https://lists.example/a.txt"), "http:https://lists.example");
+    assert_eq!(
+        scope("https://Lists.Example:443/b.txt?x=1"),
+        scope("https://lists.example/a.txt"),
+        "one origin, whatever the path, query, case or default port"
+    );
+    assert_ne!(scope("https://other.example/a.txt"), scope("https://lists.example/a.txt"));
+    assert_ne!(scope("https://lists.example:8443/a.txt"), scope("https://lists.example/a.txt"));
+    assert_eq!(m.pause_scope(&json!({})), "http");
+}
+
+/// A `429` or `503` with `Retry-After` is `RateLimited` until then (past an hour too), noted in
+/// the context; without one it is an ordinary failure.
+#[tokio::test]
+async fn retry_after_is_a_cooldown() {
+    let srv = TestServer::start(&[HOST], |s: &Seen| match s.path.as_str() {
+        "/429" => Reply::status(429).header("retry-after", "7200"),
+        "/503" => Reply::status(503).header("retry-after", "30"),
+        "/bare429" => Reply::status(429),
+        _ => Reply::ok("ok\n"),
+    })
+    .await;
+    let d = tempfile::tempdir().unwrap();
+    for (path, secs) in [("/429", 7200), ("/503", 30)] {
+        let cfg = json!({"url": format!("https://{HOST}{path}")});
+        let c = ctx(srv.http_options(), d.path(), None);
+        let t0 = Timestamp::now();
+        match check1(&Module, &c, &cfg, None).await {
+            Err(CheckError::RateLimited { until }) => {
+                let s = (until - t0).as_secs();
+                assert!((secs - 5..=secs + 5).contains(&s), "{path}: {s}");
+                assert_eq!(c.take_cooldown(), Some(until), "{path}: noted");
+            }
+            o => panic!("{path}: {o:?}"),
+        }
+    }
+    let cfg = json!({"url": format!("https://{HOST}/bare429")});
+    let c = ctx(srv.http_options(), d.path(), None);
+    assert!(matches!(
+        check1(&Module, &c, &cfg, None).await,
+        Err(CheckError::Failed(_))
+    ));
+    assert_eq!(c.take_cooldown(), None, "no cooldown without Retry-After");
+}
+
+/// While core holds the provider's scope paused (a sibling's cooldown that started during this
+/// check), no request goes out.
+#[tokio::test]
+async fn no_request_while_the_scope_cools_down() {
+    let srv = TestServer::start(&[HOST], |_| Reply::ok("ok\n")).await;
+    let d = tempfile::tempdir().unwrap();
+    let cfg = json!({"url": format!("https://{HOST}/list.txt")});
+    let gate = |held: Option<Timestamp>, paused: Arc<Mutex<Vec<Timestamp>>>| CooldownGate {
+        held: Arc::new(move || held),
+        pause: Arc::new(move |u| paused.lock().unwrap().push(u)),
+    };
+    let until = Timestamp::now() + jiff::SignedDuration::from_hours(3);
+    let paused = Arc::new(Mutex::new(vec![]));
+    let c = ctx(srv.http_options(), d.path(), None).with_cooldown_gate(gate(Some(until), paused.clone()));
+    match check1(&Module, &c, &cfg, None).await {
+        Err(CheckError::RateLimited { until: u }) => assert_eq!(u, until),
+        o => panic!("{o:?}"),
+    }
+    assert!(srv.seen().is_empty(), "{:?}", srv.seen());
+    // A pause already over holds nothing.
+    let past = Timestamp::now() - jiff::SignedDuration::from_secs(1);
+    let c = ctx(srv.http_options(), d.path(), None).with_cooldown_gate(gate(Some(past), paused.clone()));
+    assert!(check1(&Module, &c, &cfg, None).await.is_ok());
+    assert!(paused.lock().unwrap().is_empty(), "nothing noted");
+}
+
+/// A cooldown the server asks for pauses core's scope at once, before the check ends, so a
+/// sibling's check already under way sends nothing more.
+#[tokio::test]
+async fn a_cooldown_pauses_the_scope_at_once() {
+    let srv = TestServer::start(&[HOST], |_| Reply::status(503).header("retry-after", "4000")).await;
+    let d = tempfile::tempdir().unwrap();
+    let cfg = json!({"url": format!("https://{HOST}/list.txt")});
+    let paused = Arc::new(Mutex::new(Vec::<Timestamp>::new()));
+    let p2 = paused.clone();
+    let c = ctx(srv.http_options(), d.path(), None).with_cooldown_gate(CooldownGate {
+        held: Arc::new(|| None),
+        pause: Arc::new(move |u| p2.lock().unwrap().push(u)),
+    });
+    let Err(CheckError::RateLimited { until }) = check1(&Module, &c, &cfg, None).await else {
+        panic!("rate limited")
+    };
+    assert_eq!(*paused.lock().unwrap(), vec![until]);
+}
+
+/// A probe answered `429` after its download keeps the download, sends no further probe, leaves
+/// `method` unset and notes the cooldown; the next check probes again and finds the same body
+/// unchanged.
+#[tokio::test]
+async fn a_probe_cut_short_by_a_cooldown_probes_again() {
+    let limited = Arc::new(Mutex::new(true));
+    let l2 = limited.clone();
+    let srv = TestServer::start(&[HOST], move |s: &Seen| {
+        if s.header("if-none-match").is_some() {
+            if *l2.lock().unwrap() {
+                return Reply::status(429).header("retry-after", "600");
+            }
+            return Reply::status(304);
+        }
+        Reply::ok("||a.example^\n").header("etag", "\"v1\"")
+    })
+    .await;
+    let d = tempfile::tempdir().unwrap();
+    let cfg = json!({"url": format!("https://{HOST}/list.txt")});
+    let c = ctx(srv.http_options(), d.path(), None);
+    let out = check1(&Module, &c, &cfg, None).await.unwrap();
+    let last = last_of(&out);
+    assert!(last.state.get("method").is_none(), "{}", last.state);
+    assert_eq!(srv.seen().len(), 2, "the GET and the conditional probe, no Range probe");
+    let noted = c.take_cooldown().expect("the cooldown is noted");
+    assert!(noted > Timestamp::now() + jiff::SignedDuration::from_mins(9));
+    drop(out);
+
+    *limited.lock().unwrap() = false;
+    srv.clear();
+    let c = ctx(srv.http_options(), d.path(), None);
+    match check1(&Module, &c, &cfg, Some(&last)).await.unwrap() {
+        CheckOutcome::Unchanged { state: Some(st), .. } => assert_eq!(st["method"], "conditional"),
+        o => panic!("{o:?}"),
+    }
+    assert_eq!(srv.seen().len(), 2, "probed again");
+}
+
+/// The `range` rung's full GET after a differing head is behind the cooldown too: a `503` with
+/// `Retry-After` is `RateLimited`, and once noted no later request of the check goes out.
+#[tokio::test]
+async fn the_range_fallback_honours_a_cooldown() {
+    let srv = TestServer::start(&[HOST], |s: &Seen| {
+        if s.header("range").is_some() {
+            let text = "! Last modified: 2026-11-21T10:00:00Z\n||b.example^\n";
+            let mut r = Reply::ok(text).header("content-range", &format!("bytes 0-{}/{}", text.len() - 1, text.len()));
+            r.status = 206;
+            return r;
+        }
+        Reply::status(503).header("retry-after", "5400")
+    })
+    .await;
+    let d = tempfile::tempdir().unwrap();
+    let cfg = json!({"url": format!("https://{HOST}/list.txt")});
+    let last = LastRun {
+        updated_at: Timestamp::now(),
+        version: "v0".into(),
+        state: json!({"method": "range", "size": 1, "head_sha256": "00", "last_full": picket_api::time::format_micros(&Timestamp::now())}),
+    };
+    let c = ctx(srv.http_options(), d.path(), None);
+    let t0 = Timestamp::now();
+    match check1(&Module, &c, &cfg, Some(&last)).await {
+        Err(CheckError::RateLimited { until }) => {
+            let s = (until - t0).as_secs();
+            assert!((5395..=5405).contains(&s), "an hour and a half, kept whole: {s}");
+        }
+        o => panic!("{o:?}"),
+    }
+    let seen = srv.seen();
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert!(seen[0].header("range").is_some() && seen[1].header("range").is_none());
+    // The same context asks nothing more.
+    srv.clear();
+    assert!(matches!(
+        check1(&Module, &c, &cfg, Some(&last)).await,
+        Err(CheckError::RateLimited { .. })
+    ));
+    assert!(srv.seen().is_empty());
 }

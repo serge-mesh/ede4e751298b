@@ -10,7 +10,8 @@
 //!   [`DownloadModule::epoch_key`] (what "pointing elsewhere" compares, feed-scheduling.md §4),
 //!   [`DownloadModule::default_files`] (the files a provider with an empty `files` selects),
 //!   [`DownloadModule::fixed_file`] (the one file of a module whose providers have exactly one:
-//!   `http`'s `response`, `alphamountain_threat_1000`'s `community-threat-1000`) and
+//!   `http`'s `response`, `alphamountain_threat_1000`'s `community-threat-1000`),
+//!   [`DownloadModule::pause_scope`] (what a rate-limit pause covers) and
 //!   [`DownloadModule::max_concurrent`] (the module's share of the light lane).
 //! - One `check()` covers a provider: one [`FileCheck`] per enabled feed, each judged against
 //!   its own `last`; the answer is a [`ProviderCheck`] with one result per file and, for a module
@@ -18,8 +19,10 @@
 //! - [`Ctx`] ([`ctx`]): the HTTP client ([`client`]: HTTPS only, at most 5 redirects, all HTTPS,
 //!   gzip and brotli, `User-Agent: picket/<ver>`, core's resolver, deadlines, the decoded size
 //!   cap), `stage_file()` for streaming bodies into `staging/` with BLAKE3 hashing, cancellation,
-//!   and [`Ctx::listing_incomplete`], how a module tells core a listing walk couldn't finish
-//!   (`feed_provider_listing_incomplete`, providers.md §3) without changing the trait's types.
+//!   [`Ctx::listing_incomplete`], how a module tells core a listing walk couldn't finish
+//!   (`feed_provider_listing_incomplete`, providers.md §3) without changing the trait's types,
+//!   and [`Ctx::cooldown`] / [`Ctx::note_cooldown`], how a module keeps every request of a check
+//!   behind a server cooldown.
 //! - [`Registry`]: the modules by id, one instance each per running core. A module keeps no
 //!   per-provider state: `cfg` and `state` come with every call.
 //!
@@ -122,8 +125,10 @@ pub enum CheckOutcome {
 /// Why a check (of the provider, or of one file) failed.
 #[derive(Debug, thiserror::Error)]
 pub enum CheckError {
-    /// The server refused the request under its rate limit. The text carries `until` in the
-    /// storage form (api.md §5), as a feed's own rate-limit error does.
+    /// The server refused the request under its rate limit or asked for a cooldown (`github`'s
+    /// rate-limit replies; `http`'s `429`/`503` with a valid `Retry-After`): no check in the
+    /// provider's pause scope ([`DownloadModule::pause_scope`]) starts until `until`. The text
+    /// carries `until` in the storage form (api.md §5), as a feed's own rate-limit error does.
     #[error("rate limited until {}", picket_api::time::format_micros(.until))]
     RateLimited { until: Timestamp },
     /// The provider no longer has this file.
@@ -219,6 +224,14 @@ pub trait DownloadModule: Send + Sync {
     fn default_files(&self) -> Vec<(String, Value)> {
         vec![]
     }
+    /// The pause scope of a provider with this config (providers.md §2): the endpoint whose
+    /// quota a `RateLimited` reply speaks for. After one, no check of any provider in the same
+    /// scope starts until it ends, and providers in other scopes are untouched. By default the
+    /// module (GitHub's API quota covers every `github` provider); `http` keys it by the URL's
+    /// origin, so a cooling-down list server never pauses a list on another host.
+    fn pause_scope(&self, _cfg: &Value) -> String {
+        self.id().to_string()
+    }
     /// The most checks through this module that run at once (its share of the feed checks'
     /// part of the light lane, core.md §3): two, so two modules can fill the feed checks' share
     /// ([`FEED_SHARE`]) and none holds it alone.
@@ -238,6 +251,14 @@ pub const FEED_SHARE: usize = crate::scheduler::LightLane::CONCURRENCY / 2;
 /// `download`; a `Changed` outcome is always one.
 pub fn is_full_download(method: &str) -> bool {
     matches!(method, "full" | "probe" | "download")
+}
+
+/// A provider's pause scope ([`DownloadModule::pause_scope`]), with the module id for a module
+/// this build doesn't have.
+pub fn pause_scope(module: &str, cfg: &Value) -> String {
+    builtin()
+        .get(module)
+        .map_or_else(|| module.to_string(), |m| m.pause_scope(cfg))
 }
 
 /// The download modules by id.

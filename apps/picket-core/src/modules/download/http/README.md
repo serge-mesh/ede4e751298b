@@ -16,6 +16,13 @@ Any list on an HTTPS URL (providers.md §3).
 - **Change time:** `Last-Modified`, else a header date line (`! Last modified: …`,
   `# Updated : …`, or `date_line_regex`'s first group), else an interval.
 - `version`: the ETag, else the body's SHA-256. Sibling group: the host.
+- **Server cooldowns:** a `429` or `503` with a valid `Retry-After` (seconds or an HTTP date)
+  pauses every `http` provider on the same origin (scheme, host, port) until then, kept whole
+  past an hour (held to a week against a bad header) and across a restart. No request goes out
+  meanwhile: not a scheduled check, not "Check now", not a probe or the `range` rung's full GET.
+  Lists on other hosts carry on. Without a valid `Retry-After` the answer is an ordinary failure
+  (error backoff, `min_interval`). A probe cut short by a cooldown keeps its download and probes
+  again on the next check.
 
 `tests/` runs the provider against a local HTTPS server: each rung, 304s, ETags, redirects,
-oversized, slow, gzip and HTML bodies.
+oversized, slow, gzip and HTML bodies, and server cooldowns.

@@ -1,8 +1,13 @@
 //! Backtests (feed-scheduling.md §5 "`k`", §6): replaying a feed provider's recorded history
-//! with simulated checks. The weekly `k` choice and the `backtest` endpoint both call
-//! [`replay`]; the tests below hold the acceptance harness on recorded histories (§6 "Tests").
+//! with simulated checks. The weekly `k` choice ([`weekly_choice`]) and the `backtest` endpoint
+//! both call [`replay`]; the tests below hold the acceptance harness on recorded histories (§6
+//! "Tests"), including how much a feed may lose beside busy siblings under the planning budget,
+//! measured per feed over several windows (issue #65).
 
-use crate::learner::{Learner, Obs, SimResult, simulate_provider};
+use crate::learner::{
+    BudgetFit, FeedImpact, K_CHOICES, KChoice, Learner, Obs, SimResult, choose_k, provider_k_choice,
+    simulate_provider,
+};
 
 /// Replays `[start, end)` of a provider's feeds with simulated checks, once per `k` in `ks`: the
 /// provider is checked at its feeds' earliest ask, each spaced from that feed's own last check
@@ -36,6 +41,107 @@ pub fn replay(
     ks.iter()
         .map(|k| simulate_provider(&pairs, start, end, *k, cost_factor, min_interval))
         .collect()
+}
+
+/// One voting feed of a provider's weekly `k` choice (feed-scheduling.md §5).
+#[derive(Clone, Debug)]
+pub struct VotingFeed {
+    pub name: String,
+    /// Its stored observations (its current epoch, oldest first).
+    pub obs: Vec<Obs>,
+    /// Where its replay starts ([`crate::learner::k_replay_starts`]).
+    pub start: f64,
+    pub cost_factor: f64,
+}
+
+/// A provider's weekly `k` choice with the planning budget's part in it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WeeklyChoice {
+    pub choice: KChoice,
+    /// The pooled replay's start (the latest of the feeds' starts); it ends at `end`.
+    pub window_start: f64,
+    /// After a compromise ([`BudgetFit::Slowed`], [`BudgetFit::NoneFits`]): each feed's share
+    /// caught within 2 min alone at its own choice against beside its siblings at the `k` taken,
+    /// both over the pooled window. Empty when the budget changed nothing.
+    pub impacts: Vec<FeedImpact>,
+}
+
+/// The weekly `k` choice (feed-scheduling.md §5): each feed replays from its own start alone
+/// with each `k` in [`K_CHOICES`], the feeds together from the latest start for the budget
+/// (`pooled_cost`: their cost factor together), and the provider takes [`provider_k_choice`].
+/// After a compromise, each feed's standalone schedule is replayed over the pooled window too,
+/// so its estimated cost compares like with like. `None` when no feed has a choice.
+pub fn weekly_choice(
+    feeds: &[VotingFeed],
+    pooled_cost: f64,
+    end: f64,
+    min_interval: f64,
+) -> Option<WeeklyChoice> {
+    let per_feed: Vec<Vec<SimResult>> = feeds
+        .iter()
+        .map(|f| {
+            replay(
+                std::slice::from_ref(&f.obs),
+                f.start,
+                end,
+                &K_CHOICES,
+                f.cost_factor,
+                min_interval,
+            )
+        })
+        .collect();
+    let window_start = feeds.iter().map(|f| f.start).fold(f64::MIN, f64::max);
+    let pooled = if feeds.len() > 1 {
+        let obs: Vec<Vec<Obs>> = feeds.iter().map(|f| f.obs.clone()).collect();
+        replay(&obs, window_start, end, &K_CHOICES, pooled_cost, min_interval)
+    } else {
+        per_feed.first().cloned().unwrap_or_default()
+    };
+    let choice = provider_k_choice(per_feed.iter().map(Vec::as_slice), &pooled)?;
+    let impacts = if choice.budget == BudgetFit::Within {
+        vec![]
+    } else {
+        let at_k = pooled.iter().find(|r| r.k == choice.k);
+        feeds
+            .iter()
+            .zip(&per_feed)
+            .enumerate()
+            .map(|(i, (f, alone))| {
+                let grouped = at_k.and_then(|r| r.feeds.get(i)).cloned().unwrap_or_default();
+                let own = choose_k(alone);
+                let standalone = match own {
+                    // Its own replay already covers the window.
+                    Some(k) if f.start == window_start => alone.iter().find(|r| r.k == k).cloned(),
+                    Some(k) => replay(
+                        std::slice::from_ref(&f.obs),
+                        window_start,
+                        end,
+                        &[k],
+                        f.cost_factor,
+                        min_interval,
+                    )
+                    .into_iter()
+                    .next(),
+                    // No change in its own replay, so none in the window either.
+                    None => None,
+                }
+                .and_then(|r| r.feeds.into_iter().next())
+                .unwrap_or_else(|| grouped.clone());
+                FeedImpact::new(
+                    f.name.clone(),
+                    own,
+                    grouped.changes,
+                    standalone.share_2min,
+                    grouped.share_2min,
+                )
+            })
+            .collect()
+    };
+    Some(WeeklyChoice {
+        choice,
+        window_start,
+        impacts,
+    })
 }
 
 #[cfg(test)]
@@ -541,8 +647,10 @@ mod tests {
     /// alone (feed-scheduling.md §6), each feed on its own, with fewer checks than the two would
     /// take apart, and each feed still meets its figure. Each feed's ask is spaced from its own
     /// last check (§5 "Spacing") and the provider's `k` is the most aggressive of the feeds' own
-    /// choices (§5 "`k`"), so the sibling's checks only add to a feed's own; where the provider's
-    /// budget binds (two of the busiest lists), other spans can leave a feed a few changes short.
+    /// choices (§5 "`k`"), so the sibling's checks only add to a feed's own. This holds on this
+    /// span; where the provider's planning budget binds (the busiest lists together), other spans
+    /// leave a feed short, within the tolerance the multi-window tests below measure and hold
+    /// ([`GROUPED_TOLERANCE_POINTS`]).
     fn assert_pair(a: &'static Fixture, fa: (f64, f64), b: &'static Fixture, fb: (f64, f64)) {
         assert_eq!(a.to, b.to, "the fixtures end together");
         let both = run(&[&a.changes, &b.changes], a.to - REPLAYED_DAYS * DAY, a.to);
@@ -587,6 +695,194 @@ mod tests {
             (both.checks_per_day - one.checks_per_day).abs() < 1e-9,
             "{both:?} against {one:?}"
         );
+    }
+
+    // ---- Grouped against alone across windows (issue #65) ----
+    //
+    // The planning budget can make a provider less aggressive than one of its feeds would be
+    // alone (`BudgetFit::Slowed`), so a feed beside busy siblings can catch less than alone. These
+    // tests measure that on every combination of the recorded fixtures (the three pairs and all
+    // three together, the busiest), over five 60-day windows ending 0, 7, 14, 21 and 28 days
+    // before the fixtures' end, each feed against the same feed run alone over the same window.
+    //
+    // **The tolerance** (an acceptance requirement of the model, not a runtime guarantee): for
+    // each feed, in each window, its share of changes caught within 2 min beside its siblings is
+    // at most [`GROUPED_TOLERANCE_POINTS`] percentage points below its share alone. The
+    // denominator is that feed's changes in that window; there is no aggregation over feeds or
+    // windows, so a total can't hide one feed's repeated losses. Measured when adopted (Nov 2026
+    // fixtures): the worst shortfall is 1.86 points (OISD big beside both others, the window
+    // ending 28 days back: 1158 of 1235 against 1181 alone); pairs lose at most 1.05 points (OISD
+    // big beside AdGuard, same window); in most windows grouped feeds catch more than alone. So a
+    // "≤ 1 %" claim does not hold on these histories, and no fixed budget guarantees anything on
+    // other workloads.
+    //
+    // **When it fails:** a change to the learner, the `k` choice or the budget that pushes a feed
+    // past the tolerance doesn't ship as is: fix it, or re-measure (these tests print every
+    // feed's figures), decide the new tolerance, and update this figure and the planning
+    // budget's description ([`crate::learner::BUDGET_PER_DAY`]) together.
+
+    /// The most a feed's 2-minute share may fall, in percentage points of its own changes in a
+    /// window, beside its siblings against alone.
+    const GROUPED_TOLERANCE_POINTS: f64 = 2.5;
+
+    /// How far before the fixtures' end each measured window ends, in days.
+    const WINDOW_ENDS: [f64; 5] = [0.0, 7.0, 14.0, 21.0, 28.0];
+
+    /// The windows' warm starts read inside the fixtures: each window's provider is created 60
+    /// days before the window's end and warm-starts from the 20 changes before that.
+    #[test]
+    fn every_window_warm_starts_inside_the_fixtures() {
+        for f in [oisd_big(), adguard_dns_filter(), jpgpi250_doh()] {
+            for back in WINDOW_ENDS {
+                let created = f.to - back * DAY - REPLAYED_DAYS * DAY;
+                let before = f.changes.iter().filter(|c| **c < created).count();
+                assert!(
+                    before >= WARM_CHANGES,
+                    "{}: {before} changes before the window ending {back} days back",
+                    f.name
+                );
+            }
+        }
+    }
+
+    /// Runs every combination of the fixtures, and each fixture alone, over the 60 days ending
+    /// `back` days before the fixtures' end, and checks the tolerance and the checks.
+    fn grouped_against_alone(back: f64) {
+        let fx = [oisd_big(), adguard_dns_filter(), jpgpi250_doh()];
+        let combos: [&[usize]; 4] = [&[0, 1], &[0, 2], &[1, 2], &[0, 1, 2]];
+        let end = fx[0].to - back * DAY;
+        let created = end - REPLAYED_DAYS * DAY;
+        assert!(fx.iter().all(|f| f.to == fx[0].to), "the fixtures end together");
+        let (alone, grouped): (Vec<Outcome>, Vec<Outcome>) = std::thread::scope(|sc| {
+            let a: Vec<_> = fx
+                .iter()
+                .map(|f| sc.spawn(move || run(&[&f.changes], created, end)))
+                .collect();
+            let g: Vec<_> = combos
+                .iter()
+                .map(|c| {
+                    let hist: Vec<&[f64]> = c.iter().map(|i| fx[*i].changes.as_slice()).collect();
+                    sc.spawn(move || run(&hist, created, end))
+                })
+                .collect();
+            let join = |h: std::thread::ScopedJoinHandle<'_, Outcome>| h.join().expect("a run panicked");
+            (
+                a.into_iter().map(join).collect(),
+                g.into_iter().map(join).collect(),
+            )
+        });
+        let mut failures = Vec::new();
+        for (c, g) in combos.iter().zip(&grouped) {
+            for (j, &i) in c.iter().enumerate() {
+                let (n, caught) = g.feeds[j];
+                let (n_alone, caught_alone) = alone[i].feeds[0];
+                assert_eq!(n, n_alone, "{}: the same changes", fx[i].name);
+                let points = (g.share(j) - alone[i].share(0)) * 100.0;
+                eprintln!(
+                    "window ending {back} d back, {:?}: {}: {caught} of {n} beside its siblings, {caught_alone} alone ({points:+.2} points); {:.1} checks a day",
+                    c.iter().map(|i| fx[*i].name).collect::<Vec<_>>(),
+                    fx[i].name,
+                    g.checks_per_day
+                );
+                if points < -GROUPED_TOLERANCE_POINTS {
+                    failures.push(format!(
+                        "{} beside {c:?}: {points:+.2} points ({caught} of {n}, {caught_alone} alone)",
+                        fx[i].name
+                    ));
+                }
+            }
+            // One provider still takes fewer checks than its feeds would apart.
+            let apart: f64 = c.iter().map(|i| alone[*i].checks_per_day).sum();
+            assert!(
+                g.checks_per_day <= apart,
+                "{c:?}, window ending {back} d back: {:.1} checks a day together, {apart:.1} apart",
+                g.checks_per_day
+            );
+        }
+        assert!(
+            failures.is_empty(),
+            "window ending {back} d back: past the {GROUPED_TOLERANCE_POINTS}-point tolerance: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn grouped_feeds_keep_within_the_tolerance_window_0() {
+        grouped_against_alone(WINDOW_ENDS[0]);
+    }
+
+    #[test]
+    fn grouped_feeds_keep_within_the_tolerance_window_7() {
+        grouped_against_alone(WINDOW_ENDS[1]);
+    }
+
+    #[test]
+    fn grouped_feeds_keep_within_the_tolerance_window_14() {
+        grouped_against_alone(WINDOW_ENDS[2]);
+    }
+
+    #[test]
+    fn grouped_feeds_keep_within_the_tolerance_window_21() {
+        grouped_against_alone(WINDOW_ENDS[3]);
+    }
+
+    #[test]
+    fn grouped_feeds_keep_within_the_tolerance_window_28() {
+        grouped_against_alone(WINDOW_ENDS[4]);
+    }
+
+    /// The weekly choice reports what the budget did (issue #65): the three fixtures together,
+    /// checked every 2 minutes for the last 28 days, prefer `k` = 2, whose pooled replay predicts
+    /// over the planning budget, so the provider is slowed to 3; each feed's estimated cost
+    /// compares its standalone schedule with the grouped one over the same window. Two of them
+    /// over the same days fit at their preferred `k`.
+    #[test]
+    fn the_weekly_choice_reports_a_budget_compromise() {
+        let fx = [oisd_big(), adguard_dns_filter(), jpgpi250_doh()];
+        let end = fx[0].to;
+        let start = end - K_REPLAY_DAYS * DAY;
+        let feeds: Vec<VotingFeed> = fx
+            .iter()
+            .map(|f| VotingFeed {
+                name: f.name.into(),
+                obs: checks_every(&f.changes, start - 14.0 * DAY, end, 120.0),
+                start,
+                cost_factor: COST,
+            })
+            .collect();
+        let w = weekly_choice(&feeds, COST, end, MIN_INTERVAL).unwrap();
+        eprintln!("{w:#?}");
+        assert_eq!(w.window_start, start);
+        assert_eq!(
+            (w.choice.preferred, w.choice.k, w.choice.budget),
+            (2.0, 3.0, BudgetFit::Slowed),
+            "{w:?}"
+        );
+        let budget = crate::learner::BUDGET_PER_DAY;
+        assert!(
+            w.choice.preferred_checks_per_day.is_some_and(|c| c > budget),
+            "{w:?}"
+        );
+        assert!(w.choice.checks_per_day.is_some_and(|c| c <= budget), "{w:?}");
+        assert_eq!(w.impacts.len(), 3);
+        for (imp, f) in w.impacts.iter().zip(fx) {
+            assert_eq!(imp.feed, f.name);
+            let n = f.changes.iter().filter(|c| **c >= start && **c < end).count();
+            assert_eq!(imp.changes, n, "{}", f.name);
+            assert!(imp.standalone_k.is_some(), "{}", f.name);
+            assert!(
+                (imp.change_points - (imp.grouped_share_2min - imp.standalone_share_2min) * 100.0).abs()
+                    < 1e-9
+            );
+        }
+
+        let pair = weekly_choice(&feeds[..2], COST, end, MIN_INTERVAL).unwrap();
+        assert_eq!(pair.choice.budget, BudgetFit::Within, "{pair:?}");
+        assert_eq!(pair.choice.k, pair.choice.preferred);
+        assert!(pair.impacts.is_empty(), "no compromise, no estimate");
+        // One feed alone: its own replay is the pooled one.
+        let one = weekly_choice(&feeds[2..], COST, end, MIN_INTERVAL).unwrap();
+        assert_eq!(one.window_start, start);
+        assert!(one.choice.checks_per_day.is_some());
     }
 
     #[test]

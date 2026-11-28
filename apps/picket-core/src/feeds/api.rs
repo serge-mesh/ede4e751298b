@@ -101,7 +101,8 @@ pub struct FeedStatus {
     /// Consecutive failed checks.
     pub failures: u32,
     pub failing_since: Option<String>,
-    /// The module's rate-limit pause.
+    /// The rate-limit pause of the provider's scope (a server cooldown: `github`'s rate limit,
+    /// or an `http` origin's `Retry-After`): no check, "Check now" included, starts before it.
     pub paused_until: Option<String>,
     /// The last download (a run's source).
     pub last_download: Option<String>,
@@ -184,11 +185,7 @@ async fn status_of(s: &SharedState, def: &FeedDef) -> ApiResult<FeedStatus> {
     let learner = s.feeds.learner(&id);
     let hits = hits_24h(s, &id).await;
     let last_change = change.as_ref().and_then(|r| r.updated_at.clone());
-    let module = def
-        .provider
-        .as_deref()
-        .and_then(|p| s.feeds.provider_def(p))
-        .map(|p| p.module);
+    let pdef = def.provider.as_deref().and_then(|p| s.feeds.provider_def(p));
     Ok(FeedStatus {
         feed: id.clone(),
         name: def.name.clone(),
@@ -206,8 +203,9 @@ async fn status_of(s: &SharedState, def: &FeedDef) -> ApiResult<FeedStatus> {
         last_ok: st.last_ok_at.map(|t| crate::util::ts(&t)),
         failures: st.failures,
         failing_since: st.failing_since.map(|t| crate::util::ts(&t)),
-        paused_until: module
-            .and_then(|m| s.feeds.paused_until(&m))
+        paused_until: pdef
+            .as_ref()
+            .and_then(|p| s.feeds.provider_paused_until(p))
             .map(|t| crate::util::ts(&t)),
         last_download: st.last_download_at.map(|t| crate::util::ts(&t)),
         since_last_change_s: last_change
@@ -1122,12 +1120,19 @@ pub struct ProviderStatus {
     pub last_ok: Option<String>,
     /// The current streak of checks that failed as a whole or in every file.
     pub failing_since: Option<String>,
-    /// The module's rate-limit pause.
+    /// The rate-limit pause of the provider's scope (a server cooldown: `github`'s rate limit,
+    /// or an `http` origin's `Retry-After`): no check, "Check now" included, starts before it.
     pub paused_until: Option<String>,
     pub checks_24h: u64,
     pub failures_24h: u64,
     /// The aggressiveness chosen weekly (`dynamic`).
     pub k: Option<f64>,
+    /// The last weekly choice of `k` with the per-provider planning budget's part in it: the
+    /// preferred and selected `k`, whether the budget slowed the provider (`slowed`) or no `k`
+    /// fit it (`none_fits`), the replay window, the predicted checks a day and, after such a
+    /// compromise, each feed's estimated change in its share caught within 2 minutes. The budget
+    /// is a planning figure, not a runtime quota.
+    pub k_choice: Option<super::schedule::KChoiceRecord>,
     /// Its feeds.
     pub feeds: Vec<String>,
     pub listing: Option<ListingSummary>,
@@ -1141,10 +1146,11 @@ pub struct ProviderStatus {
 async fn provider_status_of(s: &SharedState, p: &FeedProviderDef) -> ApiResult<ProviderStatus> {
     let id = p.id.clone();
     let day = crate::util::ts(&(Timestamp::now() - jiff::SignedDuration::from_hours(24)));
-    let (st, counts, incomplete) = {
+    let (st, counts, incomplete, k_choice) = {
         let id = id.clone();
         s.db.read(move |c| {
             let st = store::load_provider_state(c, &id)?;
+            let k_choice = store::load_k_choice(c, &id)?;
             let counts: (i64, i64) = c.query_row(
                 "SELECT (SELECT count(*) FROM feed_provider_checks WHERE provider_id = ?1 AND t >= ?2),
                         (SELECT count(*) FROM feed_provider_checks WHERE provider_id = ?1 AND t >= ?2 AND ok = 0)",
@@ -1156,7 +1162,7 @@ async fn provider_status_of(s: &SharedState, p: &FeedProviderDef) -> ApiResult<P
                 [format!("feed_provider_listing_incomplete:{id}")],
                 |r| r.get(0),
             )?;
-            Ok::<_, anyhow::Error>((st, counts, incomplete))
+            Ok::<_, anyhow::Error>((st, counts, incomplete, k_choice))
         })
         .await?
     };
@@ -1176,12 +1182,13 @@ async fn provider_status_of(s: &SharedState, p: &FeedProviderDef) -> ApiResult<P
         last_check: st.last_check_at.map(|t| crate::util::ts(&t)),
         last_ok: st.last_ok_at.map(|t| crate::util::ts(&t)),
         failing_since: st.failing_since.map(|t| crate::util::ts(&t)),
-        paused_until: s.feeds.paused_until(&p.module).map(|t| crate::util::ts(&t)),
+        paused_until: s.feeds.provider_paused_until(p).map(|t| crate::util::ts(&t)),
         checks_24h: crate::util::nonneg(counts.0),
         failures_24h: crate::util::nonneg(counts.1),
         k: st
             .k
             .or_else(|| feeds.first().and_then(|f| s.feeds.learner(f)).map(|l| l.k)),
+        k_choice,
         feeds,
         listing: st.listing.as_ref().map(|l| ListingSummary {
             files: l.files.len(),
@@ -1216,7 +1223,7 @@ async fn all_provider_status(
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 pub struct CheckNow {
     /// `started`, `queued` (a check of the provider is in progress: another runs when it ends)
-    /// or `scheduled` (`min_interval`, or the module's rate-limit pause).
+    /// or `scheduled` (`min_interval`, or a rate-limit pause of the provider's scope).
     pub result: String,
     /// When a scheduled check runs.
     pub at: Option<String>,

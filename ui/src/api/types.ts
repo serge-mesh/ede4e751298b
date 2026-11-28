@@ -42,6 +42,7 @@ export type ProfileDef = S["ProfileDef"];
 export type ProviderCheckView = S["ProviderCheckView"];
 export type ProviderFile = S["ProviderFile"];
 export type ProviderStatus = S["ProviderStatus"];
+export type KChoiceRecord = S["KChoiceRecord"];
 export type ReviewItem = S["ReviewItem"];
 export type RunRow = S["RunRow"];
 export type ScheduleView = S["ScheduleView"];
