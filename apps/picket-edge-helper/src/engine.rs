@@ -17,7 +17,7 @@ use picket_api::helper::{
     ApplyRequest, ApplyResponse, CatchAllFinding, Conditions, HelperError, LocalDst, MAX_LOCAL_DST_NETS,
     RedirectCheck, RulesRepaired, SetStatus, error_code, sets,
 };
-use tokio::sync::{OwnedSemaphorePermit, oneshot};
+use tokio::sync::oneshot;
 
 use crate::backend::{Backend, SetOp};
 use crate::ipset::{CreateSpec, Elem, SetFamily, SetHeader, SetType};
@@ -967,17 +967,10 @@ impl<B: Backend> Engine<B> {
     }
 }
 
-/// A validated socket apply and its request-lifetime admission.
-pub struct AdmittedApply {
-    pub(crate) desired: Box<Desired>,
-    /// Dropped with the command on queue failure, engine shutdown or completion. A response
-    /// timeout/disconnect drops only the receiver and must not admit another live payload.
-    pub(crate) _permit: OwnedSemaphorePermit,
-}
-
 /// Requests to the engine thread.
 pub enum Cmd {
-    Apply(AdmittedApply, oneshot::Sender<Result<ApplyResponse, HelperError>>),
+    /// A socket `apply`, validated and normalised while it was decoded.
+    Apply(Box<Desired>, oneshot::Sender<ApplyResponse>),
     Disable(oneshot::Sender<ApplyResponse>),
     Enable(oneshot::Sender<ApplyResponse>),
     /// Run a pass soon (inotify on UniFi's state file, or an `ensure` that found no set).
@@ -994,10 +987,8 @@ pub fn run<B: Backend>(mut engine: Engine<B>, rx: Receiver<Cmd>) {
     loop {
         let deadline = follow_up.map_or(next, |f| f.min(next));
         match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-            Ok(Cmd::Apply(AdmittedApply { desired, _permit }, tx)) => {
-                let response = engine.apply_desired(*desired);
-                drop(_permit);
-                let _ = tx.send(Ok(response));
+            Ok(Cmd::Apply(desired, tx)) => {
+                let _ = tx.send(engine.apply_desired(*desired));
                 last_end = Instant::now();
                 next = last_end + REASSERT;
             }

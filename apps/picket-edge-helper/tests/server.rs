@@ -370,11 +370,6 @@ async fn ensure_never_waits_behind_a_held_restore() {
         )
         .await;
     tokio::time::sleep(Duration::from_millis(100)).await;
-    let busy = fast_conn.call("apply", json!({"static": ["::"]})).await;
-    assert_eq!(
-        busy["data"]["code"], "busy",
-        "executing apply still owns admission"
-    );
     let t0 = std::time::Instant::now();
     let r = fast_conn
         .call(
@@ -400,11 +395,6 @@ async fn ensure_never_waits_behind_a_held_restore() {
     };
     assert_eq!(r["type"], "apply");
     assert_eq!(r["data"]["ok"], true);
-    assert_eq!(
-        fast_conn.call("apply", json!({})).await["type"],
-        "apply",
-        "completion released admission"
-    );
 }
 
 #[tokio::test]

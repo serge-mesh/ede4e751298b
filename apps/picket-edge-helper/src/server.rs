@@ -13,10 +13,10 @@
 //!   waits behind a `dump` page, an `apply` or an `iptables-restore` holding out for the lock.
 //! - **Bounded memory:** frames are decoded straight into typed requests (never into
 //!   `serde_json::Value`, which can cost 30× a frame's size), frames over 64 KiB are decoded at
-//!   most two at a time. Apply decoding streams bounded collections into normalised networks;
-//!   one edge apply and one administrator apply may be decoding, queued or executing. Admission
-//!   belongs to the engine command even after a response timeout. A connection holds at most
-//!   one response (≤ 1 MiB) plus its coalesced events (a few KiB); slow readers time out.
+//!   most two at a time, and an `apply` is validated while it streams in, keeping only its
+//!   normalised networks (never a string per CIDR). A connection holds at most one response
+//!   (≤ 1 MiB) plus its coalesced events (a few KiB), and a client that doesn't read is
+//!   dropped after a write timeout.
 //! - **Events** go to connections that said `hello` with `events: true`.
 
 use std::io;
@@ -43,7 +43,7 @@ use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 use crate::apply::Apply;
 use crate::backend::Backend;
 use crate::dump::{self, DumpStore};
-use crate::engine::{AdmittedApply, Cmd};
+use crate::engine::Cmd;
 use crate::fast::{FastHandle, Job, MAX_ENTRIES};
 use crate::ipset::IpsetError;
 use crate::rules::Desired;
@@ -226,10 +226,6 @@ pub struct Server<B: Backend> {
     edge_count: Arc<AtomicUsize>,
     admin_count: Arc<AtomicUsize>,
     big: Semaphore,
-    /// Separate non-waiting admission: the edge cannot consume root's apply slot, and a stalled
-    /// engine cannot park fast requests behind a semaphore wait. These cover small applies too.
-    edge_apply: Arc<Semaphore>,
-    admin_apply: Arc<Semaphore>,
 }
 
 impl<B: Backend> Server<B> {
@@ -251,8 +247,6 @@ impl<B: Backend> Server<B> {
             edge_count: Arc::new(AtomicUsize::new(0)),
             admin_count: Arc::new(AtomicUsize::new(0)),
             big: Semaphore::new(BIG_FRAME_PERMITS),
-            edge_apply: Arc::new(Semaphore::new(1)),
-            admin_apply: Arc::new(Semaphore::new(1)),
         })
     }
 
@@ -427,29 +421,6 @@ impl<B: Backend> Server<B> {
     }
 
     async fn handle(&self, uid: u32, f: &[u8], mailbox: &mut Option<Arc<Mailbox>>) -> Vec<u8> {
-        let head = match head(f) {
-            Ok(h) => h,
-            Err((id, e)) => return frame(kind::ERROR, id, &e),
-        };
-        let admission = if head.kind == kind::APPLY {
-            let slots = if uid == self.cfg.admin_uid {
-                &self.admin_apply
-            } else {
-                &self.edge_apply
-            };
-            match slots.clone().try_acquire_owned() {
-                Ok(p) => Some(p),
-                Err(_) => {
-                    return err_frame(
-                        head.id,
-                        error_code::BUSY,
-                        "an apply is already in progress; retry",
-                    );
-                }
-            }
-        } else {
-            None
-        };
         let parsed = {
             // Large frames are decoded at most two at a time; the permit covers the decode only.
             let _permit = if f.len() > BIG_FRAME {
@@ -457,7 +428,7 @@ impl<B: Backend> Server<B> {
             } else {
                 None
             };
-            parse_body(f, head)
+            parse_request(f)
         };
         let (id, req) = match parsed {
             Ok(x) => x,
@@ -482,20 +453,10 @@ impl<B: Backend> Server<B> {
                     },
                 )
             }
-            Request::Apply(desired) => {
-                let Some(permit) = admission else {
-                    return err_frame(id, error_code::INTERNAL, "apply admission missing");
-                };
-                let job = AdmittedApply {
-                    desired,
-                    _permit: permit,
-                };
-                match self.engine_call(id, |tx| Cmd::Apply(job, tx)).await {
-                    Ok(Ok(r)) => frame(kind::APPLY, id, &r),
-                    Ok(Err(e)) => frame(kind::ERROR, id, &e),
-                    Err(f) => f,
-                }
-            }
+            Request::Apply(d) => match self.engine_call(id, |tx| Cmd::Apply(d, tx)).await {
+                Ok(r) => frame(kind::APPLY, id, &r),
+                Err(f) => f,
+            },
             // The emergency switch is the CLI's alone (edge.md §15): an edge can neither lift an
             // admin's `disable` nor set one.
             Request::Disable | Request::Enable if uid != self.cfg.admin_uid => err_frame(
@@ -597,17 +558,7 @@ fn invalid(id: Option<u64>, m: impl Into<String>) -> (Option<u64>, HelperError) 
 /// and request, or the `id` (if readable) and the error to answer with. Collections are checked
 /// against their limits here.
 pub fn parse_request(f: &[u8]) -> Result<(Option<u64>, Request), (Option<u64>, HelperError)> {
-    parse_body(f, head(f)?)
-}
-
-fn head(f: &[u8]) -> Result<Head, (Option<u64>, HelperError)> {
-    if f.len() > MAX_FRAME {
-        return Err(invalid(None, "frame too large"));
-    }
-    serde_json::from_slice(f).map_err(|_| invalid(None, "malformed frame"))
-}
-
-fn parse_body(f: &[u8], head: Head) -> Result<(Option<u64>, Request), (Option<u64>, HelperError)> {
+    let head: Head = serde_json::from_slice(f).map_err(|_| invalid(None, "malformed frame"))?;
     let id = head.id;
     macro_rules! parse {
         ($t:ty) => {
@@ -709,168 +660,4 @@ pub async fn feed_watchdog<B: Backend + ?Sized>(
         tracing::error!(fast_path = alive, engine, "watchdog not fed");
     }
     alive && engine
-}
-
-#[cfg(test)]
-mod admission_tests {
-    use super::*;
-    use crate::engine::{self, Engine};
-    use crate::fake::FakeBackend;
-    use crate::fast;
-    use crate::iptables::Platform;
-    use std::sync::mpsc::{Receiver, sync_channel};
-
-    const EDGE: u32 = 1001;
-    const ADMIN: u32 = 0;
-    const APPLY: &[u8] = br#"{"type":"apply","id":7,"data":{"static":["::"]}}"#;
-
-    fn server(capacity: usize) -> (Arc<Server<FakeBackend>>, Receiver<Cmd>) {
-        let b = Arc::new(FakeBackend::new());
-        let shared = Shared::new();
-        let (tx, rx) = sync_channel(capacity);
-        let fast = fast::spawn(b.clone(), shared.clone(), tx.clone()).unwrap();
-        let cfg = ServerConfig {
-            engine_timeout: Duration::from_millis(20),
-            ..ServerConfig::default()
-        };
-        (Server::new(b, shared, tx, fast, cfg), rx)
-    }
-
-    async fn handle(s: &Server<FakeBackend>, uid: u32, f: &[u8]) -> serde_json::Value {
-        serde_json::from_slice(&s.handle(uid, f, &mut None).await).unwrap()
-    }
-
-    fn submit(s: &Arc<Server<FakeBackend>>, uid: u32) -> tokio::task::JoinHandle<serde_json::Value> {
-        let s = s.clone();
-        tokio::spawn(async move { handle(&s, uid, APPLY).await })
-    }
-
-    async fn command(rx: &Receiver<Cmd>) -> Cmd {
-        timeout(Duration::from_secs(2), async {
-            loop {
-                if let Ok(cmd) = rx.try_recv() {
-                    return cmd;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("request was not queued")
-    }
-
-    #[tokio::test]
-    async fn timeout_keeps_admission_with_the_command_and_fast_work_progresses() {
-        let (s, rx) = server(16);
-        let first = submit(&s, EDGE);
-        let queued = command(&rx).await;
-        assert_eq!(first.await.unwrap()["data"]["code"], "internal");
-        assert_eq!(
-            s.edge_apply.available_permits(),
-            0,
-            "response timeout did not release ownership"
-        );
-        assert_eq!(handle(&s, EDGE, APPLY).await["data"]["code"], "busy");
-
-        // Administrator admission is reserved even when the edge's command outlives its caller.
-        let admin = submit(&s, ADMIN);
-        let admin_queued = command(&rx).await;
-        assert_eq!(admin.await.unwrap()["data"]["code"], "internal");
-        assert_eq!(s.admin_apply.available_permits(), 0);
-        for uid in [EDGE, ADMIN] {
-            let response = timeout(
-                Duration::from_secs(1),
-                handle(&s, uid, br#"{"type":"ensure","data":{"entries":[]}}"#),
-            )
-            .await
-            .unwrap();
-            assert_eq!(response["type"], "ensure");
-            let response = handle(&s, uid, br#"{"type":"delete","data":{"entries":[]}}"#).await;
-            assert_eq!(response["type"], "delete");
-            assert_eq!(handle(&s, uid, br#"{"type":"status"}"#).await["type"], "status");
-        }
-        drop(queued);
-        drop(admin_queued);
-        assert_eq!(s.edge_apply.available_permits(), 1);
-        assert_eq!(s.admin_apply.available_permits(), 1);
-    }
-
-    #[tokio::test]
-    async fn cancellation_and_disconnect_do_not_release_queued_admission() {
-        let (s, rx) = server(16);
-        let first = submit(&s, EDGE);
-        let queued = command(&rx).await;
-        first.abort();
-        assert!(first.await.unwrap_err().is_cancelled());
-        assert_eq!(s.edge_apply.available_permits(), 0);
-        assert_eq!(handle(&s, EDGE, APPLY).await["data"]["code"], "busy");
-        drop(queued);
-        assert_eq!(s.edge_apply.available_permits(), 1);
-
-        // Exercise actual connection ownership too: a disconnected socket remains in handle
-        // until its response timeout. The queued command still holds admission afterwards.
-        let (client, socket) = UnixStream::pair().unwrap();
-        let (stop, shutdown) = watch::channel(false);
-        let connection = tokio::spawn(s.clone().connection(socket, EDGE, shutdown));
-        let mut client = client;
-        client
-            .write_all(&u32::try_from(APPLY.len()).unwrap().to_be_bytes())
-            .await
-            .unwrap();
-        client.write_all(APPLY).await.unwrap();
-        let queued = command(&rx).await;
-        drop(client);
-        timeout(Duration::from_secs(2), connection)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(s.edge_apply.available_permits(), 0);
-        drop(queued);
-        drop(stop);
-        assert_eq!(s.edge_apply.available_permits(), 1);
-    }
-
-    #[tokio::test]
-    async fn rejection_queue_failure_and_engine_drop_release_admission() {
-        let (s, rx) = server(1);
-        for f in [
-            br#"{"type":"apply","data":{"static":[""]}}"#.as_slice(),
-            br#"{"type":"apply","data":{"redirect":{"port":0}}}"#,
-        ] {
-            assert_eq!(handle(&s, EDGE, f).await["data"]["code"], "invalid");
-            assert_eq!(s.edge_apply.available_permits(), 1);
-            assert!(rx.try_recv().is_err());
-        }
-        s.engine.try_send(Cmd::Trigger).ok().unwrap();
-        assert_eq!(handle(&s, EDGE, APPLY).await["data"]["code"], "busy");
-        assert_eq!(
-            s.edge_apply.available_permits(),
-            1,
-            "failed enqueue returned the permit"
-        );
-        let _ = rx.try_recv().unwrap();
-        let request = submit(&s, EDGE);
-        while s.edge_apply.available_permits() != 0 {
-            tokio::task::yield_now().await;
-        }
-        drop(rx); // Engine shutdown drops queued commands, even with a caller still waiting.
-        assert_eq!(request.await.unwrap()["data"]["code"], "internal");
-        assert_eq!(s.edge_apply.available_permits(), 1);
-        assert_eq!(handle(&s, EDGE, APPLY).await["data"]["code"], "busy");
-        assert_eq!(
-            s.edge_apply.available_permits(),
-            1,
-            "disconnected enqueue returned the permit"
-        );
-    }
-
-    #[tokio::test]
-    async fn execution_releases_admission_before_answering() {
-        let (s, rx) = server(16);
-        let engine = Engine::new(s.b.clone(), s.shared.clone(), Platform::Debian);
-        std::thread::spawn(move || engine::run(engine, rx));
-        for _ in 0..3 {
-            assert_eq!(handle(&s, EDGE, APPLY).await["type"], "apply");
-            assert_eq!(s.edge_apply.available_permits(), 1);
-        }
-    }
 }

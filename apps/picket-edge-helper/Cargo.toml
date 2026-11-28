@@ -45,7 +45,3 @@ tempfile.workspace = true
 stats_alloc.workspace = true
 # the in-memory backend for this crate's integration tests (feature `testkit` above)
 picket-edge-helper = { path = ".", features = ["testkit"] }
-
-[[example]]
-name = "apply-memory"
-required-features = ["testkit"]

@@ -112,7 +112,7 @@ fn split_nets(what: &str, list: &[String]) -> Result<(Vec<IpNet>, Vec<IpNet>), S
     Ok((v4.into_iter().collect(), v6.into_iter().collect()))
 }
 
-fn truncate(s: &str) -> String {
+pub(crate) fn truncate(s: &str) -> String {
     s.chars().take(40).collect()
 }
 
