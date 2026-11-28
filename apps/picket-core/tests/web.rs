@@ -82,9 +82,12 @@ async fn auth_where_needed_and_nowhere_else() {
         c.state.lanca.load().cert_der.as_slice()
     );
     assert_eq!(get(&c, "/lanca/ca.pem", None).await.status(), StatusCode::OK);
-    assert_eq!(
-        get(&c, "/lists/block-common.txt", None).await.status(),
-        StatusCode::NOT_FOUND
+    // Core builds the list in the background after it starts: 404 until that build writes it,
+    // 200 after. Either way, no auth is asked.
+    let list = get(&c, "/lists/block-common.txt", None).await.status();
+    assert!(
+        matches!(list, StatusCode::OK | StatusCode::NOT_FOUND),
+        "/lists/block-common.txt: {list}"
     );
     assert_eq!(
         get(&c, "/extension/picket-brave.zip", None).await.status(),
