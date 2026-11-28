@@ -835,6 +835,65 @@ impl Alerts {
         Ok(true)
     }
 
+    /// Moves an open alert to another severity in place, without raising it again (its count,
+    /// state, `last_seen` and history stay): its title becomes `title`, each key of `extra` is
+    /// set in its details (a null removes the key), and a `reclassified` history row records the
+    /// old and new severity. A rule whose severity policy changed keeps one alert (#67). Returns
+    /// false when no alert with `dedupe_key` is open.
+    pub fn reclassify_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        dedupe_key: &str,
+        severity: Severity,
+        title: &str,
+        extra: &Value,
+        ch: &mut Changes,
+    ) -> rusqlite::Result<bool> {
+        let row: Option<(i64, String, String)> = tx
+            .query_row(
+                "SELECT id, severity, details_json FROM alerts WHERE dedupe_key = ?1 AND state = 'open'",
+                [dedupe_key],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        let Some((id, from, details)) = row else {
+            return Ok(false);
+        };
+        let mut d: Value = serde_json::from_str(&details).unwrap_or(Value::Null);
+        if !d.is_object() {
+            d = Value::Object(serde_json::Map::new());
+        }
+        if let (Some(o), Some(extra)) = (d.as_object_mut(), extra.as_object()) {
+            for (k, v) in extra {
+                if v.is_null() {
+                    o.remove(k);
+                } else {
+                    o.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        let d = serde_json::to_string(&d).unwrap_or_else(|_| "null".into());
+        let details = if d.len() > MAX_DETAILS { details } else { d };
+        let title: String = title.chars().take(MAX_TITLE).collect();
+        tx.execute(
+            "UPDATE alerts SET severity = ?2, title = ?3, details_json = ?4 WHERE id = ?1",
+            params![id, s(severity), title, details],
+        )?;
+        let note = serde_json::json!({"from": from, "to": s(severity)}).to_string();
+        tx.execute(
+            "INSERT INTO alert_history(alert_id, at, change, detail_json) VALUES (?1, ?2, 'reclassified', ?3)",
+            params![id, crate::util::now_ts(), note],
+        )?;
+        trim_history(tx, id, self.history_cap)?;
+        let a = tx.query_row(
+            &format!("SELECT {ALERT_COLUMNS} FROM alerts WHERE id = ?1"),
+            [id],
+            row_to_alert,
+        )?;
+        ch.changed.push(a);
+        Ok(true)
+    }
+
     /// [`Alerts::note`] inside the caller's transaction `tx`.
     pub fn note_in(
         &self,
