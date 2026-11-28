@@ -382,6 +382,7 @@ pub const TABLES: &[(&str, Fate)] = &[
     ("feed_runs_open", Fate::Deleted),
     ("rate_limit_pauses", Fate::Kept),
     ("feed_imports", Fate::Deleted),
+    ("preset_pending", Fate::Deleted),
     ("feed_purges", Fate::Deleted),
     ("retro_runs", Fate::Deleted),
     // Log-work progress and its metric outbox: the log partitions and metrics.db are emptied.
@@ -1255,11 +1256,7 @@ fn zones_refusal(want: &[String], have: &[String]) -> String {
 
 /// The model a document's head holds, checked (module docs, step 1). `stored` names the secrets
 /// with a stored value.
-pub fn check_head(
-    doc: &stream::Head,
-    zones: &[String],
-    stored: &BTreeSet<String>,
-) -> Result<Model, Refused> {
+pub fn check_head(doc: &stream::Head, zones: &[String], stored: &BTreeSet<String>) -> Result<Model, Refused> {
     if doc.format_version == 0 || doc.format_version > FORMAT_VERSION {
         return Err(Refused::Invalid(format!(
             "an export of format {} (this release reads formats 1 to {FORMAT_VERSION})",

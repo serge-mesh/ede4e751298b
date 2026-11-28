@@ -38,6 +38,7 @@ export type ModuleInfo = S["ModuleInfo"];
 export type Outcome = S["Outcome"];
 export type PendingEdge = S["PendingEdge"];
 export type PresetView = S["PresetView"];
+export type PresetPending = S["Pending"];
 export type ProfileDef = S["ProfileDef"];
 export type ProviderCheckView = S["ProviderCheckView"];
 export type ProviderFile = S["ProviderFile"];

@@ -340,6 +340,8 @@ pub fn check_template(t: Option<&Value>) -> Result<(), String> {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Applied {
     pub created: Vec<String>,
+    /// Feeds a waiting preset install added to its bundle ([`super::presets::complete_in`]).
+    pub bundled: Vec<String>,
     /// Selected files left without a feed past `feeds.max_per_provider`.
     pub skipped: Vec<String>,
     /// Selected files left without a feed because the configuration holds as many feeds as it
@@ -388,10 +390,29 @@ pub fn stored_listing(tx: &rusqlite::Connection, provider: &str) -> rusqlite::Re
 }
 
 /// Creates a feed for each selected file of `provider` that has none (feeds.md §1), within the
-/// provider's cap and the configuration's feed limit, in `tx`, and journals each. `model` is the configuration after the save in progress
-/// (or as stored, for a check's listing); `listing` the listing to apply (`None`: the stored one,
-/// for a module that lists files). Returns what it created and skipped.
+/// provider's cap and the configuration's feed limit, in `tx`, and journals each. `model` is the
+/// configuration after the save in progress (or as stored, for a check's listing); `listing` the
+/// listing to apply (`None`: the stored one, for a module that lists files). A preset install
+/// waiting for the provider's feeds then puts the ones it asked for in its bundle, in the same
+/// transaction ([`super::presets::complete_in`]). Returns what it created, skipped and bundled.
 pub fn apply_in(
+    tx: &Transaction<'_>,
+    model: &mut Model,
+    provider: &str,
+    listing: Option<&Listing>,
+) -> Result<Applied> {
+    let mut out = apply_selection(tx, model, provider, listing)?;
+    out.bundled = super::presets::complete_in(tx, provider)?;
+    if !out.bundled.is_empty() && !model.bundles.is_empty() {
+        // A whole model (a save's) sees the bundle as stored; a partial one holds no bundles.
+        if let Ok(b) = crate::config::store::load_kind(tx, EntityKind::Bundle) {
+            model.bundles = b.bundles;
+        }
+    }
+    Ok(out)
+}
+
+fn apply_selection(
     tx: &Transaction<'_>,
     model: &mut Model,
     provider: &str,

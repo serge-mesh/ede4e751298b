@@ -4800,7 +4800,7 @@
             "type": "boolean"
           },
           "feeds": {
-            "description": "Its feeds.",
+            "description": "Its feeds that exist now (each in the bundle).",
             "items": {
               "type": "string"
             },
@@ -4808,6 +4808,17 @@
           },
           "file_restored": {
             "type": "boolean"
+          },
+          "pending": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Pending"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The preset's files whose feeds the provider adds once it lists them (each then joins the\nbundle), or why they won't; absent when the install is complete."
           },
           "provider": {
             "description": "The provider it installed (null for a manual preset).",
@@ -8138,7 +8149,6 @@
             ]
           },
           "notice_samples": {
-            "default": [],
             "description": "The first few of those rules: line, reason, text (cut).",
             "items": {
               "$ref": "#/components/schemas/ErrorSample"
@@ -8151,7 +8161,6 @@
               "minimum": 0,
               "type": "integer"
             },
-            "default": {},
             "description": "Rules kept that are worth a look, by reason (`BroadBrowser`: a browser rule with no\nrestriction whose pattern matches most requests). They are entries like any other.",
             "type": "object"
           },
@@ -8187,6 +8196,38 @@
         "required": [
           "current",
           "new"
+        ],
+        "type": "object"
+      },
+      "Pending": {
+        "description": "A preset install waiting for its provider's feeds: each joins the bundle when the provider's\nlisting adds it (module docs).",
+        "properties": {
+          "bundle": {
+            "description": "The bundle the feeds go in.",
+            "type": "string"
+          },
+          "detail": {
+            "description": "What refused the feeds (`refused`): the bundle's first validation error.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "files": {
+            "description": "The preset's files with no feed yet.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "state": {
+            "$ref": "#/components/schemas/PendingState"
+          }
+        },
+        "required": [
+          "bundle",
+          "files",
+          "state"
         ],
         "type": "object"
       },
@@ -8251,6 +8292,31 @@
           "next_cursor"
         ],
         "type": "object"
+      },
+      "PendingState": {
+        "description": "Where a pending preset install stands.",
+        "oneOf": [
+          {
+            "const": "waiting",
+            "description": "Each file's feed joins the bundle when the provider's listing adds it.",
+            "type": "string"
+          },
+          {
+            "const": "source_changed",
+            "description": "The provider now reads another source: nothing more is added (install the preset again\nfor its source, or add the feeds by hand).",
+            "type": "string"
+          },
+          {
+            "const": "bundle_missing",
+            "description": "The bundle is gone: nothing is added (create it and install the preset again).",
+            "type": "string"
+          },
+          {
+            "const": "refused",
+            "description": "Adding the feeds would make the bundle invalid (`detail` says why).",
+            "type": "string"
+          }
+        ]
       },
       "Platform": {
         "enum": [
@@ -8359,6 +8425,17 @@
           },
           "installed": {
             "type": "boolean"
+          },
+          "pending": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Pending"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The install's feeds not yet in the bundle (the provider hasn't listed them yet), or why\nthey won't be; absent once every feed is there."
           },
           "provider": {
             "description": "The feed provider it creates (editable), whose `files` select its feeds."

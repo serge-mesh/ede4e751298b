@@ -872,11 +872,13 @@ async fn append_lines(
 
 async fn list_presets(State(s): State<SharedState>) -> ApiResult<Json<Vec<presets::PresetView>>> {
     let model = s.config.model_of(crate::config::EntityKind::Feed).await?;
+    let mut waiting = s.db.read(presets::all_pending).await?;
     Ok(Json(
         presets::all()
             .iter()
             .map(|p| presets::PresetView {
                 installed: presets::installed(p, &model),
+                pending: presets::provider_id(p).and_then(|id| waiting.remove(&id)),
                 preset: p.clone(),
             })
             .collect(),

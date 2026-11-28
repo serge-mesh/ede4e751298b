@@ -32,7 +32,7 @@ import {
 import { IdField, useDerivedId } from "@/components/common/id-field";
 import { client, unwrap } from "@/api/http";
 import { ApiError, errorMessage } from "@/api/errors";
-import type { FeedProviderDef, Issue, ModuleInfo, ProviderStatus, ReviewItem } from "@/api/types";
+import type { FeedProviderDef, Issue, ModuleInfo, PresetPending, ProviderStatus, ReviewItem } from "@/api/types";
 import { defaultValue, validate, type FieldErrors, type SchemaRoot } from "@/lib/schema";
 import { escapeControl } from "@/lib/text";
 import { openapiRoot } from "@/lib/openapi";
@@ -457,13 +457,32 @@ function NewProviderDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
+/** What a preset install still waits for, or why its feeds won't join the bundle. */
+export function presetPendingText(p: PresetPending): string {
+  const files = p.files.map(escapeControl).join(", ");
+  const bundle = escapeControl(p.bundle);
+  switch (p.state) {
+    case "waiting":
+      return `Waiting for the provider to list ${files}: each feed joins ${bundle} when it appears.`;
+    case "source_changed":
+      return `The provider now reads another source, so ${files} won't be added to ${bundle}. Add the feeds to the bundle yourself, or point the provider back and install the preset again.`;
+    case "bundle_missing":
+      return `The bundle ${bundle} no longer exists, so ${files} won't be added. Create it and install the preset again.`;
+    case "refused":
+      return `${bundle} refused the feeds${p.detail ? `: ${escapeControl(p.detail)}` : ""}. Fix the bundle and install the preset again.`;
+  }
+}
+
 function PresetDialog({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const presets = useQuery({ queryKey: qk.presets, queryFn: ({ signal }) => unwrap(client.GET("/api/ui/v1/feed-presets", { signal })) });
   const install = useMutation({
     mutationFn: (id: string) => unwrap(client.POST("/api/ui/v1/feed-presets/{id}", { params: { path: { id } } })),
     onSuccess: (r) => {
-      toast.success(`Installed: ${r.feeds.map(escapeControl).join(", ")}${r.bundle_added ? " (added to its bundle)" : ""}`);
+      const done = r.feeds.length > 0 ? `${r.feeds.map(escapeControl).join(", ")}${r.bundle_added ? " (added to its bundle)" : ""}` : "";
+      if (!r.pending) toast.success(`Installed: ${done}`);
+      else if (r.pending.state === "waiting") toast.info(`Installing${done ? ` (${done})` : ""}. ${presetPendingText(r.pending)}`);
+      else toast.warning(`Installed${done ? ` (${done})` : ""}. ${presetPendingText(r.pending)}`);
       invalidateConfig(qc);
       void qc.invalidateQueries({ queryKey: qk.presets });
     },
@@ -483,11 +502,14 @@ function PresetDialog({ onClose }: { onClose: () => void }) {
                 <li key={p.id} className="flex items-start justify-between gap-3 py-3">
                   <div className="min-w-0">
                     <div className="font-medium">
-                      {p.title} {p.installed && <Badge variant="secondary">installed</Badge>}
+                      {p.title} {p.installed && !p.pending && <Badge variant="secondary">installed</Badge>}
+                      {p.pending?.state === "waiting" && <Badge variant="secondary">waiting for its feeds</Badge>}
+                      {p.pending && p.pending.state !== "waiting" && <Badge variant="warning">needs attention</Badge>}
                     </div>
                     <p className="text-sm text-muted-foreground">
                       <RichText text={p.description} />
                     </p>
+                    {p.pending && <p className="text-xs text-muted-foreground">{presetPendingText(p.pending)}</p>}
                     {p.bundle && (
                       <p className="text-xs text-muted-foreground">
                         Bundle: <Mono>{p.bundle}</Mono>

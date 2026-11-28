@@ -735,6 +735,8 @@ fn delete_rows(tx: &Transaction<'_>, kind: EntityKind, id: &str) -> Result<()> {
         EntityKind::FeedProvider => {
             tx.execute("DELETE FROM feed_providers WHERE id = ?1", [id])?;
             tx.execute("DELETE FROM feed_provider_state WHERE provider_id = ?1", [id])?;
+            // A preset install waiting for the provider's feeds goes with it.
+            tx.execute("DELETE FROM preset_pending WHERE provider_id = ?1", [id])?;
         }
         EntityKind::Feed => {
             tx.execute("DELETE FROM feeds WHERE id = ?1", [id])?;

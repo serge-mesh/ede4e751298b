@@ -762,7 +762,10 @@ mod tests {
         assert_eq!(export::family(s), "picket_feed_records");
         assert!(series("feed_records_total").is_none());
         // Counters still end in `_total`.
-        assert_eq!(export::family(series("feed_records_added").unwrap()), "picket_feed_records_added_total");
+        assert_eq!(
+            export::family(series("feed_records_added").unwrap()),
+            "picket_feed_records_added_total"
+        );
     }
 
     /// A call site that records a series with other label keys than the registry's would split

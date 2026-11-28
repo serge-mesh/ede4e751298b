@@ -3799,9 +3799,14 @@ export interface components {
             bundle_added: boolean;
             /** @description The provider or manual feed was created. */
             created: boolean;
-            /** @description Its feeds. */
+            /** @description Its feeds that exist now (each in the bundle). */
             feeds: string[];
             file_restored: boolean;
+            /**
+             * @description The preset's files whose feeds the provider adds once it lists them (each then joins the
+             *     bundle), or why they won't; absent when the install is complete.
+             */
+            pending?: components["schemas"]["Pending"] | null;
             /** @description The provider it installed (null for a manual preset). */
             provider?: string | null;
         };
@@ -4873,15 +4878,11 @@ export interface components {
              *     entries; §4: exports and imports carry it).
              */
             misp_type?: string | null;
-            /**
-             * @description The first few of those rules: line, reason, text (cut).
-             * @default []
-             */
+            /** @description The first few of those rules: line, reason, text (cut). */
             notice_samples?: components["schemas"]["ErrorSample"][];
             /**
              * @description Rules kept that are worth a look, by reason (`BroadBrowser`: a browser rule with no
              *     restriction whose pattern matches most requests). They are entries like any other.
-             * @default {}
              */
             notices?: {
                 [key: string]: number;
@@ -4904,6 +4905,19 @@ export interface components {
             /** @description At least 12 characters. */
             new: string;
         };
+        /**
+         * @description A preset install waiting for its provider's feeds: each joins the bundle when the provider's
+         *     listing adds it (module docs).
+         */
+        Pending: {
+            /** @description The bundle the feeds go in. */
+            bundle: string;
+            /** @description What refused the feeds (`refused`): the bundle's first validation error. */
+            detail?: string | null;
+            /** @description The preset's files with no feed yet. */
+            files: string[];
+            state: components["schemas"]["PendingState"];
+        };
         /** @description An unknown key that tried to connect (core.md §4: Edges → Pending). */
         PendingEdge: {
             addr?: string | null;
@@ -4922,6 +4936,8 @@ export interface components {
             /** @description Pass as `cursor` for the next page; null on the last page. */
             next_cursor: string | null;
         };
+        /** @description Where a pending preset install stands. */
+        PendingState: "waiting" | "source_changed" | "bundle_missing" | "refused";
         /** @enum {string} */
         Platform: "unifi" | "debian";
         /** @description A rule `rule_policy` dropped. */
@@ -4960,6 +4976,11 @@ export interface components {
             file?: string | null;
             id: string;
             installed: boolean;
+            /**
+             * @description The install's feeds not yet in the bundle (the provider hasn't listed them yet), or why
+             *     they won't be; absent once every feed is there.
+             */
+            pending?: components["schemas"]["Pending"] | null;
             /** @description The feed provider it creates (editable), whose `files` select its feeds. */
             provider?: unknown;
             title: string;
