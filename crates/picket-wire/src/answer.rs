@@ -214,6 +214,16 @@ impl Invalid {
     pub fn is_size_limit(&self) -> bool {
         matches!(self, Self::TooManyRecords | Self::RrsetTooLarge)
     }
+
+    /// True when the refusal says nothing about the upstream's health, so the edge fails the
+    /// attempt without judging it (edge.md §6): a size limit ([`Self::is_size_limit`]), or
+    /// [`Self::BadSvcb`], an SVCB/HTTPS record that decodes but whose parameters RFC 9460 forbids.
+    /// That is one domain's data, which the upstream relays (it reached the records, so the header
+    /// and question matched); counting it would let one such domain open a resolver-wide breaker.
+    /// Undecodable answers, identity and protocol errors stay health signals.
+    pub fn leaves_upstream_unjudged(&self) -> bool {
+        self.is_size_limit() || matches!(self, Self::BadSvcb)
+    }
 }
 
 /// Records the scrub removed, by reason (edge.md §7 step 3: "Scrub removals are counted").
@@ -882,6 +892,16 @@ pub(crate) fn analyze(msg: &[u8], sent: &SentQuery<'_>, limits: &AnswerLimits) -
             }),
             RData::SVCB(s) => svcb_facts(s, &mut addrs, &mut targets),
             RData::HTTPS(h) => svcb_facts(&h.0, &mut addrs, &mut targets),
+            // An AliasMode record, kept as received (crate::svcb::alias): its target, no hints.
+            RData::Unknown { code, rdata }
+                if matches!(u16::from(*code), rtype::SVCB | rtype::HTTPS)
+                    && crate::svcb::is_alias_rdata(&rdata.anything)
+                    && let Ok(t) = crate::svcb::alias(&rdata.anything)
+                    && !t.as_name().is_root()
+                    && !targets.contains(&t) =>
+            {
+                targets.push(t);
+            }
             _ => {}
         }
     }

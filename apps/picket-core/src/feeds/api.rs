@@ -275,8 +275,11 @@ async fn all_status(
     State(s): State<SharedState>,
     ApiQuery(q): ApiQuery<PageQuery>,
 ) -> ApiResult<Json<Page<FeedStatus>>> {
+    let page = KeyPage::of(&q)?;
     let model = s.config.model_of(crate::config::EntityKind::Feed).await?;
-    Ok(Json(key_page(&model.feeds, &q, |def| status_of(&s, def)).await?))
+    Ok(Json(
+        key_page(&model.feeds, &page, |def| status_of(&s, def)).await?,
+    ))
 }
 
 /// The marker before the key inside [`key_page`]'s cursors, so a page ending at the empty key
@@ -293,6 +296,29 @@ fn cursor_key(c: &str) -> ApiResult<String> {
     })
 }
 
+/// A [`key_page`] query, checked (api.md §7): the key its cursor continues after and the page
+/// size, each `400` when it isn't one. A handler checks it before any work its page doesn't need
+/// (a provider's listing: before reading and parsing the stored listing), so a bad cursor or
+/// limit is refused for free.
+struct KeyPage {
+    after: Option<String>,
+    limit: usize,
+}
+
+impl KeyPage {
+    fn of(q: &PageQuery) -> ApiResult<Self> {
+        Ok(Self {
+            after: q
+                .cursor
+                .as_deref()
+                .filter(|c| !c.is_empty())
+                .map(cursor_key)
+                .transpose()?,
+            limit: limit(q)?,
+        })
+    }
+}
+
 /// One page of a list in key order (api.md §7 cursor pagination): the entries after the query's
 /// cursor, each read by `read`; the next cursor names the last key returned (after
 /// [`KEY_CURSOR`]), when more follow.
@@ -303,7 +329,7 @@ fn cursor_key(c: &str) -> ApiResult<String> {
 /// (`GET feed-providers/{id}/listing`).
 async fn key_page<'a, K, D, T, Fut>(
     entries: impl IntoIterator<Item = (K, &'a D)>,
-    q: &PageQuery,
+    page: &KeyPage,
     mut read: impl FnMut(&'a D) -> Fut,
 ) -> ApiResult<Page<T>>
 where
@@ -311,13 +337,7 @@ where
     D: ?Sized + 'a,
     Fut: std::future::Future<Output = ApiResult<T>>,
 {
-    let after = q
-        .cursor
-        .as_deref()
-        .filter(|c| !c.is_empty())
-        .map(cursor_key)
-        .transpose()?;
-    let lim = limit(q)?;
+    let (after, lim) = (&page.after, page.limit);
     let mut items = Vec::new();
     let mut last: Option<K> = None;
     for (key, item) in entries
@@ -1013,7 +1033,7 @@ mod tests {
                     cursor,
                     limit: Some(1),
                 };
-                key_page(entries, &q, |v| std::future::ready(Ok(*v)))
+                key_page(entries, &KeyPage::of(&q).unwrap(), |v| std::future::ready(Ok(*v)))
                     .await
                     .unwrap()
             }
@@ -1216,9 +1236,10 @@ async fn all_provider_status(
     State(s): State<SharedState>,
     ApiQuery(q): ApiQuery<PageQuery>,
 ) -> ApiResult<Json<Page<ProviderStatus>>> {
+    let page = KeyPage::of(&q)?;
     let model = s.config.model_of(crate::config::EntityKind::FeedProvider).await?;
     Ok(Json(
-        key_page(&model.feed_providers, &q, |p| provider_status_of(&s, p)).await?,
+        key_page(&model.feed_providers, &page, |p| provider_status_of(&s, p)).await?,
     ))
 }
 
@@ -1364,10 +1385,11 @@ async fn provider_listing(
         }
         Some(n) => Some(n),
     };
-    let pq = PageQuery {
+    // The page's cursor and size too, before the listing is read, parsed and viewed.
+    let page = KeyPage::of(&PageQuery {
         cursor: q.cursor,
         limit: q.limit,
-    };
+    })?;
     let model = s.config.model_of(crate::config::EntityKind::Feed).await?;
     let p = model
         .feed_providers
@@ -1393,7 +1415,7 @@ async fn provider_listing(
     // Keys and entries go in as two zipped lists: a closure pairing them would make the
     // handler's future not `Send` for every lifetime, which axum needs.
     let keys: Vec<&str> = entries.iter().map(super::select::Entry::key).collect();
-    let page = key_page(keys.iter().zip(&entries), &pq, |e| {
+    let page = key_page(keys.iter().zip(&entries), &page, |e| {
         std::future::ready(Ok(match e {
             super::select::Entry::Prefix { prefix, files, feeds } => FileRow::Prefix(FilePrefix {
                 prefix: prefix.to_string(),

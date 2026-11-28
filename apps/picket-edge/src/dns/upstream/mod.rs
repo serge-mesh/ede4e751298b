@@ -15,7 +15,9 @@
 //! - **Health** is passive (README §2 "Health": only timeouts, transport errors and malformed
 //!   answers count) plus a breaker per upstream. An answer refused for its size alone
 //!   ([`Invalid::is_size_limit`]: too many records in a section, an RRset over
-//!   `limits.max_rrset_records`) fails the attempt without judging the upstream: the breaker is
+//!   `limits.max_rrset_records`) or for an SVCB/HTTPS record's RFC 9460-forbidden parameters
+//!   ([`Invalid::BadSvcb`], one domain's data; [`Invalid::leaves_upstream_unjudged`]) fails the
+//!   attempt (counted as invalid, the query moving on) without judging the upstream: the breaker is
 //!   left as it was (no failure, so one large domain can't take a single-upstream group down; no
 //!   success, so a refused reply never erases earlier failures or closes a half-open breaker), and
 //!   a probe slot the attempt held goes back. A
@@ -693,8 +695,9 @@ impl UpstreamPool {
             }
             Err(inv) => {
                 u.counters.invalid.get(inv.reason()).fetch_add(1, Relaxed);
-                if inv.is_size_limit() {
-                    // Refused by a size limit, not shown broken: no health signal (issue #16).
+                if inv.leaves_upstream_unjudged() {
+                    // Refused by a size limit (issue #16) or for one domain's SVCB/HTTPS
+                    // parameters, not shown broken: no health signal.
                     return Attempt::Unjudged(u, Cause::Invalid);
                 }
                 u.breaker.failure(Instant::now());
@@ -992,6 +995,93 @@ mod tests {
         );
         assert!(!u.healthy(), "a refused probe doesn't close the breaker");
         assert!(u.breaker.selectable(Instant::now()), "the probe slot went back");
+    }
+
+    /// A fake UDP upstream on loopback answering by the question's first label: `bad`, an HTTPS
+    /// ServiceMode record with an empty `ipv4hint` (RFC 9460 §7.3 forbids it: `bad_svcb`);
+    /// `broken`, a record whose RDLENGTH runs past the message (`undecodable`); anything else,
+    /// one A record.
+    async fn fake_svcb_upstream() -> u16 {
+        let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = sock.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            loop {
+                let Ok((n, from)) = sock.recv_from(&mut buf).await else {
+                    return;
+                };
+                let q = &buf[..n];
+                let name_end = 12 + q[12..].iter().position(|b| *b == 0).unwrap() + 1;
+                let first = &q[13..13 + usize::from(q[12])];
+                let mut a = Vec::new();
+                a.extend_from_slice(&q[..2]);
+                a.extend_from_slice(&[0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0]);
+                a.extend_from_slice(&q[12..name_end + 4]);
+                match first {
+                    // priority 1, target ".", key 4 (ipv4hint) with no addresses
+                    b"bad" => a.extend_from_slice(&[
+                        0xC0, 0x0C, 0, 65, 0, 1, 0, 0, 0, 60, 0, 7, 0, 1, 0, 0, 4, 0, 0,
+                    ]),
+                    b"broken" => {
+                        a.extend_from_slice(&[0xC0, 0x0C, 0, 1, 0, 1, 0, 0, 0, 60, 0, 9, 10, 0, 0, 1])
+                    }
+                    _ => a.extend_from_slice(&[0xC0, 0x0C, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 10, 0, 0, 1]),
+                }
+                let _ = sock.send_to(&a, from).await;
+            }
+        });
+        port
+    }
+
+    /// Issue #94: an answer refused for one domain's SVCB/HTTPS parameters (`bad_svcb`) is
+    /// counted and the query moves to the next upstream, but the breaker is left alone, so
+    /// repeated refusals for that domain never take the upstream away from unrelated names. A
+    /// genuinely undecodable answer still counts against its health.
+    #[tokio::test]
+    async fn semantic_svcb_refusals_fall_back_without_judging_the_upstream() {
+        let (bad, good) = (fake_svcb_upstream().await, fake_upstream(1, 1).await);
+        let (logs, _rx) = crate::logs::LogProducer::new("b".into(), Arc::default());
+        let pool = UpstreamPool::new(Metrics::new(), Conditions::new(logs));
+        let cfg: EdgeConfig = serde_json::from_value(serde_json::json!({
+            "edge": {"id": "e-01", "name": "test-edge", "platform": "debian"},
+            "listeners": [],
+            "upstreams": {
+                "u": {"protocol": "udp", "ip": "127.0.0.1", "port": bad},
+                "v": {"protocol": "udp", "ip": "127.0.0.1", "port": good},
+            },
+            "upstream_groups": {"g": {"upstreams": ["u", "v"], "strategy": "failover"}},
+        }))
+        .unwrap();
+        assert!(pool.configure(&cfg).is_empty());
+        let u = Arc::clone(&pool.upstreams.load()["u"]);
+        let ask = |name: &str, qtype: u16| ResolveRequest {
+            qname: WireName::from_text(name).unwrap(),
+            qtype,
+            ..request()
+        };
+        for _ in 0..BREAKER_FAILURES * 2 {
+            let ok = pool.resolve(&ask("bad.example", 65)).await.ok().unwrap();
+            assert_eq!(&*ok.upstream, "v", "the query fell back");
+        }
+        assert!(u.healthy(), "the breaker stays closed");
+        assert_eq!(
+            u.counters.invalid.get("bad_svcb").load(Relaxed),
+            u64::from(BREAKER_FAILURES * 2)
+        );
+        let ok = pool.resolve(&ask("ok.example", 1)).await.ok().unwrap();
+        assert_eq!(&*ok.upstream, "u", "an unrelated name still goes to it");
+        assert_eq!(ok.answer.facts.addrs.len(), 1);
+
+        // An undecodable answer is a health signal: enough of them open the breaker.
+        for _ in 0..BREAKER_FAILURES {
+            let ok = pool.resolve(&ask("broken.example", 1)).await.ok().unwrap();
+            assert_eq!(&*ok.upstream, "v");
+        }
+        assert_eq!(
+            u.counters.invalid.get("undecodable").load(Relaxed),
+            u64::from(BREAKER_FAILURES)
+        );
+        assert!(!u.healthy(), "undecodable answers count against it");
     }
 
     /// edge.md §6 Health: an open breaker whose time is up takes one probe but stays unhealthy

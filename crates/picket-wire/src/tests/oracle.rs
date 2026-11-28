@@ -1,7 +1,7 @@
 //! The `domain` side of the differential oracle (build-and-test.md §4): NLnet Labs' `domain`
-//! 0.12 decodes a message on its own, and the facts response checks use are recomputed from that
-//! decode. Shared, by `#[path]`, between picket-wire's unit tests and the `fuzz/wire` targets, so
-//! it depends on `domain` only.
+//! (the workspace's, 0.13) decodes a message on its own, and the facts response checks use are
+//! recomputed from that decode. Shared, by `#[path]`, between picket-wire's unit tests and the
+//! `fuzz/wire` targets, so it depends on `domain` only.
 //!
 //! An AliasMode SVCB/HTTPS record's SvcParams aren't decoded: recipients MUST ignore them (RFC
 //! 9460 §2.4.2), so the edge neither checks them nor takes hints from them.

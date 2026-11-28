@@ -1,6 +1,7 @@
 //! Lookup module registry (providers.md §1): scans `src/modules/*/` and writes
 //! `$OUT_DIR/registry.rs`, which declares each module with `#[path]`, lists one boxed
-//! `Module::default()` each and checks a config against a module's `Config`. No linker tricks, no
+//! `Module::default()` each, checks a config against a module's `Config` and lists one
+//! constructor per module (`FACTORIES`). No linker tricks, no
 //! `unsafe`.
 //!
 //! The build fails on a directory without `mod.rs`, an id that isn't `[a-z0-9_]` (or isn't a
@@ -42,6 +43,26 @@ fn main() {
             );
         }
         s.push_str("        _ => ::core::option::Option::None,\n    }\n}\n");
+        s.push_str(
+            "\n/// A module's constructor.\n\
+             pub(crate) type MakeModule = fn() -> ::std::sync::Arc<dyn crate::LookupModule>;\n",
+        );
+        s.push_str(
+            "\n/// One constructor per module, sorted by id: the registry calls a module's only when a\n\
+             /// lookup provider first needs it (#44).\n\
+             pub(crate) const FACTORIES: &[(&str, MakeModule)] = &[\n",
+        );
+        for id in modules.keys() {
+            let _ = writeln!(s, "    ({id:?}, make_{id}),");
+        }
+        s.push_str("];\n");
+        for id in modules.keys() {
+            let _ = writeln!(
+                s,
+                "\nfn make_{id}() -> ::std::sync::Arc<dyn crate::LookupModule> {{\n    \
+                 ::std::sync::Arc::new(<{id}::Module as ::core::default::Default>::default())\n}}"
+            );
+        }
         Ok(s)
     });
     let out = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("registry.rs");

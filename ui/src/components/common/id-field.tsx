@@ -36,9 +36,15 @@ export function idRule(kind: string): string {
     : "1–64 of a-z, 0-9, - and _, starting with a letter or digit.";
 }
 
-/** The id input of a create dialog, with what the id will be and its rule. */
-export function IdField({ htmlId, kind, state, label = "Id" }: { htmlId: string; kind: string; state: DerivedId; label?: string }) {
+/**
+ * The id input of a create dialog, with what the id will be and its rule. `error` is core's
+ * refusal of the id (a `422` naming the `id` field, such as `id_taken`): it marks the input
+ * invalid with core's message in place of the hint (a local syntax error, when there is one,
+ * shows instead). The dialog passes it only while the id is the one core refused.
+ */
+export function IdField({ htmlId, kind, state, label = "Id", error }: { htmlId: string; kind: string; state: DerivedId; label?: string; error?: string | null }) {
   const bad = state.id !== "" && !state.valid;
+  const refused = !bad && !!error;
   const following = !state.edited;
   return (
     <div className="space-y-1.5">
@@ -49,18 +55,20 @@ export function IdField({ htmlId, kind, state, label = "Id" }: { htmlId: string;
         placeholder={state.derived || undefined}
         onChange={(e) => state.set(e.target.value)}
         className="font-mono"
-        aria-invalid={bad || undefined}
+        aria-invalid={bad || refused || undefined}
         aria-describedby={`${htmlId}-help`}
         autoComplete="off"
       />
-      <p id={`${htmlId}-help`} className={bad ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
+      <p id={`${htmlId}-help`} className={bad || refused ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
         {bad
           ? idRule(kind)
-          : state.id === ""
-            ? "Taken from the name; or type one."
-            : following
-              ? "From the name; edit it if you like. It never changes once created."
-              : "It never changes once created."}
+          : refused
+            ? error
+            : state.id === ""
+              ? "Taken from the name; or type one."
+              : following
+                ? "From the name; edit it if you like. It never changes once created."
+                : "It never changes once created."}
       </p>
     </div>
   );

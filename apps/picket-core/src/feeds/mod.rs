@@ -1550,7 +1550,10 @@ impl Feeds {
                         // still runs, drops the one it leaves too ([`Feeds::complete`]).
                         p.retry_at = None;
                         if p.checking {
+                            // The old provider's check, ending, would clear the cause above and
+                            // record its time: the new one's first check waits behind it.
                             p.edited_during = true;
+                            p.queued = Some(Cause::merge(p.queued, Cause::First));
                         }
                     }
                     Some(old) => {
@@ -2520,6 +2523,24 @@ mod lifecycle_tests {
         assert_eq!(f.complete(P, now), None);
         assert!(f.with(|i| i.providers.contains_key(P)).unwrap(), "kept");
         assert_eq!(tick(&f, now + secs(1)), vec![Cause::First]);
+        // As `reload` leaves a provider created again during a check: the old check, recording
+        // its end, clears the cause, so the first check comes from the queue.
+        let f = feeds_with(0);
+        claimed(&f, now);
+        rt(&f, |p| {
+            p.cause = Some(Cause::First);
+            p.first = true;
+            p.edited_during = true;
+            p.queued = Some(Cause::merge(p.queued, Cause::First));
+        });
+        let used = rt(&f, |p| p.def.as_ref().unwrap().trigger.clone());
+        f.provider_checked(P, now, &used);
+        let _ = f.complete(P, now);
+        assert_eq!(
+            tick(&f, now + secs(1)),
+            vec![Cause::First],
+            "the new provider's first check"
+        );
     }
 
     /// A check task that panics or is cancelled frees its provider, but only once its

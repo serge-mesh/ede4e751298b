@@ -340,6 +340,9 @@ function NewProviderDialog({ onClose }: { onClose: () => void }) {
   const [config, setConfig] = React.useState<unknown>({});
   const [feed, setFeed] = React.useState<Record<string, unknown>>({ format: "adblock" });
   const [errors, setErrors] = React.useState<FieldErrors>({});
+  // core's refusal of the id (`id_taken`: a one-file provider's feed takes its id), shown by the
+  // id field for the id it refused only: editing the id (or the name it follows) drops it.
+  const [idError, setIdError] = React.useState<{ id: string; message: string } | null>(null);
   const [warnings, setWarnings] = React.useState<Issue[]>([]);
   const module = modules.data?.find((m) => m.id === moduleId);
   const pickModule = (m: string) => {
@@ -357,10 +360,11 @@ function NewProviderDialog({ onClose }: { onClose: () => void }) {
     const prefixed: FieldErrors = Object.fromEntries(Object.entries(local).map(([k, v]) => [k, v]));
     setErrors(prefixed);
     if (Object.keys(local).length) return;
+    const sent = id.id;
     save.mutate(
       {
         body: {
-          id: id.id,
+          id: sent,
           name,
           module: moduleId,
           config: config as Record<string, unknown>,
@@ -369,6 +373,7 @@ function NewProviderDialog({ onClose }: { onClose: () => void }) {
       },
       {
         onSuccess: (o) => {
+          setIdError(null);
           setWarnings(o.warnings ?? []);
           toast.success(`Created provider ${escapeControl(o.id)}`);
           if ((o.warnings ?? []).length === 0) {
@@ -379,7 +384,8 @@ function NewProviderDialog({ onClose }: { onClose: () => void }) {
         },
         onError: (e) => {
           if (e instanceof ApiError) {
-            const fe = e.fieldErrors();
+            const { id: idMessage, ...fe } = e.fieldErrors();
+            setIdError(idMessage ? { id: sent, message: idMessage } : null);
             setErrors(Object.fromEntries(Object.entries(fe).map(([k, v]) => [k.replace(/^config\./, ""), v])));
           }
           toast.error(errorMessage(e));
@@ -406,7 +412,7 @@ function NewProviderDialog({ onClose }: { onClose: () => void }) {
               <Label htmlFor="np-name">Name</Label>
               <Input id="np-name" value={name} onChange={(e) => setName(e.target.value)} required />
             </div>
-            <IdField htmlId="np-id" kind="feed-providers" state={id} />
+            <IdField htmlId="np-id" kind="feed-providers" state={id} error={idError?.id === id.id ? idError.message : null} />
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="np-module">Download module</Label>

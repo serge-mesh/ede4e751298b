@@ -46,11 +46,21 @@ export interface FieldRenderProps {
   required: boolean;
   error?: string;
   disabled: boolean;
+  /** The whole form's value, for a control that depends on another field. */
+  form: unknown;
   /** The control the form would render without the override. */
   renderDefault: () => React.ReactNode;
 }
 
-export type FieldOverride = (p: FieldRenderProps) => React.ReactNode;
+/**
+ * Renders a field in place of the form's control. The form's label points at the control with
+ * the field's `id`; an override that renders a group of controls instead sets `block`, so the
+ * label names the group (see `blockOverride`).
+ */
+export type FieldOverride = ((p: FieldRenderProps) => React.ReactNode) & { block?: boolean };
+
+/** An override that renders a group of controls (labelled by the field's name, not `for` one control). */
+export const blockOverride = (render: (p: FieldRenderProps) => React.ReactNode): FieldOverride => Object.assign(render, { block: true });
 
 interface Ctx {
   root: SchemaRoot;
@@ -63,6 +73,7 @@ interface Ctx {
   disabled: boolean;
   mode: "create" | "edit";
   idPrefix: string;
+  form: unknown;
 }
 
 const CtxContext = React.createContext<Ctx | null>(null);
@@ -122,8 +133,9 @@ export function SchemaForm({
       disabled,
       mode,
       idPrefix: idPrefix ?? `sf${autoId.replace(/:/g, "")}`,
+      form: value,
     }),
-    [rootDoc, errors, overrides, hidden, readOnly, labels, placeholders, disabled, mode, idPrefix, autoId],
+    [rootDoc, errors, overrides, hidden, readOnly, labels, placeholders, disabled, mode, idPrefix, autoId, value],
   );
   const c = classify(schema, rootDoc);
   return (
@@ -275,7 +287,7 @@ export function Field({
     );
   const override = ctx.overrides[path];
   const control = override
-    ? override({ path, name, label, id, c, value, onChange, required, error, disabled, renderDefault })
+    ? override({ path, name, label, id, c, value, onChange, required, error, disabled, form: ctx.form, renderDefault })
     : renderDefault();
   if (!name) return <>{control}</>;
   const warning = activeWarning(c.schema, value);
@@ -290,7 +302,7 @@ export function Field({
       error={error}
       warning={warning}
       inline={c.kind === "boolean" && !override}
-      block={block && !override}
+      block={override ? !!override.block : block}
     >
       {control}
     </FieldShell>
