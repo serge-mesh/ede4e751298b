@@ -406,6 +406,39 @@ impl<'a> View<'a> {
         Ok(out)
     }
 
+    /// One page of feed `feed`'s keyed blocks of type `rule_type` (name, host-mapping and IP
+    /// literal rules that aren't exceptions), after `cursor` in (key, id) order: the cross-feed
+    /// scan's sweep of every key (core.md §3: a bounded step). Every row read moves the cursor;
+    /// only the view's rows are returned. The next cursor is `None` at the end.
+    pub fn keyed_blocks_page(
+        &self,
+        c: &Connection,
+        feed: &str,
+        rule_type: RuleType,
+        cursor: &KeyCursor,
+        limit: usize,
+        bad: &mut u64,
+    ) -> rusqlite::Result<(Vec<Row>, Option<KeyCursor>)> {
+        let run = self.run_of(feed);
+        let mut st = c.prepare_cached(&format!(
+            "SELECT {COLS} FROM feed_entries WHERE feed_id = ?1 AND rule_type = ?3 AND (key, id) > (?4, ?5)
+               AND kind IN ('name', 'host_mapping', 'ip_literal') AND (flags & 204) = 0 AND {LIVE}
+             ORDER BY key, id LIMIT ?6"
+        ))?;
+        let mut rows = st.query(params![feed, run, rule_type.as_str(), cursor.0, cursor.1, limit])?;
+        let mut out = Vec::new();
+        let mut n = 0usize;
+        let mut last: Option<KeyCursor> = None;
+        while let Some(r) = rows.next()? {
+            n += 1;
+            last = Some((r.get(4)?, r.get(0)?));
+            if let Some(row) = self.row(r, bad)? {
+                out.push(row);
+            }
+        }
+        Ok((out, if n >= limit { last } else { None }))
+    }
+
     /// One page of feed `feed`'s rules in bundle order (its line order, then identity, then row
     /// id), after `cursor` (`None`: from the start): every row read, whether the view takes it
     /// or not, moves the cursor, and only taken rows are returned. Returns the rows and the next

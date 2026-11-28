@@ -89,6 +89,9 @@ impl Mode {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Touched {
     pub pattern: bool,
+    /// An exception pattern was added ([`picket_rules::badfilter::is_pattern_exception`]): the
+    /// cross-feed scan checks it against every key, not only the changed ones.
+    pub pattern_exception: bool,
     pub ip: bool,
     pub browser: bool,
 }
@@ -879,6 +882,15 @@ impl BuildJob {
             }
             ctx.touched.pattern |= t.pattern;
             ctx.touched.ip |= t.ip;
+            if added
+                && t.pattern
+                && !ctx.touched.pattern_exception
+                && Flags(flags).intersects(Flags::ALL_ALLOW)
+                && picket_rules::Rule::from_stored(rt.as_str(), kind, key, flags, value_json)
+                    .is_ok_and(|r| picket_rules::badfilter::is_pattern_exception(&r))
+            {
+                ctx.touched.pattern_exception = true;
+            }
             if added {
                 super::guard::check_entry(ctx, m, rt, kind, key, flags, value_json);
             }
