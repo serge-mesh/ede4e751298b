@@ -421,9 +421,13 @@ async fn restarts_seed_a_healthy_helper_at_once_and_refuse_an_incompatible_one()
         .await,
         "the spooled event reaches core"
     );
-    assert_eq!(
-        state_json(&d)["ready_version"].as_str(),
-        Some(picket_api::VERSION)
+    // Written just after the listeners are published (dns/listeners): wait for it as for the rest.
+    assert!(
+        wait_until(T, || state_json(&d)["ready_version"].as_str()
+            == Some(picket_api::VERSION))
+        .await,
+        "{}",
+        state_json(&d)
     );
     r.shutdown().await;
 }
