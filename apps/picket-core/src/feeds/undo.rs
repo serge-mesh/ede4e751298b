@@ -191,8 +191,8 @@ impl UndoJob {
     /// Queues the undo in the heavy lane, in its reserved places when the queue is full
     /// ([`crate::scheduler::HeavyLane::try_submit_reserved`]): it always runs in the lane, never
     /// next to another heavy job (core.md §3). If even the reserve is full, admission is tried
-    /// again every [`ADMIT_RETRY`] (the feed stays busy meanwhile); at shutdown the run stays
-    /// open for the next start.
+    /// again every [`ADMIT_RETRY`] (the feed stays busy meanwhile); at shutdown (the lane closed)
+    /// the run stays open for the next start.
     pub fn submit(self) {
         let state = self.state.clone();
         let Err(job) = state
@@ -202,6 +202,10 @@ impl UndoJob {
         else {
             return;
         };
+        if state.scheduler.heavy.is_closed() {
+            // Shutting down: the next start undoes the run.
+            return;
+        }
         tracing::warn!("the heavy lane is full; a failed feed run's undo waits for a place in it");
         tokio::spawn(async move {
             let mut job = job;

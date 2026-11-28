@@ -14,13 +14,18 @@
 //! A waiting job **ages** one priority level per 10 min of waiting, up to P1; time spent running
 //! its steps doesn't count (core.md §3). Feed → bundle builds are **debounced** 10 s
 //! ([`Debouncer`]). Admission is bounded: a job that doesn't fit is dropped and counted.
+//!
+//! At shutdown the heavy worker **closes** the lane ([`HeavyLane::close`]): admission stops,
+//! reserved places included, and the queued jobs are dropped, so nothing they hold (the core's
+//! state, and with it the data directory's lock) outlives the core. Work they leave unfinished
+//! is picked up at the next start (a feed run left open is undone then).
 
 use std::collections::HashMap;
 use std::future::Future;
 use std::hash::Hash;
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -182,6 +187,8 @@ pub struct HeavyStats {
 
 struct HeavyInner {
     queue: Mutex<Vec<Entry>>,
+    /// Set once, under the queue lock, when the lane shuts down ([`HeavyLane::close`]).
+    closed: AtomicBool,
     notify: Notify,
     cap: usize,
     aging_step: Duration,
@@ -211,6 +218,7 @@ impl HeavyLane {
         Self {
             inner: Arc::new(HeavyInner {
                 queue: Mutex::new(Vec::new()),
+                closed: AtomicBool::new(false),
                 notify: Notify::new(),
                 cap,
                 aging_step,
@@ -242,7 +250,8 @@ impl HeavyLane {
 
     /// [`HeavyLane::try_submit`] with [`HeavyLane::RESERVE`] more places, for jobs that may be
     /// neither dropped nor run outside the lane (an undo, a purge). A job even the reserve
-    /// refuses comes back; its caller retries admission later.
+    /// refuses comes back; its caller retries admission later, unless the lane is closed
+    /// ([`HeavyLane::is_closed`]).
     pub fn try_submit_reserved(
         &self,
         priority: Priority,
@@ -260,6 +269,12 @@ impl HeavyLane {
         let Ok(mut q) = self.inner.queue.lock() else {
             return Err(job);
         };
+        // Read under the queue lock, as `close` sets it: no job joins a queue already emptied.
+        if self.inner.closed.load(Ordering::Acquire) {
+            drop(q);
+            tracing::debug!(kind = %job.kind(), target = %job.target(), "heavy lane closed; job not queued");
+            return Err(job);
+        }
         let key = (job.kind().to_string(), job.target().to_string());
         let result = if let Some(e) = q.iter_mut().find(|e| !e.started && e.key() == key) {
             e.job = job;
@@ -298,6 +313,35 @@ impl HeavyLane {
         Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
         self.submit(priority, Box::new(FnJob::new(kind, target, f)))
+    }
+
+    /// True once the lane shut down: it queues nothing more.
+    pub fn is_closed(&self) -> bool {
+        self.inner.closed.load(Ordering::Acquire)
+    }
+
+    /// Shuts the lane: refuses every later submission (reserved ones too) and drops the jobs
+    /// still queued, so what they hold (the core's state) is released. The entries leave the
+    /// queue under its lock and are dropped after it is released: a job's drop may submit work
+    /// (a failed feed run's undo), which then finds the lane closed instead of the lock held.
+    /// The worker calls it when it stops; calling it again does nothing more.
+    pub fn close(&self) {
+        let pending = match self.inner.queue.lock() {
+            Ok(mut q) => {
+                self.inner.closed.store(true, Ordering::Release);
+                std::mem::take(&mut *q)
+            }
+            Err(poisoned) => {
+                let mut q = poisoned.into_inner();
+                self.inner.closed.store(true, Ordering::Release);
+                std::mem::take(&mut *q)
+            }
+        };
+        self.bump(|s| s.queued = 0);
+        if !pending.is_empty() {
+            tracing::debug!(jobs = pending.len(), "heavy lane closed; queued jobs dropped");
+        }
+        drop(pending);
     }
 
     pub fn depth(&self) -> usize {
@@ -398,7 +442,8 @@ impl HeavyLane {
         true
     }
 
-    /// The lane's worker: runs until `shutdown`. Spawn it once.
+    /// The lane's worker: runs until `shutdown`, then closes the lane ([`HeavyLane::close`]).
+    /// Spawn it once.
     pub async fn run(self, shutdown: CancellationToken) {
         loop {
             let entry = loop {
@@ -406,7 +451,10 @@ impl HeavyLane {
                     break e;
                 }
                 tokio::select! {
-                    _ = shutdown.cancelled() => return,
+                    _ = shutdown.cancelled() => {
+                        self.close();
+                        return;
+                    }
                     _ = self.inner.notify.notified() => {}
                 }
             };
@@ -426,11 +474,18 @@ impl HeavyLane {
             // A panicking step costs its job, never the lane (README §2: a bad item never stalls
             // the receiver).
             let r = tokio::select! {
-                r = AssertUnwindSafe(entry.job.step()).catch_unwind() => match r {
+                r = AssertUnwindSafe(entry.job.step()).catch_unwind() => Some(match r {
                     Ok(r) => r,
                     Err(_) => Err(anyhow::anyhow!("the job panicked")),
-                },
-                _ = shutdown.cancelled() => return,
+                }),
+                _ = shutdown.cancelled() => None,
+            };
+            let Some(r) = r else {
+                // Stopped mid-step: closed first, so the running job's drop queues nothing.
+                self.close();
+                drop(entry);
+                self.bump(|s| s.running = None);
+                return;
             };
             self.bump(|s| s.steps += 1);
             let ms = || Some(picket_api::duration::as_millis_u64(since.elapsed()));
@@ -1437,5 +1492,160 @@ mod tests {
         got.sort();
         assert_eq!(got, vec!["b1", "b2"]);
         assert_eq!(d.pending(), 0);
+    }
+
+    /// Owns a heavy lane, as the core's state owns its scheduler.
+    struct Owner {
+        heavy: HeavyLane,
+    }
+
+    /// A job that, when dropped, submits another job holding `owner` (as a feed job's guard
+    /// queues its run's undo) and records what the lane answered.
+    struct SubmitsOnDrop {
+        owner: Arc<Owner>,
+        reserved: bool,
+        answered: Arc<Mutex<Vec<bool>>>,
+    }
+
+    impl HeavyJob for SubmitsOnDrop {
+        fn kind(&self) -> &str {
+            "submits_on_drop"
+        }
+        fn target(&self) -> &str {
+            "x"
+        }
+        fn step(&mut self) -> BoxFuture<'_, anyhow::Result<Step>> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    impl Drop for SubmitsOnDrop {
+        fn drop(&mut self) {
+            let held = self.owner.clone();
+            let job = Box::new(FnJob::new("undo", "x", move || async move {
+                drop(held);
+                Ok(())
+            }));
+            let r = if self.reserved {
+                self.owner.heavy.try_submit_reserved(Priority::P0, job)
+            } else {
+                self.owner.heavy.try_submit(Priority::P0, job)
+            };
+            self.answered.lock().unwrap().push(r.is_ok());
+        }
+    }
+
+    /// Issue 82: a core cancelled while its heavy lane still holds jobs that hold its state must
+    /// release that state once the worker stops (state → scheduler → queue → job → state).
+    #[tokio::test]
+    async fn shutdown_releases_queued_owner_state() {
+        let lane = HeavyLane::new(10, Duration::from_secs(600));
+        let state = Arc::new(Owner { heavy: lane.clone() });
+        let weak = Arc::downgrade(&state);
+        let started = Arc::new(Notify::new());
+        let signal = started.clone();
+        lane.submit_fn("blocked", "first", Priority::P0, move || async move {
+            signal.notify_one();
+            std::future::pending::<()>().await;
+            Ok(())
+        });
+        let held = state.clone();
+        lane.submit_fn("queued", "owns_state", Priority::P3, move || async move {
+            drop(held);
+            Ok(())
+        });
+        let stop = CancellationToken::new();
+        let worker = tokio::spawn(lane.clone().run(stop.clone()));
+        tokio::time::timeout(Duration::from_secs(2), started.notified())
+            .await
+            .unwrap();
+        stop.cancel();
+        tokio::time::timeout(Duration::from_secs(2), worker)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(lane.depth(), 0);
+        assert_eq!(lane.stats().running, None);
+        assert!(lane.is_closed());
+        drop(state);
+        drop(lane);
+        assert!(weak.upgrade().is_none(), "the queued job released the owner");
+    }
+
+    /// After shutdown the lane admits nothing, reserved places included; a job dropped by the
+    /// shutdown (the running one, or a queued one) that submits from its drop finds the lane
+    /// closed, never its queue lock held, and leaves nothing queued to hold the owner.
+    #[tokio::test]
+    async fn closed_lane_admits_nothing_and_drops_queue_nothing() {
+        let lane = HeavyLane::new(10, Duration::from_secs(600));
+        let state = Arc::new(Owner { heavy: lane.clone() });
+        let weak = Arc::downgrade(&state);
+        let answered = Arc::new(Mutex::new(Vec::new()));
+        // Running when the stop comes (its step never ends), and one queued behind it.
+        lane.submit(
+            Priority::P0,
+            Box::new(SubmitsOnDrop {
+                owner: state.clone(),
+                reserved: true,
+                answered: answered.clone(),
+            }),
+        );
+        let stop = CancellationToken::new();
+        let worker = tokio::spawn(lane.clone().run(stop.clone()));
+        for _ in 0..1000 {
+            if lane.stats().running.is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(lane.stats().running.as_deref(), Some("submits_on_drop:x"));
+        struct Second(SubmitsOnDrop);
+        impl HeavyJob for Second {
+            fn kind(&self) -> &str {
+                "second"
+            }
+            fn target(&self) -> &str {
+                "y"
+            }
+            fn step(&mut self) -> BoxFuture<'_, anyhow::Result<Step>> {
+                self.0.step()
+            }
+        }
+        lane.submit(
+            Priority::P3,
+            Box::new(Second(SubmitsOnDrop {
+                owner: state.clone(),
+                reserved: false,
+                answered: answered.clone(),
+            })),
+        );
+        assert_eq!(lane.depth(), 1);
+        stop.cancel();
+        tokio::time::timeout(Duration::from_secs(2), worker)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            *answered.lock().unwrap(),
+            vec![false, false],
+            "both drops were refused"
+        );
+        assert_eq!(lane.depth(), 0);
+        // Later submissions are refused too, and counted as nothing queued.
+        assert_eq!(
+            lane.submit_fn("late", "z", Priority::P0, || async { Ok(()) }),
+            Submitted::Dropped
+        );
+        assert!(
+            lane.try_submit_reserved(
+                Priority::P0,
+                Box::new(FnJob::new("late", "r", || async { Ok(()) }))
+            )
+            .is_err()
+        );
+        assert_eq!(lane.depth(), 0);
+        drop(state);
+        drop(lane);
+        assert!(weak.upgrade().is_none());
     }
 }

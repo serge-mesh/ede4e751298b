@@ -557,6 +557,86 @@ async fn start_failures_a_restart_can_fix_are_not_78() {
     assert!(e.message.contains("web port"), "{}", e.message);
 }
 
+/// Starts a core on `dir` in this process, riding out the moment another test's forked child
+/// holds a copy of the directory's lock (as [`start_core_with`] does).
+async fn start_on(
+    dir: &Path,
+    stop: &tokio_util::sync::CancellationToken,
+) -> Result<picket_core::state::SharedState, picket_core::error::ExitError> {
+    let opts = picket_core::run::StartOptions {
+        release_dir: std::path::PathBuf::from("/nonexistent/picket-core/edge"),
+        any_port: true,
+        clock_synced: Some(true),
+        disk_watch: false,
+        ..Default::default()
+    };
+    let mut tries = 0;
+    loop {
+        match picket_core::run::start_with(dir, stop.clone(), opts.clone()).await {
+            Err(e) if e.code == picket_core::error::EXIT_IN_USE && tries < 100 => {
+                tries += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            r => return r.map(|(state, _)| state),
+        }
+    }
+}
+
+/// Issue 82: a core cancelled while its heavy lane holds a running job and a queued one that
+/// holds the core's state releases that state, and with it the data directory's lock, once its
+/// tasks end: a new core starts on the same directory in the same process.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancelled_core_releases_its_directory() {
+    use picket_core::scheduler::Priority;
+    let (d, _, _, _) = init_dir();
+    let stop = tokio_util::sync::CancellationToken::new();
+    let state = start_on(d.path(), &stop).await.unwrap();
+    let started = std::sync::Arc::new(tokio::sync::Notify::new());
+    let signal = started.clone();
+    state
+        .scheduler
+        .heavy
+        .submit_fn("test_blocked", "a", Priority::P0, move || async move {
+            signal.notify_one();
+            std::future::pending::<()>().await;
+            Ok(())
+        });
+    let held = state.clone();
+    state
+        .scheduler
+        .heavy
+        .submit_fn("test_holds_state", "b", Priority::P3, move || async move {
+            drop(held);
+            Ok(())
+        });
+    tokio::time::timeout(std::time::Duration::from_secs(60), started.notified())
+        .await
+        .expect("the blocking job started");
+    // Running while the core is up: its lock refuses a second core on the directory.
+    let other = tokio_util::sync::CancellationToken::new();
+    let e = picket_core::run::start_with(d.path(), other.clone(), Default::default())
+        .await
+        .err()
+        .expect("the directory is in use");
+    assert_eq!(e.code, picket_core::error::EXIT_IN_USE, "{}", e.message);
+    let weak = std::sync::Arc::downgrade(&state);
+    stop.cancel();
+    drop(state);
+    let end = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+    while weak.strong_count() > 0 {
+        assert!(
+            tokio::time::Instant::now() < end,
+            "the cancelled core's state is still held ({} owners)",
+            weak.strong_count()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let again = tokio_util::sync::CancellationToken::new();
+    let state = start_on(d.path(), &again).await.expect("a restart on the same directory");
+    assert!(!state.scheduler.heavy.is_closed());
+    again.cancel();
+}
+
 #[test]
 fn init_accepts_and_persists_reachable_addresses() {
     let d = tempfile::tempdir().unwrap();

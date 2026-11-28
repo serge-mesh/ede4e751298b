@@ -1942,6 +1942,10 @@ impl JobGuard {
 impl Drop for JobGuard {
     fn drop(&mut self) {
         let Some(state) = self.state.take() else { return };
+        if state.scheduler.heavy.is_closed() {
+            // Shutting down: nothing more is queued; the next start undoes an open run.
+            return;
+        }
         let feed = std::mem::take(&mut self.feed);
         let undo = if self.done { None } else { self.run };
         match tokio::runtime::Handle::try_current() {

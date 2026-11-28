@@ -171,6 +171,9 @@ impl Drop for PurgeJob {
         let Ok(h) = tokio::runtime::Handle::try_current() else {
             return; // shutting down: the next start resumes the purge
         };
+        if state.scheduler.heavy.is_closed() {
+            return; // likewise: the lane closed at shutdown
+        }
         h.spawn(async move {
             if done {
                 state.feeds.purge_done(&state, &feed);
