@@ -445,7 +445,8 @@ async fn with_block_ttl(e: &Env, bypass: Value, ttl: u32) {
 }
 
 /// A browser may still hold an earlier block answer for the name with a longer hold than the
-/// block the request names: that one governs both the minimum and the countdown.
+/// latest one (here the block TTL dropped from 600 s to 10 s): the longest hold governs both the
+/// minimum and the countdown.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_earlier_block_with_a_longer_hold_governs_a_dns_allow() {
     let e = env(json!({"mode": "off"}), json!({"interfaces": []}), None).await;
@@ -456,9 +457,10 @@ async fn an_earlier_block_with_a_longer_hold_governs_a_dns_allow() {
     let first = block_id(&m);
     with_block_ttl(&e, bypass, 10).await;
     let m = udp_q(e.dns(), &Q::new("blocked.example", 1)).await;
+    // The same block, so the same id: the request names the later ring entry (TTL 10 s).
     let later = block_id(&m);
-    assert_ne!(first, later);
-    // By the later block (TTL 10 s, hold 65 s): 2 min would outlast it, not the earlier one.
+    assert_eq!(first, later);
+    // By the later entry (hold 65 s): 2 min would outlast it, not the earlier one.
     let (st, v) = e
         .ext(
             "PATCH",
