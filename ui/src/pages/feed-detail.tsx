@@ -1028,6 +1028,25 @@ export function RunResult({ run, slow, retryAt, running }: { run: RunRow | null;
             </ul>
           </div>
         )}
+        {(run.parse?.notices?.BroadBrowser ?? 0) > 0 && (
+          <div>
+            <h4 className="mb-1 text-sm font-medium">
+              {formatNumber(run.parse?.notices?.BroadBrowser ?? 0)} broad browser rules kept
+            </h4>
+            <p className="mb-1 text-xs text-muted-foreground">
+              Browser rules with no domain restriction and a pattern that matches most requests. They are kept and go to the browser lists built from this feed; set the feed&apos;s browser mode to drop to leave its browser rules out.
+            </p>
+            {run.parse?.notice_samples && run.parse.notice_samples.length > 0 && (
+              <ul className="space-y-1 text-xs">
+                {run.parse.notice_samples.map((e, i) => (
+                  <li key={i} className="rounded bg-muted px-2 py-1">
+                    line {e.line_no}: <SafeText mono>{e.text}</SafeText>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
         {dropped.length > 0 && (
           <p className="text-sm">
             rule_policy dropped: {dropped.map(([k, n]) => `${escapeControl(k)} ${formatNumber(n)}`).join(", ")}

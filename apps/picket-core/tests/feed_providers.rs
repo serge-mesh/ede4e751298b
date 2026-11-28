@@ -402,6 +402,140 @@ async fn an_unfinished_listing_raises_listing_incomplete_until_one_finishes() {
     assert_eq!(c.state.feeds.provider_feeds("big")[0].id, "big-lists-a");
 }
 
+/// Issue 84: adding a GitHub URL whose feed exists returns that feed (`existing`) and changes
+/// nothing: not the provider's `files` (its template, with the settings given or the default
+/// `adblock` one), not its `exclude`, no literal entry beside a glob that selects the file, not
+/// the feed. Every URL form of the same branch and file finds it; a new file, a deleted feed's
+/// file and another branch are added as before.
+#[tokio::test(flavor = "multi_thread")]
+async fn adding_an_existing_github_feed_by_url_changes_nothing() {
+    let (srv, repo) = github::fake().await;
+    repo.lock().unwrap().set(
+        1,
+        &[
+            ("a.txt", "a.example\n"),
+            ("lists/b.txt", "0.0.0.0 b.example\n"),
+            ("x.txt", "x.example\n"),
+        ],
+    );
+    let c = core_with(Some(&srv), None).await;
+    let (st, v) = post(
+        &c,
+        "/feed-providers",
+        json!({"id": "or", "name": "o/r", "module": "github", "config": {"owner": "o", "repo": "r"},
+               "files": [{"match": "a.txt", "feed": {"format": "plain"}},
+                         {"match": "lists/*.txt", "feed": {"format": "hosts"}}]}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    check_provider(&c, "or").await;
+    wait_until("the provider's feeds", || async {
+        c.state.feeds.provider_feeds("or").len() == 2
+    })
+    .await;
+    let feed_of = |file: &str| {
+        c.state
+            .feeds
+            .provider_feeds("or")
+            .into_iter()
+            .find(|f| f.file.as_deref() == Some(file))
+            .map(|f| f.id)
+            .unwrap()
+    };
+    let (a, b) = (feed_of("a.txt"), feed_of("lists/b.txt"));
+    let provider = get_json(&c, "/feed-providers/or").await;
+    let feed_a = get_json(&c, &format!("/feeds/{a}")).await;
+    for (url, feed) in [
+        ("https://raw.githubusercontent.com/o/r/main/a.txt", None),
+        ("https://raw.githubusercontent.com/o/r/main/a.txt", Some(json!({"format": "adblock"}))),
+        ("https://github.com/o/r/blob/main/a.txt", Some(json!({"format": "hosts"}))),
+        ("https://cdn.jsdelivr.net/gh/o/r@latest/a.txt", None),
+        ("https://raw.githubusercontent.com/o/r/main/lists/b.txt", None),
+        ("https://raw.githubusercontent.com/O/R/main/lists/b.txt", Some(json!({"format": "plain"}))),
+    ] {
+        let mut body = json!({ "url": url });
+        if let Some(f) = &feed {
+            body["feed"] = f.clone();
+        }
+        let (st, v) = post(&c, "/feed-providers-add-url", body).await;
+        assert_eq!(st, StatusCode::OK, "{url}: {v}");
+        let want = if url.ends_with("a.txt") { &a } else { &b };
+        assert_eq!(
+            (
+                v["provider"].as_str(),
+                v["created_provider"].as_bool(),
+                v["existing"].as_bool(),
+                v["feed"].as_str()
+            ),
+            (Some("or"), Some(false), Some(true), Some(want.as_str())),
+            "{url} {feed:?}: {v}"
+        );
+        assert!(v["outcome"]["feeds_added"].as_array().is_none_or(Vec::is_empty), "{v}");
+        let now = get_json(&c, "/feed-providers/or").await;
+        for k in ["files", "exclude", "config"] {
+            assert_eq!(now[k], provider[k], "{url} {feed:?}: {k}");
+        }
+        let now = get_json(&c, &format!("/feeds/{a}")).await;
+        for k in ["format", "format_options", "modes", "rule_policy", "enabled"] {
+            assert_eq!(now[k], feed_a[k], "{url} {feed:?}: {k}");
+        }
+    }
+    // A jsDelivr URL still says what its cache does.
+    let (_, v) = post(
+        &c,
+        "/feed-providers-add-url",
+        json!({"url": "https://cdn.jsdelivr.net/gh/o/r@latest/a.txt"}),
+    )
+    .await;
+    assert_eq!((v["existing"].as_bool(), v["feed"].as_str()), (Some(true), Some(a.as_str())), "{v}");
+    assert!(v["notice"].as_str().is_some_and(|n| n.contains("12 hours")), "{v}");
+    // A file the provider doesn't select yet: added, with the settings given.
+    let (st, v) = post(
+        &c,
+        "/feed-providers-add-url",
+        json!({"url": "https://raw.githubusercontent.com/o/r/main/x.txt", "feed": {"format": "plain"}}),
+    )
+    .await;
+    assert_eq!((st, v["existing"].as_bool()), (StatusCode::OK, Some(false)), "{v}");
+    let p = get_json(&c, "/feed-providers/or").await;
+    assert!(
+        p["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["match"] == "x.txt" && f["feed"]["format"] == "plain"),
+        "{p}"
+    );
+    // A deleted feed's file comes back when its URL is added again.
+    let r = ui(&c, Method::DELETE, &format!("/feeds/{a}"))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(get_json(&c, "/feed-providers/or").await["exclude"], json!(["a.txt"]));
+    let (st, v) = post(
+        &c,
+        "/feed-providers-add-url",
+        json!({"url": "https://raw.githubusercontent.com/o/r/main/a.txt", "feed": {"format": "plain"}}),
+    )
+    .await;
+    assert_eq!((st, v["existing"].as_bool()), (StatusCode::OK, Some(false)), "{v}");
+    assert_eq!(get_json(&c, "/feed-providers/or").await["exclude"], json!([]));
+    // Another branch is another provider.
+    let (st, v) = post(
+        &c,
+        "/feed-providers-add-url",
+        json!({"url": "https://raw.githubusercontent.com/o/r/dev/a.txt"}),
+    )
+    .await;
+    assert_eq!(
+        (st, v["created_provider"].as_bool(), v["existing"].as_bool()),
+        (StatusCode::OK, Some(true), Some(false)),
+        "{v}"
+    );
+}
+
 /// providers.md §3 "Adding a feed by URL": a raw.githubusercontent.com URL on the default branch
 /// maps onto the provider that follows it (the default branch resolved with ls-refs); another
 /// branch gets a new provider; any other https URL goes to the http provider of that URL

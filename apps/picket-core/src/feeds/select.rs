@@ -752,34 +752,93 @@ pub async fn resolve_reviewed(state: &SharedState) {
     }
 }
 
-/// Providers that cover the same files as `p` (by the module's `location()`: equal, or one
-/// directory-like location inside the other), for the save warning (providers.md §2).
-pub fn overlapping<'a>(model: &'a Model, p: &FeedProviderDef) -> Vec<&'a str> {
-    let reg = crate::modules::download::builtin();
-    let Some(m) = reg.get(&p.module) else {
-        return vec![];
-    };
-    let loc = m.location(&p.config);
-    if loc.is_empty() {
-        return vec![];
-    }
-    // A provider of one fixed file is one URL: it overlaps another of the same URL only.
-    let exact = m.fixed_file().is_some();
-    model
-        .feed_providers
-        .values()
-        .filter(|o| o.id != p.id && o.module == p.module)
-        .filter(|o| {
-            let ol = m.location(&o.config);
-            !ol.is_empty() && if exact { ol == loc } else { covers(&loc, &ol) }
-        })
-        .map(|o| o.id.as_str())
-        .collect()
+/// Each provider's location (its module's `location()`), worked out once for a whole model, so
+/// the save warning for providers that cover the same files (providers.md §2) costs one
+/// location per provider, not one per pair (an `http` location parses and normalises a URL).
+pub struct Overlaps<'a> {
+    /// Providers of a module with one fixed file (one URL each), by module and exact location:
+    /// they overlap another of the same URL only.
+    exact: BTreeMap<(&'a str, String), Vec<&'a str>>,
+    /// The others, by module: id and location, lowercase, for [`covers`].
+    prefix: BTreeMap<&'a str, Vec<(&'a str, String)>>,
+    /// Each provider's location as kept above, and whether it is in `exact`.
+    by_id: BTreeMap<&'a str, (String, bool)>,
 }
 
+impl<'a> Overlaps<'a> {
+    /// The locations of `model`'s providers of the built-in modules.
+    pub fn new(model: &'a Model) -> Self {
+        let reg = crate::modules::download::builtin();
+        Self::with(model, |p| {
+            reg.get(&p.module)
+                .map(|m| (m.location(&p.config), m.fixed_file().is_some()))
+        })
+    }
+
+    /// [`Overlaps::new`] with the location (and whether the module has one fixed file) of each
+    /// provider from `locate`, called once per provider; `None` for a module core doesn't have.
+    pub fn with(
+        model: &'a Model,
+        mut locate: impl FnMut(&FeedProviderDef) -> Option<(String, bool)>,
+    ) -> Self {
+        let mut out = Self {
+            exact: BTreeMap::new(),
+            prefix: BTreeMap::new(),
+            by_id: BTreeMap::new(),
+        };
+        // In id order (the model's), so each warning names the others in id order.
+        for p in model.feed_providers.values() {
+            let Some((loc, exact)) = locate(p) else { continue };
+            if loc.is_empty() {
+                continue;
+            }
+            let loc = if exact { loc } else { loc.to_ascii_lowercase() };
+            out.by_id.insert(p.id.as_str(), (loc.clone(), exact));
+            if exact {
+                out.exact
+                    .entry((p.module.as_str(), loc))
+                    .or_default()
+                    .push(p.id.as_str());
+            } else {
+                out.prefix
+                    .entry(p.module.as_str())
+                    .or_default()
+                    .push((p.id.as_str(), loc));
+            }
+        }
+        out
+    }
+
+    /// The providers of `p`'s module that cover the same files as `p` (equal locations, or one
+    /// directory-like location inside the other), in id order, without `p`.
+    pub fn of(&self, p: &FeedProviderDef) -> Vec<&'a str> {
+        let others =
+            |ids: &[&'a str]| -> Vec<&'a str> { ids.iter().copied().filter(|id| *id != p.id).collect() };
+        match self.by_id.get(p.id.as_str()) {
+            None => vec![],
+            Some((loc, true)) => self
+                .exact
+                .get(&(p.module.as_str(), loc.clone()))
+                .map(|ids| others(ids.as_slice()))
+                .unwrap_or_default(),
+            Some((loc, false)) => self
+                .prefix
+                .get(p.module.as_str())
+                .map(|peers| {
+                    peers
+                        .iter()
+                        .filter(|(id, ol)| *id != p.id && covers(loc, ol))
+                        .map(|(id, _)| *id)
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }
+    }
+}
+
+/// `a` and `b` (lowercase) are equal, or one ends in `/` and holds the other.
 fn covers(a: &str, b: &str) -> bool {
-    let (a, b) = (a.to_ascii_lowercase(), b.to_ascii_lowercase());
-    a == b || (a.ends_with('/') && b.starts_with(&a)) || (b.ends_with('/') && a.starts_with(&b))
+    a == b || (a.ends_with('/') && b.starts_with(a)) || (b.ends_with('/') && a.starts_with(b))
 }
 
 /// A provider's files as the UI shows them (`GET feed-providers/{id}/listing`, core.md §12 Feed
@@ -1292,5 +1351,146 @@ mod tests {
         assert!(covers("https://x.example/lists/", "https://x.example/lists/sub/"));
         assert!(!covers("https://x.example/lists/", "https://x.example/other/"));
         assert!(!covers("https://x.example/a.csv", "https://x.example/a.csv2"));
+    }
+
+    fn provider(id: &str, module: &str, config: Value) -> FeedProviderDef {
+        FeedProviderDef {
+            id: id.into(),
+            name: id.into(),
+            module: module.into(),
+            config,
+            ..Default::default()
+        }
+    }
+
+    fn model_of(ps: Vec<FeedProviderDef>) -> Model {
+        let mut m = Model::default();
+        for p in ps {
+            m.feed_providers.insert(p.id.clone(), p);
+        }
+        m
+    }
+
+    /// The overlap check as it was: each provider's peers located again for every provider.
+    fn overlapping_pairwise<'a>(model: &'a Model, p: &FeedProviderDef) -> Vec<&'a str> {
+        let reg = crate::modules::download::builtin();
+        let Some(m) = reg.get(&p.module) else {
+            return vec![];
+        };
+        let loc = m.location(&p.config);
+        if loc.is_empty() {
+            return vec![];
+        }
+        let exact = m.fixed_file().is_some();
+        model
+            .feed_providers
+            .values()
+            .filter(|o| o.id != p.id && o.module == p.module)
+            .filter(|o| {
+                let ol = m.location(&o.config);
+                let (a, b) = (loc.to_ascii_lowercase(), ol.to_ascii_lowercase());
+                !ol.is_empty() && if exact { ol == loc } else { covers(&a, &b) }
+            })
+            .map(|o| o.id.as_str())
+            .collect()
+    }
+
+    /// Issue 75: the same warnings as the pairwise check, for every provider: canonical URL
+    /// equality for `http` (one URL each; the query counts), case-insensitive repositories for
+    /// `github`, modules kept apart, empty or invalid locations overlapping nothing, the other
+    /// providers named in id order.
+    #[test]
+    fn overlaps_match_the_pairwise_check() {
+        let http = |id: &str, url: &str| provider(id, "http", json!({ "url": url }));
+        let gh =
+            |id: &str, owner: &str, repo: &str| provider(id, "github", json!({"owner": owner, "repo": repo}));
+        let m = model_of(vec![
+            http("h1", "https://lists.example/a.txt"),
+            http("h2", "HTTPS://Lists.Example:443/a.txt"),
+            http("h0", "https://lists.example/a.txt"),
+            http("h3", "https://lists.example/a.txt?v=1"),
+            http("h4", "https://lists.example/A.txt"),
+            http("h5", "not a url"),
+            http("h6", "https://lists.example/"),
+            provider("h7", "http", json!({})),
+            gh("g1", "Hagezi", "dns-blocklists"),
+            gh("g2", "hagezi", "DNS-Blocklists.git"),
+            gh("g3", "other", "list"),
+            provider("g4", "github", json!({})),
+            provider(
+                "x1",
+                "no_such_module",
+                json!({"url": "https://lists.example/a.txt"}),
+            ),
+            provider("a1", "alphamountain_threat_1000", json!({})),
+            provider("a2", "alphamountain_threat_1000", json!({})),
+        ]);
+        let overlaps = Overlaps::new(&m);
+        for p in m.feed_providers.values() {
+            assert_eq!(overlaps.of(p), overlapping_pairwise(&m, p), "{}", p.id);
+        }
+        let of = |id: &str| overlaps.of(&m.feed_providers[id]);
+        assert_eq!(of("h1"), vec!["h0", "h2"]);
+        assert_eq!(of("h0"), vec!["h1", "h2"]);
+        assert!(of("h3").is_empty() && of("h4").is_empty() && of("h5").is_empty());
+        assert!(of("h6").is_empty(), "an http provider is one URL, never a prefix");
+        assert_eq!(of("g1"), vec!["g2"]);
+        assert!(of("g3").is_empty() && of("x1").is_empty());
+    }
+
+    /// Prefix coverage: equal locations, or one ending in `/` holding the other, case-insensitive.
+    #[test]
+    fn overlaps_by_prefix() {
+        let p = |id: &str, loc: &str| provider(id, "m", json!({ "loc": loc }));
+        let m = model_of(vec![
+            p("root", "https://s.example/"),
+            p("sub", "https://S.example/lists/"),
+            p("file", "https://s.example/lists/a.txt"),
+            p("other", "https://t.example/"),
+            p("sibling", "https://s.example/listsx/"),
+            p("empty", ""),
+        ]);
+        let overlaps = Overlaps::with(&m, |p| {
+            Some((p.config["loc"].as_str().unwrap().to_string(), false))
+        });
+        let of = |id: &str| overlaps.of(&m.feed_providers[id]);
+        assert_eq!(of("root"), vec!["file", "sibling", "sub"]);
+        assert_eq!(of("sub"), vec!["file", "root"]);
+        assert_eq!(of("file"), vec!["root", "sub"]);
+        assert_eq!(of("sibling"), vec!["root"]);
+        assert!(of("other").is_empty() && of("empty").is_empty());
+    }
+
+    /// Each provider is located once however many providers' warnings are asked for (the
+    /// pairwise check located N² times).
+    #[test]
+    fn overlaps_locate_each_provider_once() {
+        let n = 1_280;
+        let m = model_of(
+            (0..n)
+                .map(|i| {
+                    provider(
+                        &format!("p{i:04}"),
+                        "http",
+                        json!({ "url": format!("https://lists.example/{}.txt", i % 640) }),
+                    )
+                })
+                .collect(),
+        );
+        let reg = crate::modules::download::builtin();
+        let http = reg.get("http").unwrap();
+        let mut calls = 0usize;
+        let overlaps = Overlaps::with(&m, |p| {
+            calls += 1;
+            Some((http.location(&p.config), true))
+        });
+        let warned = m
+            .feed_providers
+            .values()
+            .filter(|p| !overlaps.of(p).is_empty())
+            .count();
+        assert_eq!(calls, n);
+        assert_eq!(warned, n, "each URL is two providers'");
+        assert_eq!(overlaps.of(&m.feed_providers["p0000"]), vec!["p0640"]);
     }
 }

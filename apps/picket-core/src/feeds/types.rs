@@ -210,6 +210,13 @@ pub struct ParseSummary {
     pub kept: u64,
     /// The first parse errors: line, reason, text (cut).
     pub error_samples: Vec<ErrorSample>,
+    /// Rules kept that are worth a look, by reason (`BroadBrowser`: a browser rule with no
+    /// restriction whose pattern matches most requests). They are entries like any other.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub notices: BTreeMap<String, u64>,
+    /// The first few of those rules: line, reason, text (cut).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notice_samples: Vec<ErrorSample>,
     /// An `adblock` list's `! Expires:` in seconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_secs: Option<u64>,
@@ -229,6 +236,16 @@ pub struct ErrorSample {
     pub text: String,
 }
 
+impl ErrorSample {
+    fn from_parse(e: &picket_rules::formats::ErrorSample) -> Self {
+        Self {
+            line_no: e.line_no,
+            reason: e.reason.clone(),
+            text: crate::util::sanitize_for_message(&e.text, 200),
+        }
+    }
+}
+
 impl ParseSummary {
     pub fn from_stats(s: &picket_rules::formats::ParseStats) -> Self {
         Self {
@@ -242,15 +259,9 @@ impl ParseSummary {
                 browser: s.entries.browser,
             },
             kept: 0,
-            error_samples: s
-                .error_samples
-                .iter()
-                .map(|e| ErrorSample {
-                    line_no: e.line_no,
-                    reason: e.reason.clone(),
-                    text: crate::util::sanitize_for_message(&e.text, 200),
-                })
-                .collect(),
+            error_samples: s.error_samples.iter().map(ErrorSample::from_parse).collect(),
+            notices: s.notices.clone(),
+            notice_samples: s.notice_samples.iter().map(ErrorSample::from_parse).collect(),
             expires_secs: s.expires_secs,
             misp_type: None,
             import_skipped: None,

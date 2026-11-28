@@ -13,7 +13,7 @@ use jiff::tz::Offset;
 use picket_api::time::{ParseError, Timestamp};
 use serde::{Deserialize, Serialize};
 
-use crate::classify::{self, ErrorReason, Item, Line};
+use crate::classify::{self, ErrorReason, Item, Line, NoticeReason};
 use crate::flags::Flags;
 use crate::ip::IpRange;
 use crate::misp;
@@ -24,6 +24,8 @@ use crate::rule::{Entry, Kind, Rule, RuleSpec, RuleType};
 pub const DEFAULT_MAX_LINE_LEN: usize = 64 * 1024;
 /// How many parse errors a run keeps as samples.
 pub const MAX_ERROR_SAMPLES: usize = 20;
+/// The notices kept as samples per run ([`ParseStats::notice_samples`]).
+pub const MAX_NOTICE_SAMPLES: usize = 5;
 /// The longest `! Expires:` interval a list may ask for (30 days); longer values are clamped.
 pub const MAX_EXPIRES_SECS: u64 = 30 * 86_400;
 
@@ -130,6 +132,12 @@ pub struct ParseStats {
     pub entries: TypeCounts,
     /// The first parse errors.
     pub error_samples: Vec<ErrorSample>,
+    /// Rules kept that are worth a look, per reason (`BroadBrowser`): counted, never dropped.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub notices: std::collections::BTreeMap<String, u64>,
+    /// The first [`MAX_NOTICE_SAMPLES`] of those rules.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notice_samples: Vec<ErrorSample>,
     /// An `adblock` list's `! Expires:` header in seconds (at most [`MAX_EXPIRES_SECS`]): on cron
     /// schedules, the minimum interval between full downloads (feeds.md §5). Read from the
     /// comments before the first rule; `None` without one or when it can't be read.
@@ -150,16 +158,31 @@ impl ParseStats {
     pub(crate) fn error(&mut self, line_no: u64, reason: ErrorReason, text: &str) {
         self.errors = self.errors.saturating_add(1);
         if self.error_samples.len() < MAX_ERROR_SAMPLES {
-            let mut cut = text.len().min(200);
-            while !text.is_char_boundary(cut) {
-                cut = cut.saturating_sub(1);
-            }
-            self.error_samples.push(ErrorSample {
-                line_no,
-                reason: format!("{reason:?}"),
-                text: text.get(..cut).unwrap_or("").to_string(),
-            });
+            self.error_samples
+                .push(sample(line_no, format!("{reason:?}"), text));
         }
+    }
+
+    pub(crate) fn notice(&mut self, line_no: u64, reason: NoticeReason, text: &str) {
+        let reason = format!("{reason:?}");
+        if self.notice_samples.len() < MAX_NOTICE_SAMPLES {
+            self.notice_samples.push(sample(line_no, reason.clone(), text));
+        }
+        let n = self.notices.entry(reason).or_insert(0);
+        *n = n.saturating_add(1);
+    }
+}
+
+/// A line kept as a sample, cut to 200 bytes.
+fn sample(line_no: u64, reason: String, text: &str) -> ErrorSample {
+    let mut cut = text.len().min(200);
+    while !text.is_char_boundary(cut) {
+        cut = cut.saturating_sub(1);
+    }
+    ErrorSample {
+        line_no,
+        reason,
+        text: text.get(..cut).unwrap_or("").to_string(),
     }
 }
 
@@ -378,6 +401,7 @@ pub fn parse_lines<R: BufRead, F: FnMut(Entry)>(
                     *n = n.saturating_add(1);
                 }
                 Item::Error(e) => line_error = line_error.or(Some(e)),
+                Item::Notice(n) => stats.notice(line_no, n, text),
             }
         }
         if let Some(e) = line_error {
@@ -666,6 +690,47 @@ mod tests {
         assert_eq!(e[1].rule.rule_type, RuleType::Browser);
         assert_eq!(s.warnings.browser, 1);
         assert_eq!(s.warning_reasons.get("Conditional"), Some(&1));
+    }
+
+    /// Broad browser rules are kept as entries and counted as notices, with a few samples;
+    /// a broad DNS rule is still dropped as `TooWide`.
+    #[test]
+    fn broad_browser_rules_are_kept_and_noticed() {
+        let mut text = String::from("||ok.example^\n$removeparam=utm_source\n*$third-party\n@@*$script\n*\n");
+        for i in 0..10 {
+            text.push_str(&format!("$image,{}\n", if i % 2 == 0 { "1p" } else { "3p" }));
+        }
+        let (e, s) = run(Format::Adblock, DomainsAs::Exact, &text);
+        let browser: Vec<&str> = e
+            .iter()
+            .filter(|e| e.rule.rule_type == RuleType::Browser)
+            .map(|e| e.rule.key.as_str())
+            .collect();
+        assert_eq!(browser.len(), 13);
+        assert_eq!(
+            &browser[..3],
+            ["$removeparam=utm_source", "*$third-party", "@@*$script"]
+        );
+        assert_eq!(s.entries.browser, 13);
+        assert_eq!(s.warnings.browser, 0);
+        assert_eq!(s.warning_reasons.get("TooWide"), Some(&1), "the DNS `*`");
+        assert_eq!(s.notices.get("BroadBrowser"), Some(&13));
+        assert_eq!(s.notice_samples.len(), MAX_NOTICE_SAMPLES);
+        assert_eq!(
+            (
+                s.notice_samples[0].line_no,
+                s.notice_samples[0].reason.as_str(),
+                s.notice_samples[0].text.as_str()
+            ),
+            (2, "BroadBrowser", "$removeparam=utm_source")
+        );
+        assert_eq!(s.errors, 0);
+        // Stats from before notices existed still read.
+        let mut v = serde_json::to_value(&s).unwrap();
+        v.as_object_mut().unwrap().remove("notices");
+        v.as_object_mut().unwrap().remove("notice_samples");
+        let back: ParseStats = serde_json::from_value(v).unwrap();
+        assert!(back.notices.is_empty());
     }
 
     #[test]

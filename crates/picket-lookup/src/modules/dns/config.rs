@@ -348,6 +348,13 @@ fn server(t: UpstreamProtocol, s: &RawServer) -> Result<Server, String> {
     if s.ip.is_unspecified() || s.ip.is_multicast() {
         return Err("ip: a unicast address".into());
     }
+    // A link-local address needs an interface scope, which a server (an IP and a port) can't
+    // carry: its socket would fail every query (EINVAL).
+    if matches!(s.ip.to_canonical(), IpAddr::V6(v6) if v6.is_unicast_link_local()) {
+        return Err(
+            "ip: an IPv6 link-local address (fe80::/10) needs an interface scope, which a server can't carry; use its ULA, private or global address".into(),
+        );
+    }
     let port = s.port.unwrap_or_else(|| default_port(t));
     if port == 0 {
         return Err("port: 1 to 65535".into());

@@ -34,7 +34,7 @@ import { entityWrite, invalidateConfig, invalidateProviders, qk, useDownloadModu
 import { client, unwrap } from "@/api/http";
 import { errorMessage, type ApiError } from "@/api/errors";
 import type { SaveFlags } from "@/api/entities";
-import type { FeedProviderDef, ProviderFile } from "@/api/types";
+import type { FeedProviderDef, KChoiceRecord, ProviderFile } from "@/api/types";
 import type { ProviderSearch } from "@/lib/search";
 import { openapiRoot, queryRange, rangeProblem, rangeText } from "@/lib/openapi";
 import { defaultValue, type SchemaRoot } from "@/lib/schema";
@@ -208,6 +208,7 @@ function ProviderOverview({ id, url, oneFile }: { id: string; url: string | null
                 ["Failing", s.failing_since ? <span className="text-destructive">since {formatTime(s.failing_since)}</span> : "no"],
                 ["Rate-limit pause", s.paused_until ? <>until {formatTime(s.paused_until)}</> : "none"],
                 ["k", s.k ?? "—"],
+                ...(s.k_choice ? [["Planning budget", <PlanningBudget choice={s.k_choice} />] as [string, React.ReactNode]] : []),
                 ["Listing", s.listing ? `${s.listing.files} files${s.listing.whole ? "" : " (limited to what files can select)"}` : "—"],
                 ["Listing incomplete", s.listing_incomplete ? <Badge variant="warning">yes: it can't add feeds</Badge> : "no"],
               ]}
@@ -814,6 +815,48 @@ function Backtest({ id }: { id: string }) {
         )}
       </QueryView>
     </Section>
+  );
+}
+
+/**
+ * The last weekly `k` choice against the per-provider planning budget (feed-scheduling.md §5).
+ * The budget is a planning figure for the replayed schedule, not a request quota: when it slows the
+ * provider, or no `k` fits it, each feed's estimated change in its share caught within 2 minutes
+ * (alone against beside its siblings, over the replay window) shows here.
+ */
+export function PlanningBudget({ choice }: { choice: KChoiceRecord }) {
+  const c = choice.choice;
+  const perDay = (v: number | null | undefined) => (v == null ? "—" : formatNumber(v, 1));
+  const verdict =
+    c.budget === "within" ? (
+      <>fits: {perDay(c.checks_per_day)} predicted checks a day of {formatNumber(choice.budget_per_day)}</>
+    ) : c.budget === "slowed" ? (
+      <Badge variant="warning">
+        slowed from k {c.preferred} to {c.k}: {perDay(c.preferred_checks_per_day)} → {perDay(c.checks_per_day)} predicted checks a day of{" "}
+        {formatNumber(choice.budget_per_day)}
+      </Badge>
+    ) : (
+      <Badge variant="warning">
+        no k fits: k {c.k} predicts {perDay(c.checks_per_day)} checks a day of {formatNumber(choice.budget_per_day)}
+      </Badge>
+    );
+  return (
+    <div className="space-y-1">
+      <div>
+        {verdict} <span className="text-muted-foreground">(replayed {formatTime(choice.window_start)} to {formatTime(choice.window_end)})</span>
+      </div>
+      {choice.feeds.length > 0 && (
+        <ul aria-label="Estimated cost per feed" className="text-xs text-muted-foreground">
+          {choice.feeds.map((f) => (
+            <li key={f.feed}>
+              <Mono>{f.feed}</Mono>: {formatPercent(f.standalone_share_2min)} alone, {formatPercent(f.grouped_share_2min)} grouped (
+              {f.change_points >= 0 ? "+" : ""}
+              {formatNumber(f.change_points, 1)} points, {f.changes} changes)
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 

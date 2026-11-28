@@ -824,6 +824,14 @@ fn config_checks() {
             "ip",
         ),
         (
+            json!({"servers": [{"ip": "fe80::1", "tls_host": "r.example"}]}),
+            "link-local",
+        ),
+        (
+            json!({"transport": "udp", "servers": [{"ip": "fe80::53", "port": 5353}]}),
+            "link-local",
+        ),
+        (
             json!({"servers": [{"ip": "192.0.2.1", "tls_host": "bad host"}]}),
             "tls_host",
         ),
@@ -912,6 +920,11 @@ fn config_checks() {
             .unwrap();
     assert_eq!(c.servers[0].dns.tls_host, None);
     assert_eq!(c.servers[0].dns.path, None);
+    // Loopback, private and ULA servers on any port stay accepted.
+    for ip in ["127.0.0.1", "::1", "192.168.1.1", "fd00::53"] {
+        let c = check(json!({"transport": "udp", "servers": [{"ip": ip, "port": 5353}]})).unwrap();
+        assert_eq!(c.servers[0].dns.port, 5353, "{ip}");
+    }
     // 32 rules are fine.
     let rules: Vec<Value> = (0..32)
         .map(|i| json!({"id": format!("r{i}"), "when": {"soa": true}, "verdict": "block"}))

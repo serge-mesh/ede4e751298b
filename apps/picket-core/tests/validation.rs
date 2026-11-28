@@ -244,6 +244,50 @@ fn mixed_group_refused() {
     refused(c.create(EntityKind::Upstream, json!({"id": "q9", "name": "q", "protocol": "dot", "ip": "9.9.9.9", "port": 853, "tls_host": "dns.quad9.net"})), "operator_missing");
 }
 
+/// An IPv6 link-local upstream can't carry the interface scope its socket needs (it would fail
+/// every query with EINVAL): refused for every protocol, IPv4-mapped forms aside. Loopback,
+/// private and ULA addresses on any port stay accepted, plain or encrypted.
+#[test]
+fn link_local_upstreams_are_refused() {
+    let mut c = Cfg::new();
+    let up = |id: &str, protocol: &str, ip: &str, port: u16| {
+        let mut v = json!({"id": id, "name": id, "protocol": protocol, "ip": ip, "port": port, "operator": "lan"});
+        if protocol == "dot" || protocol == "doh" {
+            v["tls_host"] = json!("dns.lan.example");
+        }
+        v
+    };
+    for (i, (protocol, ip)) in [
+        ("udp", "fe80::1"),
+        ("tcp", "fe80::53"),
+        ("dot", "fe80::1"),
+        ("doh", "febf:ffff::1"),
+        ("udp", "fe80::1:2:3:4"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let r = c.create(EntityKind::Upstream, up(&format!("ll{i}"), protocol, ip, 53));
+        refused(r, "link_local");
+    }
+    for (i, (protocol, ip, port)) in [
+        ("udp", "127.0.0.1", 5353),
+        ("tcp", "::1", 5353),
+        ("udp", "192.168.1.2", 53),
+        ("tcp", "10.0.0.53", 5300),
+        ("udp", "fd00::53", 5353),
+        ("dot", "fd00::53", 853),
+        ("doh", "192.168.1.2", 8443),
+        // fec0::/10 (deprecated site-local) isn't link-local.
+        ("dot", "fec0::1", 853),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        c.ok(EntityKind::Upstream, up(&format!("ok{i}"), protocol, ip, port));
+    }
+}
+
 /// edge.md §6: a DoH path the edge sends as saved: absolute, RFC 3986 path characters, no dot
 /// segment, query or fragment (`#x` used to be dropped on the way, a space made the config one
 /// the edge couldn't apply).

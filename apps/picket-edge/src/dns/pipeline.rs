@@ -1807,6 +1807,10 @@ pub fn svcb_rdata(priority: u16, target: &str, params: &[(String, String)]) -> O
         };
         out_params.push((key, value));
     }
+    // RFC 9460 §2.2: the wire carries keys in strictly increasing numeric order, which the
+    // encoder enforces. The rule's text keeps them sorted by name (`alpn ipv4hint port` is keys
+    // 1 4 3), so they are put in key order here; a repeated key still fails the encoder.
+    out_params.sort_by_key(|(key, _)| *key);
     let svcb = SVCB::new(priority, target, out_params);
     let mut buf = Vec::with_capacity(64);
     {
@@ -2029,5 +2033,62 @@ mod tests {
         let f = picket_wire::svcb::rdata_facts(rtype::HTTPS, &d).unwrap();
         assert_eq!(f.hints.len(), 1);
         assert!(svcb_rdata(1, ".", &[("bogus".into(), "1".into())]).is_none());
+    }
+
+    /// The SvcParamKeys of an RDATA from [`svcb_rdata`] (target `.`), in wire order.
+    fn wire_keys(d: &[u8]) -> Vec<u16> {
+        assert_eq!(d[2], 0, "target .");
+        let mut at = 3;
+        let mut keys = vec![];
+        while at < d.len() {
+            keys.push(u16::from_be_bytes([d[at], d[at + 1]]));
+            at += 4 + usize::from(u16::from_be_bytes([d[at + 2], d[at + 3]]));
+        }
+        assert_eq!(at, d.len());
+        keys
+    }
+
+    #[test]
+    fn svcb_rewrites_encode_in_key_order() {
+        let p = |v: &[(&str, &str)]| -> Vec<(String, String)> {
+            v.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect()
+        };
+        // Sorted by name, as the rule keeps them: keys 1 4 3, and 1 5 4 0.
+        let d = svcb_rdata(
+            1,
+            ".",
+            &p(&[("alpn", "h2"), ("ipv4hint", "192.0.2.1"), ("port", "443")]),
+        )
+        .unwrap();
+        assert_eq!(wire_keys(&d), vec![1, 3, 4]);
+        let d = svcb_rdata(
+            1,
+            ".",
+            &p(&[
+                ("alpn", "h3"),
+                ("ech", "AQID"),
+                ("ipv4hint", "192.0.2.1"),
+                ("mandatory", "alpn"),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(wire_keys(&d), vec![0, 1, 4, 5]);
+        // Already in order, one parameter, none.
+        let d = svcb_rdata(
+            1,
+            ".",
+            &p(&[("alpn", "h2"), ("port", "443"), ("ipv6hint", "2001:db8::1")]),
+        )
+        .unwrap();
+        assert_eq!(wire_keys(&d), vec![1, 3, 6]);
+        assert_eq!(
+            wire_keys(&svcb_rdata(1, ".", &p(&[("port", "53")])).unwrap()),
+            vec![3]
+        );
+        assert!(wire_keys(&svcb_rdata(1, ".", &[]).unwrap()).is_empty());
+        // Sorting makes nothing valid that wasn't: a repeated key, a bad value, an unknown key.
+        assert!(svcb_rdata(1, ".", &p(&[("port", "1"), ("alpn", "h2"), ("port", "2")])).is_none());
+        assert!(svcb_rdata(1, ".", &p(&[("alpn", "h2"), ("port", "x")])).is_none());
+        assert!(svcb_rdata(1, ".", &p(&[("mandatory", "bogus"), ("alpn", "h2")])).is_none());
     }
 }

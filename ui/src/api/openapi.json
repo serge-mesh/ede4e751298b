@@ -394,11 +394,6 @@
             "minimum": 0,
             "type": "integer"
           },
-          "temporary_allow": {
-            "default": false,
-            "description": "Raise `temporary_allow` (security, info) when an edge logs a created temporary allow:\noff by default (core.md §9).",
-            "type": "boolean"
-          },
           "thresholds": {
             "additionalProperties": {
               "$ref": "#/components/schemas/Duration"
@@ -775,6 +770,26 @@
           }
         },
         "type": "object"
+      },
+      "BudgetFit": {
+        "description": "How the planning budget shaped a provider's `k` (`KChoice::budget`).",
+        "oneOf": [
+          {
+            "const": "within",
+            "description": "The feeds' preferred `k` fits the budget: the provider takes it.",
+            "type": "string"
+          },
+          {
+            "const": "slowed",
+            "description": "The preferred `k` predicts more checks a day than the budget: the provider takes the most\naggressive `k` that fits, less eager than its feeds would be.",
+            "type": "string"
+          },
+          {
+            "const": "none_fits",
+            "description": "No `k` fits: the least aggressive is taken anyway (the budget is no runtime ceiling).",
+            "type": "string"
+          }
+        ]
       },
       "BuildQueued": {
         "properties": {
@@ -1252,7 +1267,7 @@
             ]
           },
           "result": {
-            "description": "`started`, `queued` (a check of the provider is in progress: another runs when it ends)\nor `scheduled` (`min_interval`, or the module's rate-limit pause).",
+            "description": "`started`, `queued` (a check of the provider is in progress: another runs when it ends)\nor `scheduled` (`min_interval`, or a rate-limit pause of the provider's scope).",
             "type": "string"
           }
         },
@@ -3827,6 +3842,49 @@
         ],
         "type": "string"
       },
+      "FeedImpact": {
+        "description": "One feed's estimated cost of a budget-driven compromise (`slowed`, `none_fits`): its share of\nchanges caught within 2 minutes on its standalone schedule (alone, at its own choice) against\nthe provider's (beside its siblings, at the `k` taken), both replayed over the same window.",
+        "properties": {
+          "change_points": {
+            "description": "`grouped − standalone`, in percentage points (negative: the compromise costs this feed).",
+            "format": "double",
+            "type": "number"
+          },
+          "changes": {
+            "description": "Its changes in the window.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "feed": {
+            "type": "string"
+          },
+          "grouped_share_2min": {
+            "format": "double",
+            "type": "number"
+          },
+          "standalone_k": {
+            "description": "The feed's own choice (`choose_k`); `None` when its replay saw no change.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "standalone_share_2min": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "feed",
+          "changes",
+          "standalone_share_2min",
+          "grouped_share_2min",
+          "change_points"
+        ],
+        "type": "object"
+      },
       "FeedImport": {
         "description": "A JSON export (first key picket_feed_export, feed before entries), or {\"file\": \"…\"} holding a file export or a plain list as text. The body may be gzip-compressed; up to 32 times the download size cap after decompression.",
         "oneOf": [
@@ -4012,6 +4070,33 @@
         ],
         "type": "object"
       },
+      "FeedSim": {
+        "description": "One feed's part of a provider replay (`SimResult::feeds`).",
+        "properties": {
+          "caught_2min": {
+            "description": "Changes caught within 2 minutes.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "changes": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "share_2min": {
+            "description": "`caught_2min ÷ changes` (1 without changes).",
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "changes",
+          "caught_2min",
+          "share_2min"
+        ],
+        "type": "object"
+      },
       "FeedStatus": {
         "description": "A feed's status (feeds.md §6, feed-scheduling.md §6 UI).",
         "properties": {
@@ -4162,7 +4247,7 @@
             ]
           },
           "paused_until": {
-            "description": "The module's rate-limit pause.",
+            "description": "The rate-limit pause of the provider's scope (a server cooldown: `github`'s rate limit,\nor an `http` origin's `Retry-After`): no check, \"Check now\" included, starts before it.",
             "type": [
               "string",
               "null"
@@ -5000,6 +5085,92 @@
           "heavy_dropped",
           "heavy_completed",
           "heavy_failed"
+        ],
+        "type": "object"
+      },
+      "KChoice": {
+        "description": "The weekly `k` choice of a provider with the planning budget's part in it (`provider_k`).",
+        "properties": {
+          "budget": {
+            "$ref": "#/components/schemas/BudgetFit"
+          },
+          "checks_per_day": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "k": {
+            "description": "The `k` taken.",
+            "format": "double",
+            "type": "number"
+          },
+          "preferred": {
+            "description": "The most aggressive of the feeds' own choices: what the provider would take without the\nbudget.",
+            "format": "double",
+            "type": "number"
+          },
+          "preferred_checks_per_day": {
+            "description": "The pooled replay's predicted checks a day at `preferred` and at `k` (`None` when it\ndidn't replay that `k`).",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "k",
+          "preferred",
+          "budget"
+        ],
+        "type": "object"
+      },
+      "KChoiceRecord": {
+        "description": "A provider's last weekly `k` choice (feed-scheduling.md §5) as its status shows it\n(`feed_provider_state.k_choice_json`): what the planning budget did to it. The budget only\npicks among replayed schedules; this record is how a compromise it forced is diagnosed.",
+        "properties": {
+          "budget_per_day": {
+            "description": "The planning budget the choice was made under (checks a day, per provider).",
+            "format": "double",
+            "type": "number"
+          },
+          "choice": {
+            "$ref": "#/components/schemas/KChoice"
+          },
+          "chosen_at": {
+            "type": "string"
+          },
+          "feeds": {
+            "description": "After a compromise (`slowed`, `none_fits`): each voting feed's estimated change in its\nshare of changes caught within 2 minutes, against its standalone schedule, both replayed\nover the window. Empty when the budget changed nothing.",
+            "items": {
+              "$ref": "#/components/schemas/FeedImpact"
+            },
+            "type": "array"
+          },
+          "voting_feeds": {
+            "description": "The voting feeds (those with a day or more of their own checks).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "window_end": {
+            "type": "string"
+          },
+          "window_start": {
+            "description": "The pooled replay's window, `[window_start, window_end)`: the latest of the voting feeds'\nreplay starts, and the choice's time.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chosen_at",
+          "window_start",
+          "window_end",
+          "voting_feeds",
+          "budget_per_day",
+          "choice",
+          "feeds"
         ],
         "type": "object"
       },
@@ -7982,6 +8153,24 @@
               "null"
             ]
           },
+          "notice_samples": {
+            "default": [],
+            "description": "The first few of those rules: line, reason, text (cut).",
+            "items": {
+              "$ref": "#/components/schemas/ErrorSample"
+            },
+            "type": "array"
+          },
+          "notices": {
+            "additionalProperties": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "default": {},
+            "description": "Rules kept that are worth a look, by reason (`BroadBrowser`: a browser rule with no\nrestriction whose pattern matches most requests). They are entries like any other.",
+            "type": "object"
+          },
           "rule_lines": {
             "default": 0,
             "format": "uint64",
@@ -8595,6 +8784,17 @@
               "null"
             ]
           },
+          "k_choice": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/KChoiceRecord"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The last weekly choice of `k` with the per-provider planning budget's part in it: the\npreferred and selected `k`, whether the budget slowed the provider (`slowed`) or no `k`\nfit it (`none_fits`), the replay window, the predicted checks a day and, after such a\ncompromise, each feed's estimated change in its share caught within 2 minutes. The budget\nis a planning figure, not a runtime quota."
+          },
           "last_check": {
             "type": [
               "string",
@@ -8640,7 +8840,7 @@
             ]
           },
           "paused_until": {
-            "description": "The module's rate-limit pause.",
+            "description": "The rate-limit pause of the provider's scope (a server cooldown: `github`'s rate limit,\nor an `http` origin's `Retry-After`): no check, \"Check now\" included, starts before it.",
             "type": [
               "string",
               "null"
@@ -9729,7 +9929,6 @@
               "evidence_per_alert": 1000,
               "evidence_total_mib": 128,
               "feed_stale_days": 30,
-              "temporary_allow": false,
               "thresholds": {}
             }
           },
@@ -9904,19 +10103,6 @@
                   }
                 ],
                 "description": "The days per false `feed_stale` alert its threshold allows (feed-scheduling.md §8)."
-              },
-              "temporary_allow": {
-                "anyOf": [
-                  {
-                    "default": false,
-                    "description": "Raise `temporary_allow` (security, info) when an edge logs a created temporary allow:\noff by default (core.md §9).",
-                    "type": "boolean"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "Raise `temporary_allow` (security, info) when an edge logs a created temporary allow:\noff by default (core.md §9)."
               },
               "thresholds": {
                 "anyOf": [
@@ -10680,6 +10866,13 @@
             "format": "double",
             "type": "number"
           },
+          "feeds": {
+            "description": "A provider replay's result per feed, in the order of its feeds, so an aggregate never\nhides one feed's losses (empty for a single-feed simulation, `simulate`).",
+            "items": {
+              "$ref": "#/components/schemas/FeedSim"
+            },
+            "type": "array"
+          },
           "k": {
             "format": "double",
             "type": "number"
@@ -10709,7 +10902,8 @@
           "caught_2min",
           "checks",
           "checks_per_day",
-          "share_2min"
+          "share_2min",
+          "feeds"
         ],
         "type": "object"
       },
@@ -12264,7 +12458,6 @@
                 "edge_key_mismatch",
                 "feed_rules_dropped",
                 "feed_redirect_added",
-                "temporary_allow",
                 "ui_auth_failures",
                 "edge_offline",
                 "edge_update_failed",
