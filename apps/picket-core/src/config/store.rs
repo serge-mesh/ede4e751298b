@@ -752,6 +752,12 @@ fn delete_rows(tx: &Transaction<'_>, kind: EntityKind, id: &str) -> Result<()> {
         EntityKind::Bundle => {
             tx.execute("DELETE FROM bundles WHERE id = ?1", [id])?;
             tx.execute("DELETE FROM bundle_feeds WHERE bundle_id = ?1", [id])?;
+            // A preset install waiting to attach feeds to it ends here, visibly: a bundle made
+            // again with this id is not the one the install meant.
+            tx.execute(
+                "UPDATE preset_pending SET state = 'bundle_missing' WHERE bundle_id = ?1 AND state = 'waiting'",
+                [id],
+            )?;
         }
         EntityKind::LookupProvider => {
             // providers.md §4: deleting a provider deletes its queue items and verdicts.

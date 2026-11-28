@@ -3799,7 +3799,7 @@ export interface components {
             bundle_added: boolean;
             /** @description The provider or manual feed was created. */
             created: boolean;
-            /** @description Its feeds that exist now (each in the bundle). */
+            /** @description Its feeds that exist now (each in the bundle, unless `pending` says why not). */
             feeds: string[];
             file_restored: boolean;
             /**

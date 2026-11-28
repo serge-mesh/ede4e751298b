@@ -4800,7 +4800,7 @@
             "type": "boolean"
           },
           "feeds": {
-            "description": "Its feeds that exist now (each in the bundle).",
+            "description": "Its feeds that exist now (each in the bundle, unless `pending` says why not).",
             "items": {
               "type": "string"
             },
