@@ -17,6 +17,8 @@ Measured on 2026-11-28, x86_64 Linux, Rust 1.100.0, release profile, system allo
 `MALLOC_ARENA_MAX=2` (the service setting). The baseline is main at
 `9a4eab3fa058d045fbea85677f7039eaae9e4546`. Raw observations are in
 [helper-apply-memory-results.json](helper-apply-memory-results.json).
+The hardened helper was revalidated after rebasing onto main at
+`b2697fac22632034b913a514d51481102186b083`, including its newer UniFi local-destination reporting.
 
 The `apply-memory` example runs the real `Server`, length-delimited codec, two Tokio workers,
 four-blocking-thread limit, fast worker, 16-slot engine queue and `Engine` with `FakeBackend`.
@@ -102,23 +104,32 @@ but their commands remain in the queue. The same four connections can then submi
 **eight payloads** are live at about 120 seconds, before the 300-second stall threshold.
 Reconnections reproduce the same retention; a disconnect does not cancel engine work.
 
+Across both roles there can be six connection tasks, each retaining a wire body of at most
+1 MiB plus codec capacity while awaiting a response. Responses are also limited to 1 MiB,
+with a transient encoding copy and write timeout. Before this change, one executing command
+and the 16-slot queue bound engine-owned payload *count*, independently of those wire buffers
+and the two transient decode permits; only eight queued payloads were needed in the measured
+four-connection run. After this change, two apply permits bound decoding/queued/executing
+payloads together, with one retained desired state and one engine thread's working sets.
+At most two apply decoders can build their bounded temporary network sets concurrently.
+
 RSS peaks below include baseline runtime memory and, where specified, a resident 18 MiB
 budget charge for the two largest retained dump copies (9 MiB each). That charge is touched
 anonymous storage, not a claim to have run the actual concurrent dump-building workflow.
 
 | Socket experiment | Before peak MiB | After peak MiB | After RSS headroom below 64 MiB |
 |---|---:|---:|---:|
-| Valid duplicates; actual 120 s timeout | 96.63 | 6.87 | 57.13 MiB |
-| Empty strings; reconnect; 200 ms timeout | 71.82 | 7.20 | 56.80 MiB |
-| Valid duplicates + 18 MiB background; 200 ms | 114.62 | 24.49 | 39.51 MiB |
-| Dense unique members + 18 MiB background; 200 ms | 95.40 | 44.41 | 19.59 MiB |
+| Valid duplicates; actual 120 s timeout | 96.63 | 6.04 | 57.96 MiB |
+| Empty strings; reconnect; 200 ms timeout | 71.82 | 6.67 | 57.33 MiB |
+| Valid duplicates + 18 MiB background; 200 ms | 114.62 | 23.95 | 40.05 MiB |
+| Dense unique members + 18 MiB background; 200 ms | 95.40 | 43.96 | 20.04 MiB |
 
 The default-timeout runs follow the same ownership transitions as the accelerated runs;
 the baseline exceeds 64 MiB without filling all 16 queue slots. Peaks are observed process
 RSS, polled externally every 10 ms alongside the recorded in-process RSS/high-water samples.
 
-The small-request hardened run peaks at 3.28 MiB; administrator duplicate runs peak at
-6.01 MiB across three waves. Invalid requests now return `invalid` immediately. For valid
+The small-request hardened run peaks at 3.21 MiB; administrator duplicate runs peak at
+5.05 MiB across three waves. Invalid requests now return `invalid` immediately. For valid
 requests during the stall, one request holds the role's admission and eventually gets the
 response timeout; further applies return `busy` without decoding their payload. Once the
 engine releases the command, a later request can be admitted.
@@ -134,6 +145,8 @@ This host did not provide an independently delegated 64 MiB cgroup. RSS above 64
 a process-budget overrun in this experiment, but there was no cgroup OOM test. After-headroom
 is the measured RSS difference, not a universal bound on cgroup charges, arbitrary external
 iptables-save output, every concurrent background operation, or aarch64 allocator behaviour.
+The probe's UniFi local-destination snapshots are empty; the background charge models retained
+dump storage, rather than every possible interface's external firewall state.
 The admission and collection bounds themselves do not depend on allocator retention or the
 number of timeout/reconnect cycles.
 
@@ -153,6 +166,10 @@ desired state, rather than a new batch on every timeout. Final per-family networ
 are exact-sized and hold at most 65,536 entries each; transient sets stop at the first entry
 over the limit. The engine consumes validated desired state without decoding/normalising
 another string copy.
+On this target `IpNet` occupies 18 bytes: even ignoring the tighter wire-size constraint,
+the four final network vectors hold at most 4.5 MiB per request, or 13.5 MiB for two admitted
+requests plus retained desired state. This counts owned network vectors, not transient trees,
+engine working sets, string/interface overhead or total process RSS.
 
 Regression coverage includes allocation budgets for early rejection, valid duplicate-heavy
 and full-family inputs, raw and normalised count overflow, interface and redirect limits,
@@ -163,7 +180,7 @@ real-socket held-restore test now checks `busy` while execution holds admission 
 re-admission after completion. The helper-frame fuzz target checks persisted-form parity
 with the newly validated decoded request.
 
-Validation on x86_64: 165 helper tests and 48 edge firewall tests passed; helper Clippy over
+Validation on x86_64: 174 helper tests and 50 edge firewall tests passed; helper Clippy over
 all targets (`-D warnings`), rustdoc with warnings denied, rustfmt, typos and the helper fuzz
 workspace's locked all-target build passed. Native aarch64 CI remains the platform check;
 these memory measurements are from the x86_64 probe described above.
